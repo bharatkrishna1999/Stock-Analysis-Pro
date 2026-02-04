@@ -3,7 +3,7 @@ services:
     name: stock-dashboard
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn stock_trading_system:app
     plan: free
     envVars:
       - key: PYTHON_VERSION
