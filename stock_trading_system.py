@@ -615,24 +615,35 @@ class Analyzer:
             ax.set_facecolor(bg_color)
             
             # Plot Data Points
-            ax.scatter(X*100, y*100, alpha=0.6, c='#00d9ff', edgecolors='none', s=50, label='Daily Returns')
+            ax.scatter(X*100, y*100, alpha=0.6, c='#00d9ff', edgecolors='none', s=50, label='Daily Returns', zorder =1)
             
             # Plot Regression Line
             x_range = np.linspace(X.min(), X.max(), 100)
             y_pred = slope * x_range + intercept
-            ax.plot(x_range*100, y_pred*100, color='#9d4edd', linewidth=3, label=f'Regression (β={slope:.2f})')
+            ax.plot(x_range*100, y_pred*100, color='#9d4edd', linewidth=3, label=f'Regression (β={slope:.2f})', zorder=2)
 
-            # NEW: Add Equation Text to Plot
+            # NEW: Bullet Points Box with High Opacity
             sign = '+' if intercept >= 0 else '-'
-            eq_text = f'y = {slope:.2f}x {sign} {abs(intercept):.2f}'
-            ax.text(0.05, 0.95, eq_text, transform=ax.transAxes, fontsize=12, color='white', verticalalignment='top', bbox=dict(facecolor=bg_color, alpha=0.7, edgecolor=grid_color))
+            stats_text = (
+                f"$\\bf{{Regression\\ Stats}}$\n"  # Bold Title
+                f"• Eq: $y = {slope:.2f}x {sign} {abs(intercept):.4f}$\n"
+                f"• $R^2$: {r_squared:.4f}\n"
+                f"• Beta ($\\beta$): {slope:.3f}"
+            )
+            
+            # Create text box (zorder=3 puts it on top of everything)
+            # alpha=0.95 makes the box background nearly solid so dots don't show through
+            ax.text(0.03, 0.97, stats_text, transform=ax.transAxes, fontsize=11, color='white', 
+                    verticalalignment='top', bbox=dict(facecolor=bg_color, alpha=0.95, edgecolor=grid_color, boxstyle='round,pad=0.5'), zorder=3)
             
             # Styling
             ax.set_title(f'{stock_symbol} vs {nifty_source} Regression Analysis', fontsize=14, color='white', pad=15)
             ax.set_xlabel(f'{nifty_source} Returns (%)', fontsize=12, color='#a0aec0')
             ax.set_ylabel(f'{stock_symbol} Returns (%)', fontsize=12, color='#a0aec0')
             ax.grid(True, linestyle='--', alpha=0.2, color=grid_color)
-            ax.legend(facecolor=bg_color, edgecolor=grid_color, labelcolor='white')
+            
+            # Move Legend to Upper Right to avoid cluttering the stats box
+            ax.legend(facecolor=bg_color, edgecolor=grid_color, labelcolor='white', loc='upper right')
             
             # Spines (Borders)
             for spine in ax.spines.values():
