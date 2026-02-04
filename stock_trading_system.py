@@ -1406,6 +1406,26 @@ def index():
             .stocks, .suggestions {
                 grid-template-columns: repeat(2, 1fr);
             }
+            /* 1. Stack the Trading Plan items vertically */
+            .plan-item {
+                grid-template-columns: 1fr; /* Change from '140px 1fr' to single column */
+                gap: 5px; /* Reduce gap since they are stacked */
+                text-align: left;
+            }
+            
+            /* 2. Reduce padding to gain screen width */
+            .container {
+                padding: 12px; /* Was 20px */
+            }
+            .result-card {
+                padding: 20px; /* Was 35px */
+            }
+            
+            /* Optional: Make the label distinct when stacked */
+            .plan-label {
+                font-size: 0.85em;
+                opacity: 0.9;
+            }
         }
     </style>
 </head>
