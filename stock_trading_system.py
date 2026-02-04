@@ -1,10 +1,10 @@
 """
-Enhanced Large Cap Stocks Trading Dashboard - Flask Version (FIXED)
+Enhanced Large Cap Stocks Trading Dashboard - Flask Version (FIXED + EQUATION)
 Features:
 - Z-score with percentage deviation
 - Bolna AI-inspired design
 - Linear regression analysis vs Nifty 50
-- VISUAL Regression Plots (New!)
+- VISUAL Regression Plots with Equation (y = mx + b)
 - Clear entry/exit explanations with confidence levels
 - Time-to-target predictions
 - Autocomplete for Search
@@ -618,10 +618,14 @@ class Analyzer:
             ax.scatter(X*100, y*100, alpha=0.6, c='#00d9ff', edgecolors='none', s=50, label='Daily Returns')
             
             # Plot Regression Line
-            # Create a range for the line to cover the full width
             x_range = np.linspace(X.min(), X.max(), 100)
             y_pred = slope * x_range + intercept
             ax.plot(x_range*100, y_pred*100, color='#9d4edd', linewidth=3, label=f'Regression (β={slope:.2f})')
+
+            # NEW: Add Equation Text to Plot
+            sign = '+' if intercept >= 0 else '-'
+            eq_text = f'y = {slope:.2f}x {sign} {abs(intercept):.2f}'
+            ax.text(0.05, 0.95, eq_text, transform=ax.transAxes, fontsize=12, color='white', verticalalignment='top', bbox=dict(facecolor=bg_color, alpha=0.7, edgecolor=grid_color))
             
             # Styling
             ax.set_title(f'{stock_symbol} vs {nifty_source} Regression Analysis', fontsize=14, color='white', pad=15)
