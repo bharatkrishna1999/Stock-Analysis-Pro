@@ -1,5 +1,5 @@
 """
-Enhanced Large Cap Stocks Trading Dashboard - Flask Version (FIXED + EQUATION)
+Enhanced Large Cap Stocks Trading Dashboard - Flask Version (FIXED)
 Features:
 - Z-score with percentage deviation
 - Bolna AI-inspired design
@@ -546,6 +546,19 @@ class Analyzer:
             }
         }
 
+    # RESTORED ANALYZE METHOD
+    def analyze(self, symbol):
+        """Main analysis method"""
+        data = self.get_data(symbol)
+        if data is None:
+            return None
+
+        ind = self.calc_indicators(data)
+        if not ind:
+            return None
+
+        return self.signal(ind)
+
     def regression_analysis(self, stock_symbol):
         """Perform linear regression analysis of stock vs Nifty 50"""
         def _clean_close(px_df):
@@ -614,13 +627,13 @@ class Analyzer:
             fig.patch.set_facecolor(bg_color)
             ax.set_facecolor(bg_color)
             
-            # Plot Data Points
-            ax.scatter(X*100, y*100, alpha=0.6, c='#00d9ff', edgecolors='none', s=50, label='Daily Returns', zorder =1)
+            # Plot Data Points (zorder=1 sends them to back)
+            ax.scatter(X*100, y*100, alpha=0.6, c='#00d9ff', edgecolors='none', s=50, label='Daily Returns', zorder=1)
             
-            # Plot Regression Line
+            # Plot Regression Line (zorder=2 brings it forward)
             x_range = np.linspace(X.min(), X.max(), 100)
             y_pred = slope * x_range + intercept
-            ax.plot(x_range*100, y_pred*100, color='#9d4edd', linewidth=3, label=f'Regression (β={slope:.2f})', zorder=2)
+            ax.plot(x_range*100, y_pred*100, color='#9d4edd', linewidth=3, label=f'Regression Line', zorder=2)
 
             # NEW: Bullet Points Box with High Opacity
             sign = '+' if intercept >= 0 else '-'
