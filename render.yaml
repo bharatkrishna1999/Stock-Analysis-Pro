@@ -1,10 +1,12 @@
 services:
   - type: web
-    name: stock-dashboard
-    runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn stock_trading_system:app
+    name: stock-analysis-pro
+    env: python
+    region: oregon  # Good for NSE data latency
     plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 300 --graceful-timeout 300 --keep-alive 5 stock_trading_system:app
     envVars:
       - key: PYTHON_VERSION
-        value: 3.10.0
+        value: 3.11.0
+    healthCheckPath: /health
