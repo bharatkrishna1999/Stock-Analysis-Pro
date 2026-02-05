@@ -240,9 +240,16 @@ class Analyzer:
     def get_data(self, symbol, period='10d', interval='1h'):
         try:
             ticker = f"{symbol}.NS"
-            data = yf.download(ticker, period=period, interval=interval, progress=False)
-            if data.empty:
+            # FIX: threading=False is safer for Render.
+            data = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+            
+            if data is None or data.empty:
                 return None
+
+            # FIX: Handle MultiIndex Columns that often break standard data['Close'] access
+            if isinstance(data.columns, pd.MultiIndex):
+                data.columns = data.columns.get_level_values(0)
+
             return data
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
@@ -252,11 +259,14 @@ class Analyzer:
         if data is None or len(data) < 14:
             return None
         try:
-            close = data['Close'].dropna()
-            high = data['High'].dropna()
-            low = data['Low'].dropna()
+            # FIX: Use .squeeze() to ensure we have a Series and avoid DataFrame-level errors
+            close = data['Close'].squeeze().astype(float).dropna()
+            high = data['High'].squeeze().astype(float).dropna()
+            low = data['Low'].squeeze().astype(float).dropna()
+
             if len(close) < 14:
                 return None
+
             curr = float(close.iloc[-1])
             sma9 = float(close.rolling(9).mean().iloc[-1])
             sma5 = float(close.rolling(5).mean().iloc[-1])
@@ -264,6 +274,7 @@ class Analyzer:
             prev_hour = float(close.iloc[-2] if len(close) > 1 else curr)
             daily_ret = ((curr - open_price) / open_price) * 100 if open_price > 0 else 0
             hourly_ret = ((curr - prev_hour) / prev_hour) * 100 if prev_hour > 0 else 0
+            
             delta = close.diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -272,30 +283,37 @@ class Analyzer:
             rsi = float(rsi_series.iloc[-1])
             if pd.isna(rsi) or np.isinf(rsi):
                 rsi = 50.0
-            ema5 = close.ewm(5).mean()
-            ema13 = close.ewm(13).mean()
+            
+            ema5 = close.ewm(span=5).mean()
+            ema13 = close.ewm(span=13).mean()
             macd = ema5 - ema13
-            signal = macd.ewm(5).mean()
+            signal = macd.ewm(span=5).mean()
             macd_hist = macd - signal
             macd_val = float(macd_hist.iloc[-1])
             macd_bullish = macd_val > 0 if not pd.isna(macd_val) else True
+            
             h = float(high.iloc[-18:].max() if len(high) > 18 else high.iloc[-1])
             l = float(low.iloc[-18:].min() if len(low) > 18 else low.iloc[-1])
             pct_from_low = ((curr - l) / l) * 100 if l > 0 else 50
+            
             lookback = 20 if len(close) >= 20 else len(close)
             mean_price = float(close.iloc[-lookback:].mean())
             std_price = float(close.iloc[-lookback:].std())
+            
+            # FIX: Guard against DivisionByZero in Z-score for flat/dead stocks
             if std_price > 0:
                 zscore = (curr - mean_price) / std_price
                 pct_deviation = ((curr - mean_price) / mean_price) * 100
             else:
                 zscore = 0.0
                 pct_deviation = 0.0
+
             bb_upper = mean_price + (2 * std_price)
             bb_lower = mean_price - (2 * std_price)
             bb_position = ((curr - bb_lower) / (bb_upper - bb_lower)) * 100 if (bb_upper - bb_lower) > 0 else 50
             returns = close.pct_change().dropna()
             volatility = float(returns.std() * 100)
+            
             return {
                 'price': curr, 'sma9': sma9, 'sma5': sma5, 'daily': daily_ret, 'hourly': hourly_ret,
                 'rsi': rsi, 'macd_bullish': bool(macd_bullish), 'high': h, 'low': l,
@@ -550,6 +568,11 @@ class Analyzer:
                 try:
                     stock_data = yf.download(f"{stock_symbol}.NS", period=period, interval='1d', progress=False, threads=False)
                     if stock_data is None or stock_data.empty: continue
+                    
+                    # FIX: Handle MultiIndex for Regression datasets too
+                    if isinstance(stock_data.columns, pd.MultiIndex):
+                        stock_data.columns = stock_data.columns.get_level_values(0)
+
                     nifty_data = yf.download("^NSEI", period=period, interval='1d', progress=False, threads=False)
                     if nifty_data is None or nifty_data.empty:
                         nifty_data = yf.download("NIFTYBEES.NS", period=period, interval='1d', progress=False, threads=False)
@@ -559,7 +582,10 @@ class Analyzer:
                         else: nifty_source = "NIFTYBEES ETF"
                     else: nifty_source = "Nifty 50 Index"
                     
-                    if nifty_data is not None and not nifty_data.empty: break
+                    if nifty_data is not None and not nifty_data.empty: 
+                        if isinstance(nifty_data.columns, pd.MultiIndex):
+                            nifty_data.columns = nifty_data.columns.get_level_values(0)
+                        break
                 except Exception: continue
 
             if stock_data is None or stock_data.empty or nifty_data is None or nifty_data.empty:
@@ -655,8 +681,6 @@ class Analyzer:
 
         except Exception as e:
             print(f"\n[FATAL ERROR] Regression failed for {stock_symbol}: {e}")
-            import traceback
-            traceback.print_exc()
             return None
 
 analyzer = Analyzer()
@@ -1046,8 +1070,6 @@ def regression_route():
         return jsonify(result)
     except Exception as e:
         print(f"Error in regression for {normalized_symbol}: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': f'Regression analysis failed for {normalized_symbol}: {str(e)}'})
 
 @app.route('/health')
