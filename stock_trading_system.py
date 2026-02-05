@@ -3,13 +3,11 @@ Enhanced Large Cap Stocks Trading Dashboard - Flask Version (ALL NSE STOCKS)
 Features:
 - ALL NSE-listed stocks (500+ companies)
 - Z-score with percentage deviation
-- Bolna AI-inspired design
 - Linear regression analysis vs Nifty 50
 - VISUAL Regression Plots with Equation (y = mx + b)
 - Clear entry/exit explanations with confidence levels
 - Time-to-target predictions
 - Autocomplete for Search
-- OPTIMIZED for fast Render deployment
 """
 
 from flask import Flask, jsonify, request
@@ -101,7 +99,7 @@ STOCKS = {
     
     'Aviation': ['INDIGO', 'SPICEJET'],
     
-    'Hospitality': ['INDHOTEL', 'LEMONTREE', 'CHOICEINT', 'EIH', 'CHALET'],
+    'Hospitality': ['INDHOTEL', 'LEMONTREE', 'CHOICEINT', 'EIH', 'CHALET', 'ITCHOTELS'],
     
     'Construction': ['LT', 'NCC', 'PNC', 'KNR', 'ASHOKA', 'SADBHAV', 'HG'],
     
