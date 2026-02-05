@@ -1,15 +1,14 @@
 """
-Enhanced Large Cap Stocks Trading Dashboard - Flask Version (ALL NSE STOCKS)
+Enhanced Large Cap Stocks Trading Dashboard - Flask Version (DYNAMIC NSE STOCKS)
 Features:
-- ALL NSE-listed stocks (500+ companies)
+- DYNAMIC fetching of ALL NSE-listed stocks from official sources
+- 24-hour caching to minimize memory usage (512MB Render-friendly)
 - Z-score with percentage deviation
-- Bolna AI-inspired design
 - Linear regression analysis vs Nifty 50
 - VISUAL Regression Plots with Equation (y = mx + b)
 - Clear entry/exit explanations with confidence levels
 - Time-to-target predictions
 - Autocomplete for Search
-- OPTIMIZED for fast Render deployment
 """
 
 from flask import Flask, jsonify, request
@@ -23,6 +22,10 @@ import matplotlib
 import matplotlib.pyplot as plt
 import io
 import base64
+import requests
+import json
+import os
+import time
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
@@ -30,242 +33,209 @@ warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 
-# ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
-# Organized by sector for better UX, but includes 500+ stocks
+# ===== DYNAMIC MARKET DATA ENGINE =====
+class MarketData:
+    """
+    Dynamic Market Engine:
+    1. Scrapes official NSE archives for all active equities.
+    2. Fetches Nifty 500 for sector categorization.
+    3. Caches data to 'stock_master_cache.json' for 24h to ensure instant startup.
+    4. Memory-optimized for 512MB RAM environments.
+    """
+    CACHE_FILE = "stock_master_cache.json"
+    CACHE_DURATION = 86400  # 24 hours (in seconds)
 
-STOCKS = {
-    'IT Sector': ['TCS', 'INFY', 'HCLTECH', 'WIPRO', 'TECHM', 'LTIM', 'COFORGE', 'MPHASIS', 'PERSISTENT', 
-                  'MINDTREE', 'L&TTS', 'SONATSOFTW', 'TATAELXSI', 'ROLTA', 'CYIENT', 'KPITTECH', 
-                  'INTELLECT', 'MASTEK', 'ZENSAR', 'POLYCAB'],
-    
-    'Banking': ['HDFCBANK', 'ICICIBANK', 'SBIN', 'KOTAKBANK', 'AXISBANK', 'INDUSINDBK', 'BANKBARODA', 
-                'PNB', 'FEDERALBNK', 'AUBANK', 'BANDHANBNK', 'IDFCFIRSTB', 'RBLBANK', 'CANBK', 
-                'UNIONBANK', 'INDIANB', 'CENTRALBK', 'MAHABANK', 'JKBANK', 'KARNATBANK', 'DCBBANK'],
-    
-    'Financial Services': ['BAJFINANCE', 'BAJAJFINSV', 'SBILIFE', 'HDFCLIFE', 'ICICIGI', 'ICICIPRULI', 
-                           'CHOLAFIN', 'PFC', 'RECLTD', 'MUTHOOTFIN', 'HDFCAMC', 'CDSL', 'CAMS', 
-                           'LICHSGFIN', 'M&MFIN', 'SHRIRAMFIN', 'PNBHOUSING', 'IIFL', 'CREDITACC'],
-    
-    'Auto': ['MARUTI', 'TATAMOTORS', 'M&M', 'BAJAJ-AUTO', 'EICHERMOT', 'HEROMOTOCO', 'TVSMOTOR', 
-             'ASHOKLEY', 'ESCORTS', 'FORCEMOT', 'MAHINDCIE', 'SONACOMS', 'TIINDIA'],
-    
-    'Auto Components': ['BOSCHLTD', 'MOTHERSON', 'BALKRISIND', 'MRF', 'APOLLOTYRE', 'EXIDEIND', 
-                        'AMARAJABAT', 'BHARAT', 'CEATLTD', 'SCHAEFFLER', 'SUPRAJIT', 'ENDURANCE'],
-    
-    'Pharma': ['SUNPHARMA', 'DRREDDY', 'CIPLA', 'DIVISLAB', 'LUPIN', 'BIOCON', 'AUROPHARMA', 
-               'TORNTPHARM', 'ALKEM', 'CADILAHC', 'IPCALAB', 'GRANULES', 'GLENMARK', 'NATCOPHARMA',
-               'JBCHEPHARM', 'LAURUSLABS', 'PFIZER', 'ABBOTINDIA', 'GLAXO', 'SANOFI'],
-    
-    'Healthcare': ['APOLLOHOSP', 'MAXHEALTH', 'FORTIS', 'LALPATHLAB', 'METROPOLIS', 'DRREDDY',
-                   'THYROCARE', 'ASTER', 'RAINBOW'],
-    
-    'Consumer Goods': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP', 
-                       'COLPAL', 'TATACONSUM', 'EMAMILTD', 'VBL', 'RADICO', 'UBL', 'MCDOWELL-N',
-                       'PGHH', 'GILLETTE', 'JYOTHYLAB', 'BAJAJCON', 'VINATIORGA'],
-    
-    'Retail': ['DMART', 'TRENT', 'TITAN', 'ABFRL', 'SHOPERSTOP', 'JUBLFOOD', 'WESTLIFE', 
-               'DEVYANI', 'SPENCERS', 'VMART', 'BATA'],
-    
-    'Energy - Oil & Gas': ['RELIANCE', 'ONGC', 'BPCL', 'IOC', 'GAIL', 'HINDPETRO', 'PETRONET', 
-                           'OIL', 'MGL', 'IGL', 'GUJGASLTD', 'ATGL'],
-    
-    'Power': ['NTPC', 'POWERGRID', 'ADANIPOWER', 'TATAPOWER', 'TORNTPOWER', 'ADANIGREEN', 
-              'NHPC', 'SJVN', 'JSW', 'CESC', 'PFC', 'RECLTD'],
-    
-    'Metals & Mining': ['TATASTEEL', 'HINDALCO', 'JSWSTEEL', 'COALINDIA', 'VEDL', 'NMDC', 'SAIL', 
-                        'NATIONALUM', 'JINDALSTEL', 'HINDZINC', 'RATNAMANI', 'WELCORP', 'WELSPUNIND',
-                        'MOIL', 'GMRINFRA'],
-    
-    'Cement': ['ULTRACEMCO', 'GRASIM', 'SHREECEM', 'AMBUJACEM', 'ACC', 'DALMIACEM', 'JKCEMENT',
-               'RAMCOCEM', 'HEIDELBERG', 'ORIENTCEM', 'JKLAKSHMI', 'STARCEMENT'],
-    
-    'Real Estate': ['DLF', 'GODREJPROP', 'OBEROIRLTY', 'PRESTIGE', 'BRIGADE', 'PHOENIXLTD', 
-                    'SOBHA', 'LODHA', 'MAHLIFE', 'SUNTECK'],
-    
-    'Infrastructure': ['LT', 'ADANIENT', 'ADANIPORTS', 'SIEMENS', 'ABB', 'CUMMINSIND', 'VOLTAS', 
-                       'NCC', 'PNC', 'KNR', 'IRCTC', 'CONCOR', 'IRFC', 'GMR'],
-    
-    'Telecom': ['BHARTIARTL', 'IDEA', 'TATACOMM', 'ROUTE'],
-    
-    'Media': ['ZEEL', 'SUNTV', 'PVRINOX', 'SAREGAMA', 'TIPS', 'NAZARA', 'NETWORK18'],
-    
-    'Chemicals': ['UPL', 'PIDILITIND', 'AARTI', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT', 
-                  'TATACHEM', 'BALRAMCHIN', 'ALKYLAMINE', 'CLEAN', 'NOCIL', 'TATAchemicals',
-                  'ATUL', 'FINEORG', 'NAVINFLUOR'],
-    
-    'Paints': ['ASIANPAINT', 'BERGER', 'KANSAINER', 'INDIGO'],
-    
-    'Textiles': ['GRASIM', 'AIAENG', 'RAYMOND', 'ARVIND', 'WELSPUNIND', 'TRIDENT', 'KPR'],
-    
-    'Logistics': ['CONCOR', 'VRL', 'MAHLOG', 'BLUEDART', 'TCI', 'AEGISCHEM', 'GATI'],
-    
-    'Aviation': ['INDIGO', 'SPICEJET'],
-    
-    'Hospitality': ['INDHOTEL', 'LEMONTREE', 'CHOICEINT', 'EIH', 'CHALET'],
-    
-    'Construction': ['LT', 'NCC', 'PNC', 'KNR', 'ASHOKA', 'SADBHAV', 'HG'],
-    
-    'FMCG': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP',
-             'TATACONSUM', 'EMAMILTD', 'JYOTHYLAB', 'BAJAJCON', 'VBL'],
-    
-    'Electronics': ['DIXON', 'AMBER', 'ROUTE', 'POLYCAB', 'HAVELLS', 'CROMPTON', 'VGUARD',
-                    'KEI', 'FINOLEX', 'KALYANKJIL'],
-    
-    'Conglomerate': ['RELIANCE', 'LT', 'ITC', 'ADANIENT', 'TATASTEEL', 'M&M', 'SIEMENS'],
-    
-    'Nifty 50': ['ADANIENT', 'ADANIPORTS', 'APOLLOHOSP', 'ASIANPAINT', 'AXISBANK', 'BAJAJ-AUTO',
-                 'BAJFINANCE', 'BAJAJFINSV', 'BPCL', 'BHARTIARTL', 'BRITANNIA', 'CIPLA', 'COALINDIA',
-                 'DIVISLAB', 'DRREDDY', 'EICHERMOT', 'GRASIM', 'HCLTECH', 'HDFCBANK', 'HDFCLIFE',
-                 'HEROMOTOCO', 'HINDALCO', 'HINDUNILVR', 'ICICIBANK', 'ITC', 'INDUSINDBK', 'INFY',
-                 'JSWSTEEL', 'KOTAKBANK', 'LT', 'M&M', 'MARUTI', 'NTPC', 'NESTLEIND', 'ONGC',
-                 'POWERGRID', 'RELIANCE', 'SBILIFE', 'SBIN', 'SUNPHARMA', 'TCS', 'TATACONSUM',
-                 'TATAMOTORS', 'TATASTEEL', 'TECHM', 'TITAN', 'ULTRACEMCO', 'UPL', 'WIPRO'],
-    
-    'Nifty Next 50': ['ACC', 'AMBUJACEM', 'BANDHANBNK', 'BERGEPAINT', 'BOSCHLTD', 'CHOLAFIN',
-                      'COLPAL', 'DABUR', 'DLF', 'GODREJCP', 'GAIL', 'HAVELLS', 'HDFCAMC', 'HINDPETRO',
-                      'ICICIGI', 'ICICIPRULI', 'IDEA', 'INDIGO', 'LUPIN', 'MCDOWELL-N', 'MARICO',
-                      'MOTHERSON', 'MUTHOOTFIN', 'NMDC', 'NYKAA', 'OFSS', 'OIL', 'PAGEIND', 'PIDILITIND',
-                      'PNB', 'PEL', 'PETRONET', 'PFIZER', 'SIEMENS', 'SRF', 'SBICARD', 'SHREECEM',
-                      'TATACOMM', 'TORNTPHARM', 'TRENT', 'TVSMOTOR', 'VEDL', 'VOLTAS', 'ZEEL', 'ZOMATO'],
-    
-    'Others': ['ZOMATO', 'PAYTM', 'NYKAA', 'POLICYBZR', 'DELHIVERY', 'CARTRADE', 'EASEMYTRIP',
-               'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS']
-}
+    def __init__(self):
+        self.stocks_by_sector = {}  # Stores sector map (e.g. "Auto" -> ["TATAMOTORS", ...])
+        self.all_tickers = []       # Stores ALL raw symbols (e.g. ["RELIANCE", "TCS", ...])
+        self.company_map = {}       # Maps Company Name -> Symbol (e.g. "ONE 97" -> "PAYTM")
+        self.load_data()
 
-# Enhanced company name mapping with MANY more variations
-COMPANY_TO_TICKER = {
-    # IT Sector
-    'VEDANTA': 'VEDL', 'TATA CONSULTANCY': 'TCS', 'TATA CONSULTANCY SERVICES': 'TCS', 'INFOSYS': 'INFY',
-    'HCL TECH': 'HCLTECH', 'HCL TECHNOLOGIES': 'HCLTECH', 'TECH MAHINDRA': 'TECHM', 'L&T INFOTECH': 'LTIM',
-    'LTI': 'LTIM', 'MINDTREE': 'MINDTREE', 'COFORGE': 'COFORGE', 'MPHASIS': 'MPHASIS',
-    'PERSISTENT': 'PERSISTENT', 'TATA ELXSI': 'TATAELXSI', 'CYIENT': 'CYIENT',
-    
-    # Banking
-    'HDFC BANK': 'HDFCBANK', 'HDFC': 'HDFCBANK', 'ICICI BANK': 'ICICIBANK', 'ICICI': 'ICICIBANK',
-    'STATE BANK': 'SBIN', 'STATE BANK OF INDIA': 'SBIN', 'SBI': 'SBIN', 'KOTAK': 'KOTAKBANK',
-    'KOTAK MAHINDRA': 'KOTAKBANK', 'AXIS BANK': 'AXISBANK', 'AXIS': 'AXISBANK',
-    'INDUSIND': 'INDUSINDBK', 'INDUSIND BANK': 'INDUSINDBK', 'BANK OF BARODA': 'BANKBARODA',
-    'PUNJAB NATIONAL BANK': 'PNB', 'PUNJAB NATIONAL': 'PNB', 'FEDERAL BANK': 'FEDERALBNK',
-    'FEDERAL': 'FEDERALBNK', 'AU BANK': 'AUBANK', 'AU SMALL FINANCE': 'AUBANK',
-    'BANDHAN BANK': 'BANDHANBNK', 'BANDHAN': 'BANDHANBNK', 'IDFC FIRST BANK': 'IDFCFIRSTB',
-    'IDFC': 'IDFCFIRSTB', 'RBL BANK': 'RBLBANK', 'RBL': 'RBLBANK',
-    
-    # Financial Services
-    'BAJAJ FINANCE': 'BAJFINANCE', 'BAJAJ FIN': 'BAJFINANCE', 'BAJAJ FINSERV': 'BAJAJFINSV',
-    'SBI LIFE': 'SBILIFE', 'HDFC LIFE': 'HDFCLIFE', 'ICICI LOMBARD': 'ICICIGI',
-    'ICICI PRUDENTIAL': 'ICICIPRULI', 'CHOLAMANDALAM': 'CHOLAFIN', 'CHOLA': 'CHOLAFIN',
-    'PFC': 'PFC', 'POWER FINANCE': 'PFC', 'REC': 'RECLTD', 'MUTHOOT': 'MUTHOOTFIN',
-    'MUTHOOT FINANCE': 'MUTHOOTFIN', 'HDFC AMC': 'HDFCAMC', 'CDSL': 'CDSL', 'CAMS': 'CAMS',
-    'SHRIRAM': 'SHRIRAMFIN', 'SHRIRAM FINANCE': 'SHRIRAMFIN',
-    
-    # Auto
-    'MARUTI': 'MARUTI', 'MARUTI SUZUKI': 'MARUTI', 'TATA MOTORS': 'TATAMOTORS', 'TATA MOTOR': 'TATAMOTORS',
-    'MAHINDRA': 'M&M', 'M AND M': 'M&M', 'BAJAJ AUTO': 'BAJAJ-AUTO', 'EICHER': 'EICHERMOT',
-    'EICHER MOTORS': 'EICHERMOT', 'HERO MOTOCORP': 'HEROMOTOCO', 'HERO': 'HEROMOTOCO',
-    'TVS': 'TVSMOTOR', 'TVS MOTOR': 'TVSMOTOR', 'ASHOK LEYLAND': 'ASHOKLEY', 'ASHOK': 'ASHOKLEY',
-    
-    # Auto Components
-    'BOSCH': 'BOSCHLTD', 'MRF': 'MRF', 'APOLLO TYRES': 'APOLLOTYRE', 'APOLLO': 'APOLLOTYRE',
-    'EXIDE': 'EXIDEIND', 'EXIDE INDUSTRIES': 'EXIDEIND', 'AMARA RAJA': 'AMARAJABAT',
-    
-    # Pharma
-    'SUN PHARMA': 'SUNPHARMA', 'SUN PHARMACEUTICAL': 'SUNPHARMA', 'DR REDDY': 'DRREDDY',
-    'DR REDDYS': 'DRREDDY', 'CIPLA': 'CIPLA', 'DIVIS': 'DIVISLAB', 'DIVIS LAB': 'DIVISLAB',
-    'LUPIN': 'LUPIN', 'BIOCON': 'BIOCON', 'AUROBINDO': 'AUROPHARMA', 'TORRENT PHARMA': 'TORNTPHARM',
-    'ALKEM': 'ALKEM', 'CADILA': 'CADILAHC', 'ZYDUS': 'CADILAHC', 'IPCA': 'IPCALAB',
-    'GRANULES': 'GRANULES', 'GLENMARK': 'GLENMARK', 'NATCO': 'NATCOPHARMA',
-    
-    # Healthcare
-    'APOLLO HOSPITAL': 'APOLLOHOSP', 'APOLLO HOSPITALS': 'APOLLOHOSP', 'MAX HEALTH': 'MAXHEALTH',
-    'MAX HEALTHCARE': 'MAXHEALTH', 'FORTIS': 'FORTIS', 'LALPATHLAB': 'LALPATHLAB',
-    'DR LALPATHLAB': 'LALPATHLAB', 'METROPOLIS': 'METROPOLIS',
-    
-    # Consumer Goods
-    'HUL': 'HINDUNILVR', 'HINDUSTAN UNILEVER': 'HINDUNILVR', 'ITC': 'ITC', 'NESTLE': 'NESTLEIND',
-    'BRITANNIA': 'BRITANNIA', 'DABUR': 'DABUR', 'MARICO': 'MARICO', 'GODREJ': 'GODREJCP',
-    'GODREJ CONSUMER': 'GODREJCP', 'COLGATE': 'COLPAL', 'TATA CONSUMER': 'TATACONSUM',
-    'EMAMI': 'EMAMILTD', 'VARUN': 'VBL', 'VARUN BEVERAGES': 'VBL',
-    
-    # Retail
-    'DMART': 'DMART', 'AVENUE SUPERMARTS': 'DMART', 'TRENT': 'TRENT', 'TITAN': 'TITAN',
-    'ADITYA BIRLA': 'ABFRL', 'SHOPPERS STOP': 'SHOPERSTOP', 'JUBILANT': 'JUBLFOOD',
-    'JUBILANT FOODWORKS': 'JUBLFOOD',
-    
-    # Energy
-    'RELIANCE': 'RELIANCE', 'RIL': 'RELIANCE', 'ONGC': 'ONGC', 'OIL AND NATURAL GAS': 'ONGC',
-    'BPCL': 'BPCL', 'BHARAT PETROLEUM': 'BPCL', 'IOC': 'IOC', 'INDIAN OIL': 'IOC',
-    'GAIL': 'GAIL', 'HPCL': 'HINDPETRO', 'HINDUSTAN PETROLEUM': 'HINDPETRO',
-    'PETRONET': 'PETRONET', 'PETRONET LNG': 'PETRONET', 'MGL': 'MGL', 'MAHANAGAR GAS': 'MGL',
-    'IGL': 'IGL', 'INDRAPRASTHA GAS': 'IGL',
-    
-    # Power
-    'NTPC': 'NTPC', 'POWER GRID': 'POWERGRID', 'POWERGRID': 'POWERGRID', 'ADANI POWER': 'ADANIPOWER',
-    'TATA POWER': 'TATAPOWER', 'TORRENT POWER': 'TORNTPOWER', 'ADANI GREEN': 'ADANIGREEN',
-    
-    # Metals
-    'TATA STEEL': 'TATASTEEL', 'HINDALCO': 'HINDALCO', 'JSW': 'JSWSTEEL', 'JSW STEEL': 'JSWSTEEL',
-    'COAL INDIA': 'COALINDIA', 'VEDL': 'VEDL', 'NMDC': 'NMDC', 'SAIL': 'SAIL',
-    'NATIONAL ALUMINIUM': 'NATIONALUM', 'NALCO': 'NATIONALUM', 'JINDAL STEEL': 'JINDALSTEL',
-    'HINDZINC': 'HINDZINC', 'HINDUSTAN ZINC': 'HINDZINC',
-    
-    # Cement
-    'ULTRATECH': 'ULTRACEMCO', 'ULTRATECH CEMENT': 'ULTRACEMCO', 'GRASIM': 'GRASIM',
-    'SHREE CEMENT': 'SHREECEM', 'AMBUJA': 'AMBUJACEM', 'AMBUJA CEMENT': 'AMBUJACEM',
-    'ACC': 'ACC', 'DALMIA': 'DALMIACEM', 'DALMIA BHARAT': 'DALMIACEM', 'JK CEMENT': 'JKCEMENT',
-    
-    # Real Estate
-    'DLF': 'DLF', 'GODREJ PROPERTIES': 'GODREJPROP', 'GODREJ PROP': 'GODREJPROP',
-    'OBEROI': 'OBEROIRLTY', 'OBEROI REALTY': 'OBEROIRLTY', 'PRESTIGE': 'PRESTIGE',
-    'BRIGADE': 'BRIGADE', 'PHOENIX': 'PHOENIXLTD',
-    
-    # Infrastructure
-    'LT': 'LT', 'L&T': 'LT', 'LARSEN': 'LT', 'LARSEN AND TOUBRO': 'LT', 'ADANI': 'ADANIENT',
-    'ADANI ENTERPRISES': 'ADANIENT', 'ADANI PORTS': 'ADANIPORTS', 'SIEMENS': 'SIEMENS',
-    'ABB': 'ABB', 'CUMMINS': 'CUMMINSIND', 'VOLTAS': 'VOLTAS', 'IRCTC': 'IRCTC',
-    
-    # Telecom
-    'BHARTI': 'BHARTIARTL', 'BHARTI AIRTEL': 'BHARTIARTL', 'AIRTEL': 'BHARTIARTL',
-    'IDEA': 'IDEA', 'VODAFONE': 'IDEA', 'VI': 'IDEA',
-    
-    # Media
-    'ZEE': 'ZEEL', 'ZEE ENTERTAINMENT': 'ZEEL', 'SUN TV': 'SUNTV', 'PVR': 'PVRINOX',
-    'PVR INOX': 'PVRINOX',
-    
-    # Others
-    'ZOMATO': 'ZOMATO', 'PAYTM': 'PAYTM', 'NYKAA': 'NYKAA', 'POLICYBAZAAR': 'POLICYBZR',
-    'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
-}
+    def load_data(self):
+        """Check cache first; if invalid or missing, download fresh data."""
+        if self._is_cache_valid():
+            try:
+                print("✅ Loading stock list from local cache...")
+                with open(self.CACHE_FILE, 'r') as f:
+                    data = json.load(f)
+                    self.stocks_by_sector = data.get('sectors', {})
+                    self.all_tickers = data.get('all_tickers', [])
+                    self.company_map = data.get('company_map', {})
+                print(f"✅ Loaded {len(self.all_tickers)} stocks across {len(self.stocks_by_sector)} sectors from cache")
+                return
+            except Exception as e:
+                print(f"⚠️ Cache corrupted ({e}), fetching fresh data...")
 
-# Build complete ticker set
-ALL_VALID_TICKERS = set()
-for sector_stocks in STOCKS.values():
-    ALL_VALID_TICKERS.update(sector_stocks)
+        print("⏳ Downloading fresh stock list from NSE...")
+        self._fetch_fresh_data()
 
-print(f"✅ Loaded {len(ALL_VALID_TICKERS)} stocks across {len(STOCKS)} sectors")
+    def _is_cache_valid(self):
+        """Returns True if cache exists and is less than 24 hours old."""
+        if not os.path.exists(self.CACHE_FILE): 
+            return False
+        return (time.time() - os.path.getmtime(self.CACHE_FILE)) < self.CACHE_DURATION
 
-# ===== REST OF CODE REMAINS IDENTICAL =====
+    def _fetch_fresh_data(self):
+        """
+        Fetches data from:
+        1. NiftyIndices (for Sectors)
+        2. NSE Archives (for full market list)
+        Memory-optimized: Only stores essential data, limits sector stocks to top 30
+        """
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        }
+        
+        # 1. Fetch Nifty 500 for Sector Categorization
+        print("⏳ Fetching Nifty 500 for sectors...")
+        sector_success = False
+        try:
+            url_500 = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+            r = requests.get(url_500, headers=headers, timeout=30, verify=True)
+            if r.status_code == 200:
+                df = pd.read_csv(io.StringIO(r.text))
+                # Store top 30 stocks per sector to keep memory usage low
+                for ind, group in df.groupby('Industry'):
+                    self.stocks_by_sector[ind] = group['Symbol'].tolist()[:30]
+                print(f"✅ Fetched {len(self.stocks_by_sector)} sectors from Nifty 500")
+                sector_success = True
+            else:
+                print(f"⚠️ Nifty 500 fetch returned status {r.status_code}")
+        except Exception as e:
+            print(f"⚠️ Sector fetch failed: {e}")
+        
+        if not sector_success:
+            self._use_fallback_sectors()
 
+        # 2. Fetch ALL Active NSE Stocks
+        print("⏳ Fetching full NSE stock list...")
+        stock_success = False
+        try:
+            # This CSV contains every single active equity on NSE
+            url_all = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+            r = requests.get(url_all, headers=headers, timeout=30, verify=True)
+            if r.status_code == 200:
+                df = pd.read_csv(io.StringIO(r.text))
+                self.all_tickers = df['SYMBOL'].unique().tolist()
+                
+                # Build smart map: "RELIANCE INDUSTRIES" -> "RELIANCE"
+                # Only store essential mappings to save memory
+                for _, row in df.iterrows():
+                    try:
+                        clean_name = str(row['NAME OF COMPANY']).upper().strip()
+                        symbol = str(row['SYMBOL']).upper().strip()
+                        
+                        # Store full name
+                        self.company_map[clean_name] = symbol
+                        
+                        # Store common shortened versions to improve search
+                        words = clean_name.split()
+                        if len(words) > 1:
+                            # Store first word if meaningful (length > 3)
+                            if len(words[0]) > 3:
+                                self.company_map[words[0]] = symbol
+                    except Exception:
+                        continue
+                
+                print(f"✅ Fetched {len(self.all_tickers)} stocks from NSE archives")
+                stock_success = True
+            else:
+                print(f"⚠️ NSE archives returned status {r.status_code}")
+        except Exception as e:
+            print(f"⚠️ Full market fetch failed: {e}")
+        
+        if not stock_success:
+            self._use_fallback_tickers()
+
+        # Ensure we have at least some data
+        if not self.all_tickers:
+            print("⚠️ Using fallback tickers")
+            self._use_fallback_tickers()
+        
+        if not self.stocks_by_sector:
+            print("⚠️ Using fallback sectors")
+            self._use_fallback_sectors()
+
+        # Save to cache
+        try:
+            with open(self.CACHE_FILE, 'w') as f:
+                json.dump({
+                    'sectors': self.stocks_by_sector,
+                    'all_tickers': self.all_tickers,
+                    'company_map': self.company_map,
+                    'timestamp': time.time()
+                }, f)
+            print(f"✅ Fresh data cached ({len(self.all_tickers)} stocks, {len(self.stocks_by_sector)} sectors)")
+        except Exception as e:
+            print(f"⚠️ Failed to save cache: {e}")
+
+    def _use_fallback_sectors(self):
+        """Fallback sector data if API fails"""
+        self.stocks_by_sector = {
+            'Top Stocks': ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 'ITC', 'HINDUNILVR', 'LT'],
+            'Banking': ['HDFCBANK', 'ICICIBANK', 'SBIN', 'KOTAKBANK', 'AXISBANK', 'INDUSINDBK', 'BANKBARODA', 'PNB'],
+            'IT': ['TCS', 'INFY', 'HCLTECH', 'WIPRO', 'TECHM', 'LTIM', 'COFORGE', 'PERSISTENT'],
+            'Auto': ['MARUTI', 'TATAMOTORS', 'M&M', 'BAJAJ-AUTO', 'EICHERMOT', 'HEROMOTOCO', 'TVSMOTOR'],
+        }
+
+    def _use_fallback_tickers(self):
+        """Fallback ticker list if API fails - includes popular stocks"""
+        self.all_tickers = [
+            'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'BHARTIARTL', 
+            'ITC', 'HINDUNILVR', 'LT', 'KOTAKBANK', 'AXISBANK', 'WIPRO', 'TECHM', 
+            'TATAMOTORS', 'MARUTI', 'BAJFINANCE', 'SUNPHARMA', 'ONGC', 'NTPC',
+            'SUZLON', 'ADANIPOWER', 'TATASTEEL', 'JSWSTEEL', 'COALINDIA', 'VEDL',
+            'ZOMATO', 'PAYTM', 'NYKAA', 'DIXON', 'POLYCAB', 'HAVELLS'
+        ]
+
+    def normalize_symbol(self, search_term):
+        """
+        Converts user input (e.g., 'paytm', 'zomato', 'reliance industries') 
+        into a valid ticker symbol (e.g., 'PAYTM', 'ZOMATO', 'RELIANCE').
+        """
+        if not search_term: 
+            return None, ""
+        
+        original = search_term.strip()
+        s_upper = original.upper()
+
+        # 1. Exact Match (e.g. "RELIANCE")
+        if s_upper in self.all_tickers: 
+            return s_upper, original
+
+        # 2. Exact Company Name Match (e.g. "ONE 97 COMMUNICATIONS LTD")
+        if s_upper in self.company_map: 
+            return self.company_map[s_upper], original
+        
+        # 3. Fuzzy/Partial Match (e.g. "PAYTM" found inside company name)
+        for name, ticker in self.company_map.items():
+            if s_upper in name or name in s_upper: 
+                return ticker, original
+        
+        # 4. Partial ticker match
+        matches = [t for t in self.all_tickers if s_upper in t or t in s_upper]
+        if len(matches) == 1:
+            return matches[0], original
+            
+        return None, original
+
+# Initialize market data (loads from cache or fetches fresh)
+print("🚀 Initializing Market Data Engine...")
+market = MarketData()
+ALL_VALID_TICKERS = set(market.all_tickers)
+STOCKS = market.stocks_by_sector
+
+print(f"✅ Market Engine Ready: {len(ALL_VALID_TICKERS)} stocks loaded")
+
+# ===== ANALYZER CLASS =====
 class Analyzer:
     @staticmethod
     def normalize_symbol(symbol):
-        if not symbol:
-            return None, ""
-        original = symbol.strip()
-        symbol_upper = original.upper()
-        if symbol_upper in ALL_VALID_TICKERS:
-            return symbol_upper, original
-        if symbol_upper in COMPANY_TO_TICKER:
-            return COMPANY_TO_TICKER[symbol_upper], original
-        matches = [ticker for ticker in ALL_VALID_TICKERS if symbol_upper in ticker]
-        if len(matches) == 1:
-            return matches[0], original
-        reverse_matches = [ticker for ticker in ALL_VALID_TICKERS if ticker in symbol_upper]
-        if len(reverse_matches) == 1:
-            return reverse_matches[0], original
-        for company_name, ticker in COMPANY_TO_TICKER.items():
-            if symbol_upper in company_name or company_name in symbol_upper:
-                return ticker, original
-        return None, original
+        """Wrapper to use MarketData's normalize function"""
+        return market.normalize_symbol(symbol)
 
     def get_data(self, symbol, period='10d', interval='1h'):
         try:
@@ -691,12 +661,13 @@ class Analyzer:
 
 analyzer = Analyzer()
 
-# ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
-# [Keeping your exact HTML - no changes needed]
-
+# ===== ROUTES =====
 @app.route('/')
 def index():
-    # Using your exact working HTML
+    # Get stock count for display
+    stock_count = len(ALL_VALID_TICKERS)
+    sector_count = len(STOCKS)
+    
     html = '''<!DOCTYPE html>
 <html>
 <head>
@@ -790,7 +761,7 @@ def index():
         <header>
             <h1>📊 Stock Analysis Pro</h1>
             <p>Advanced Trading Insights with AI-Powered Analysis</p>
-            <div class="stock-count">🚀 Now analyzing ''' + str(len(ALL_VALID_TICKERS)) + '''+ NSE stocks across ''' + str(len(STOCKS)) + ''' sectors</div>
+            <div class="stock-count">🚀 Now analyzing ''' + str(stock_count) + '''+ NSE stocks across ''' + str(sector_count) + ''' sectors</div>
         </header>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
@@ -847,16 +818,39 @@ def index():
             function setupAutocomplete(inputId, suggestionId, callbackName) {
                 const input = document.getElementById(inputId);
                 if(!input) return;
-                input.addEventListener('input', (e) => {
-                    const q = e.target.value.toUpperCase();
+                input.addEventListener('input', async (e) => {
+                    const q = e.target.value.trim();
                     const sug = document.getElementById(suggestionId);
                     if (q.length === 0) { sug.innerHTML = ''; return; }
+                    
+                    // First show local results instantly
                     const all = Object.values(stocks).flat();
-                    const filtered = all.filter(s => s.includes(q)).slice(0, 12);
-                    sug.innerHTML = filtered.map(s => {
-                        if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${s}</button>`;
-                        else return `<button onclick="analyze('${s}')">${s}</button>`;
-                    }).join('');
+                    const qUpper = q.toUpperCase();
+                    const filtered = all.filter(s => s.includes(qUpper)).slice(0, 12);
+                    
+                    if (filtered.length > 0) {
+                        sug.innerHTML = filtered.map(s => {
+                            if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${s}</button>`;
+                            else return `<button onclick="analyze('${s}')">${s}</button>`;
+                        }).join('');
+                    } else {
+                        // If no local match, search server for ALL stocks
+                        sug.innerHTML = '<div style="color: var(--text-muted); padding: 10px;">Searching...</div>';
+                        try {
+                            const response = await fetch(`/search?q=${encodeURIComponent(q)}`);
+                            const data = await response.json();
+                            if (data.results && data.results.length > 0) {
+                                sug.innerHTML = data.results.map(s => {
+                                    if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${s}</button>`;
+                                    else return `<button onclick="analyze('${s}')">${s}</button>`;
+                                }).join('');
+                            } else {
+                                sug.innerHTML = '<div style="color: var(--danger); padding: 10px;">No matches found</div>';
+                            }
+                        } catch(e) {
+                            sug.innerHTML = '<div style="color: var(--danger); padding: 10px;">Search failed</div>';
+                        }
+                    }
                 });
             }
             setupAutocomplete('search', 'suggestions', 'analyze');
@@ -970,10 +964,38 @@ def index():
 </html>'''
     return html
 
+@app.route('/search')
+def search_route():
+    """Search endpoint that searches ALL stocks, not just displayed sectors"""
+    query = request.args.get('q', '').strip().upper()
+    if not query or len(query) < 2:
+        return jsonify({'results': []})
+    
+    # Search in all tickers
+    matches = []
+    for ticker in sorted(ALL_VALID_TICKERS):
+        if query in ticker:
+            matches.append(ticker)
+            if len(matches) >= 20:  # Limit to 20 results
+                break
+    
+    # If no ticker matches, search company names
+    if len(matches) == 0:
+        for company_name, ticker in market.company_map.items():
+            if query in company_name:
+                matches.append(ticker)
+                if len(matches) >= 20:
+                    break
+    
+    # Remove duplicates and return
+    return jsonify({'results': list(set(matches))[:20]})
+
 @app.route('/analyze')
 def analyze_route():
     symbol = request.args.get('symbol', '').strip()
-    if not symbol: return jsonify({'error': 'No symbol provided'})
+    if not symbol: 
+        return jsonify({'error': 'No symbol provided'})
+    
     normalized_symbol, original = Analyzer.normalize_symbol(symbol)
     if not normalized_symbol:
         suggestions = []
@@ -981,12 +1003,17 @@ def analyze_route():
         for ticker in sorted(ALL_VALID_TICKERS):
             if symbol_upper in ticker or ticker in symbol_upper:
                 suggestions.append(ticker)
-                if len(suggestions) >= 5: break
-        if suggestions: return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
-        else: return jsonify({'error': f'Invalid symbol "{original}".'})
+                if len(suggestions) >= 5: 
+                    break
+        if suggestions: 
+            return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
+        else: 
+            return jsonify({'error': f'Invalid symbol "{original}". Not found in NSE database.'})
+    
     try:
         result = analyzer.analyze(normalized_symbol)
-        if not result: return jsonify({'error': f'Unable to fetch data for {normalized_symbol}.'})
+        if not result: 
+            return jsonify({'error': f'Unable to fetch data for {normalized_symbol}. Market may be closed or data unavailable.'})
         return jsonify(result)
     except Exception as e:
         print(f"Error analyzing {normalized_symbol}: {e}")
@@ -995,7 +1022,9 @@ def analyze_route():
 @app.route('/regression')
 def regression_route():
     symbol = request.args.get('symbol', '').strip()
-    if not symbol: return jsonify({'error': 'No symbol provided'})
+    if not symbol: 
+        return jsonify({'error': 'No symbol provided'})
+    
     normalized_symbol, original = Analyzer.normalize_symbol(symbol)
     if not normalized_symbol:
         suggestions = []
@@ -1003,12 +1032,17 @@ def regression_route():
         for ticker in sorted(ALL_VALID_TICKERS):
             if symbol_upper in ticker or ticker in symbol_upper:
                 suggestions.append(ticker)
-                if len(suggestions) >= 5: break
-        if suggestions: return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
-        else: return jsonify({'error': f'Invalid symbol "{original}".'})
+                if len(suggestions) >= 5: 
+                    break
+        if suggestions: 
+            return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
+        else: 
+            return jsonify({'error': f'Invalid symbol "{original}". Not found in NSE database.'})
+    
     try:
         result = analyzer.regression_analysis(normalized_symbol)
-        if not result: return jsonify({'error': f'Unable to perform regression analysis for {normalized_symbol}.'})
+        if not result: 
+            return jsonify({'error': f'Unable to perform regression analysis for {normalized_symbol}. Insufficient data available.'})
         return jsonify(result)
     except Exception as e:
         print(f"Error in regression for {normalized_symbol}: {e}")
@@ -1016,5 +1050,20 @@ def regression_route():
         traceback.print_exc()
         return jsonify({'error': f'Regression analysis failed for {normalized_symbol}: {str(e)}'})
 
+@app.route('/health')
+def health():
+    """Health check endpoint for Render"""
+    try:
+        cache_age = (time.time() - os.path.getmtime(market.CACHE_FILE)) / 3600 if os.path.exists(market.CACHE_FILE) else 999
+        return jsonify({
+            'status': 'healthy',
+            'stocks_loaded': len(ALL_VALID_TICKERS),
+            'sectors': len(STOCKS),
+            'cache_age_hours': round(cache_age, 2)
+        }), 200
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 if __name__ == '__main__':
-    app.run(debug=True, use_reloader=False)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
