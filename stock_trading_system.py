@@ -33,6 +33,18 @@ warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 
+# ===== ARMORED DATA SESSION =====
+# This fixes the "Expecting value: line 1 column 1" error from your logs
+# by making the server appear as a browser.
+custom_session = requests.Session()
+custom_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Origin': 'https://finance.yahoo.com',
+    'Referer': 'https://finance.yahoo.com'
+})
+
 # ===== DYNAMIC MARKET DATA ENGINE =====
 class MarketData:
     """
@@ -240,13 +252,19 @@ class Analyzer:
     def get_data(self, symbol, period='10d', interval='1h'):
         try:
             ticker = f"{symbol}.NS"
-            # FIX: threading=False is safer for Render.
-            data = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+            # FIX: Use armored custom_session and threads=False for Render
+            data = yf.download(ticker, period=period, interval=interval, 
+                               session=custom_session, progress=False, threads=False)
             
+            # Fallback for delisted or differently indexed tickers
+            if data is None or data.empty:
+                data = yf.download(symbol, period=period, interval=interval, 
+                                   session=custom_session, progress=False, threads=False)
+                
             if data is None or data.empty:
                 return None
 
-            # FIX: Handle MultiIndex Columns that often break standard data['Close'] access
+            # CRITICAL FIX: Flatten MultiIndex columns (The 'TCS.NS' header issue)
             if isinstance(data.columns, pd.MultiIndex):
                 data.columns = data.columns.get_level_values(0)
 
@@ -259,14 +277,13 @@ class Analyzer:
         if data is None or len(data) < 14:
             return None
         try:
-            # FIX: Use .squeeze() to ensure we have a Series and avoid DataFrame-level errors
+            # FIX: Ensure flat Series using squeeze() and handle potential MultiIndex leftovers
             close = data['Close'].squeeze().astype(float).dropna()
             high = data['High'].squeeze().astype(float).dropna()
             low = data['Low'].squeeze().astype(float).dropna()
 
             if len(close) < 14:
                 return None
-
             curr = float(close.iloc[-1])
             sma9 = float(close.rolling(9).mean().iloc[-1])
             sma5 = float(close.rolling(5).mean().iloc[-1])
@@ -274,7 +291,6 @@ class Analyzer:
             prev_hour = float(close.iloc[-2] if len(close) > 1 else curr)
             daily_ret = ((curr - open_price) / open_price) * 100 if open_price > 0 else 0
             hourly_ret = ((curr - prev_hour) / prev_hour) * 100 if prev_hour > 0 else 0
-            
             delta = close.diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -283,7 +299,6 @@ class Analyzer:
             rsi = float(rsi_series.iloc[-1])
             if pd.isna(rsi) or np.isinf(rsi):
                 rsi = 50.0
-            
             ema5 = close.ewm(span=5).mean()
             ema13 = close.ewm(span=13).mean()
             macd = ema5 - ema13
@@ -291,29 +306,25 @@ class Analyzer:
             macd_hist = macd - signal
             macd_val = float(macd_hist.iloc[-1])
             macd_bullish = macd_val > 0 if not pd.isna(macd_val) else True
-            
             h = float(high.iloc[-18:].max() if len(high) > 18 else high.iloc[-1])
             l = float(low.iloc[-18:].min() if len(low) > 18 else low.iloc[-1])
             pct_from_low = ((curr - l) / l) * 100 if l > 0 else 50
-            
             lookback = 20 if len(close) >= 20 else len(close)
             mean_price = float(close.iloc[-lookback:].mean())
             std_price = float(close.iloc[-lookback:].std())
             
-            # FIX: Guard against DivisionByZero in Z-score for flat/dead stocks
+            # FIXED: DivisionByZero guard for dead/flat stocks
             if std_price > 0:
                 zscore = (curr - mean_price) / std_price
                 pct_deviation = ((curr - mean_price) / mean_price) * 100
             else:
-                zscore = 0.0
-                pct_deviation = 0.0
+                zscore, pct_deviation = 0.0, 0.0
 
             bb_upper = mean_price + (2 * std_price)
             bb_lower = mean_price - (2 * std_price)
             bb_position = ((curr - bb_lower) / (bb_upper - bb_lower)) * 100 if (bb_upper - bb_lower) > 0 else 50
             returns = close.pct_change().dropna()
             volatility = float(returns.std() * 100)
-            
             return {
                 'price': curr, 'sma9': sma9, 'sma5': sma5, 'daily': daily_ret, 'hourly': hourly_ret,
                 'rsi': rsi, 'macd_bullish': bool(macd_bullish), 'high': h, 'low': l,
@@ -566,26 +577,36 @@ class Analyzer:
             
             for period in periods_to_try:
                 try:
-                    stock_data = yf.download(f"{stock_symbol}.NS", period=period, interval='1d', progress=False, threads=False)
-                    if stock_data is None or stock_data.empty: continue
-                    
-                    # FIX: Handle MultiIndex for Regression datasets too
+                    # FIX: MultiIndex flattening for regression datasets
+                    stock_data = yf.download(f"{stock_symbol}.NS", period=period, 
+                                             session=custom_session, interval='1d', 
+                                             progress=False, threads=False)
                     if isinstance(stock_data.columns, pd.MultiIndex):
                         stock_data.columns = stock_data.columns.get_level_values(0)
 
-                    nifty_data = yf.download("^NSEI", period=period, interval='1d', progress=False, threads=False)
+                    if stock_data is None or stock_data.empty: continue
+                    nifty_data = yf.download("^NSEI", period=period, session=custom_session, 
+                                             interval='1d', progress=False, threads=False)
+                    if isinstance(nifty_data.columns, pd.MultiIndex):
+                        nifty_data.columns = nifty_data.columns.get_level_values(0)
+
                     if nifty_data is None or nifty_data.empty:
-                        nifty_data = yf.download("NIFTYBEES.NS", period=period, interval='1d', progress=False, threads=False)
+                        nifty_data = yf.download("NIFTYBEES.NS", period=period, 
+                                                 session=custom_session, interval='1d', 
+                                                 progress=False, threads=False)
+                        if isinstance(nifty_data.columns, pd.MultiIndex):
+                            nifty_data.columns = nifty_data.columns.get_level_values(0)
                         if nifty_data is None or nifty_data.empty:
-                            nifty_data = yf.download("RELIANCE.NS", period=period, interval='1d', progress=False, threads=False)
+                            nifty_data = yf.download("RELIANCE.NS", period=period, 
+                                                     session=custom_session, interval='1d', 
+                                                     progress=False, threads=False)
+                            if isinstance(nifty_data.columns, pd.MultiIndex):
+                                nifty_data.columns = nifty_data.columns.get_level_values(0)
                             nifty_source = "RELIANCE (proxy)"
                         else: nifty_source = "NIFTYBEES ETF"
                     else: nifty_source = "Nifty 50 Index"
                     
-                    if nifty_data is not None and not nifty_data.empty: 
-                        if isinstance(nifty_data.columns, pd.MultiIndex):
-                            nifty_data.columns = nifty_data.columns.get_level_values(0)
-                        break
+                    if nifty_data is not None and not nifty_data.empty: break
                 except Exception: continue
 
             if stock_data is None or stock_data.empty or nifty_data is None or nifty_data.empty:
@@ -608,19 +629,14 @@ class Analyzer:
             # Plot generation
             plt.style.use('dark_background')
             fig, ax = plt.subplots(figsize=(10, 6))
-            
             bg_color = '#131824'
             grid_color = '#2d3748'
-            
             fig.patch.set_facecolor(bg_color)
             ax.set_facecolor(bg_color)
-            
             ax.scatter(X*100, y*100, alpha=0.6, c='#00d9ff', edgecolors='none', s=50, label='Daily Returns', zorder=1)
-            
             x_range = np.linspace(X.min(), X.max(), 100)
             y_pred = slope * x_range + intercept
             ax.plot(x_range*100, y_pred*100, color='#9d4edd', linewidth=3, label=f'Regression Line', zorder=2)
-
             sign = '+' if intercept >= 0 else '-'
             stats_text = (
                 f"$\\bf{{Regression\\ Stats}}$\n"
@@ -628,20 +644,15 @@ class Analyzer:
                 f"• $R^2$: {r_squared:.4f}\n"
                 f"• Beta ($\\beta$): {slope:.3f}"
             )
-            
             ax.text(0.03, 0.97, stats_text, transform=ax.transAxes, fontsize=11, color='white', 
                     verticalalignment='top', bbox=dict(facecolor=bg_color, alpha=0.95, edgecolor=grid_color, boxstyle='round,pad=0.5'), zorder=3)
-            
             ax.set_title(f'{stock_symbol} vs {nifty_source} Regression Analysis', fontsize=14, color='white', pad=15)
             ax.set_xlabel(f'{nifty_source} Returns (%)', fontsize=12, color='#a0aec0')
             ax.set_ylabel(f'{stock_symbol} Returns (%)', fontsize=12, color='#a0aec0')
             ax.grid(True, linestyle='--', alpha=0.2, color=grid_color)
-            
             ax.legend(facecolor=bg_color, edgecolor=grid_color, labelcolor='white', loc='upper right')
-            
             for spine in ax.spines.values():
                 spine.set_edgecolor(grid_color)
-                
             img_buf = io.BytesIO()
             plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=100)
             img_buf.seek(0)
@@ -678,7 +689,6 @@ class Analyzer:
                 'alpha_interpret': alpha_interpret, 'trading_insight': trading_insight,
                 'plot_url': plot_url
             }
-
         except Exception as e:
             print(f"\n[FATAL ERROR] Regression failed for {stock_symbol}: {e}")
             return None
@@ -688,10 +698,8 @@ analyzer = Analyzer()
 # ===== ROUTES =====
 @app.route('/')
 def index():
-    # Get stock count for display
     stock_count = len(ALL_VALID_TICKERS)
     sector_count = len(STOCKS)
-    
     html = '''<!DOCTYPE html>
 <html>
 <head>
@@ -755,7 +763,7 @@ def index():
         .plan-item:hover { background: var(--bg-card); transform: translateX(5px); }
         .plan-label { font-weight: 700; color: var(--accent-cyan); font-family: 'Space Grotesk', sans-serif; font-size: 0.9em; }
         .plan-value { color: var(--text-primary); font-weight: 500; }
-        .back-btn { background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; padding: 12px 28px; margin-bottom: 20px; border: none; font-weight: 600; font-size: 1em; }
+        .back-btn { background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; padding: 12px 28px; margin-bottom: 20px; border: none; font-weight: 600; font-size: 1em; cursor: pointer;}
         .back-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0, 217, 255, 0.4); }
         .loading { text-align: center; color: var(--accent-cyan); font-size: 1.3em; padding: 40px; font-family: 'Space Grotesk', sans-serif; }
         .error { background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 20px; border-radius: 8px; border-left: 4px solid var(--danger); }
@@ -816,7 +824,7 @@ def index():
                 <p style="color: var(--text-secondary); margin-bottom: 20px;">Analyze how any NSE stock correlates with Nifty 50 index movements</p>
                 <input type="text" id="regression-search" placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)">
                 <div class="suggestions" id="regression-suggestions"></div>
-                <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze Regression</button>
+                <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px; cursor: pointer; border: none;">Analyze Regression</button>
             </div>
             <div id="regression-result" style="margin-top: 30px;"></div>
         </div>
@@ -846,19 +854,15 @@ def index():
                     const q = e.target.value.trim();
                     const sug = document.getElementById(suggestionId);
                     if (q.length === 0) { sug.innerHTML = ''; return; }
-                    
-                    // First show local results instantly
                     const all = Object.values(stocks).flat();
                     const qUpper = q.toUpperCase();
                     const filtered = all.filter(s => s.includes(qUpper)).slice(0, 12);
-                    
                     if (filtered.length > 0) {
                         sug.innerHTML = filtered.map(s => {
                             if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${s}</button>`;
                             else return `<button onclick="analyze('${s}')">${s}</button>`;
                         }).join('');
                     } else {
-                        // If no local match, search server for ALL stocks
                         sug.innerHTML = '<div style="color: var(--text-muted); padding: 10px;">Searching...</div>';
                         try {
                             const response = await fetch(`/search?q=${encodeURIComponent(q)}`);
@@ -951,12 +955,10 @@ def index():
                     <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">Linear Regression Analysis</div></div>
                     ${marketInfo}
                     <div class="action-banner">${data.trading_insight}</div>
-                    
                     <div class="plot-container">
                         <h3 style="color: var(--accent-purple); margin-bottom: 15px;">🔍 Visual Regression Analysis</h3>
                         <img src="data:image/png;base64,${data.plot_url}" class="plot-img" alt="Regression Plot">
                     </div>
-                    
                     <div class="regression-grid">
                         <div class="regression-metric"><div class="regression-metric-label">Beta (β)</div><div class="regression-metric-value">${data.beta.toFixed(3)}</div><div class="regression-metric-desc">${data.beta_interpret}</div></div>
                         <div class="regression-metric"><div class="regression-metric-label">R-Squared (R²)</div><div class="regression-metric-value">${(data.r_squared * 100).toFixed(1)}%</div><div class="regression-metric-desc">${data.r2_interpret}</div></div>
@@ -990,101 +992,43 @@ def index():
 
 @app.route('/search')
 def search_route():
-    """Search endpoint that searches ALL stocks, not just displayed sectors"""
     query = request.args.get('q', '').strip().upper()
     if not query or len(query) < 2:
         return jsonify({'results': []})
-    
-    # Search in all tickers
     matches = []
     for ticker in sorted(ALL_VALID_TICKERS):
         if query in ticker:
             matches.append(ticker)
-            if len(matches) >= 20:  # Limit to 20 results
-                break
-    
-    # If no ticker matches, search company names
+            if len(matches) >= 20: break
     if len(matches) == 0:
         for company_name, ticker in market.company_map.items():
             if query in company_name:
                 matches.append(ticker)
-                if len(matches) >= 20:
-                    break
-    
-    # Remove duplicates and return
+                if len(matches) >= 20: break
     return jsonify({'results': list(set(matches))[:20]})
 
 @app.route('/analyze')
 def analyze_route():
     symbol = request.args.get('symbol', '').strip()
-    if not symbol: 
-        return jsonify({'error': 'No symbol provided'})
-    
-    normalized_symbol, original = Analyzer.normalize_symbol(symbol)
-    if not normalized_symbol:
-        suggestions = []
-        symbol_upper = symbol.upper()
-        for ticker in sorted(ALL_VALID_TICKERS):
-            if symbol_upper in ticker or ticker in symbol_upper:
-                suggestions.append(ticker)
-                if len(suggestions) >= 5: 
-                    break
-        if suggestions: 
-            return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
-        else: 
-            return jsonify({'error': f'Invalid symbol "{original}". Not found in NSE database.'})
-    
+    norm_s, original = analyzer.normalize_symbol(symbol)
+    if not norm_s: return jsonify({'error': f'Invalid symbol {symbol}'})
     try:
-        result = analyzer.analyze(normalized_symbol)
-        if not result: 
-            return jsonify({'error': f'Unable to fetch data for {normalized_symbol}. Market may be closed or data unavailable.'})
+        result = analyzer.analyze(norm_s)
+        if not result: return jsonify({'error': 'Insufficient data for analysis.'})
         return jsonify(result)
     except Exception as e:
-        print(f"Error analyzing {normalized_symbol}: {e}")
-        return jsonify({'error': f'Analysis failed: {str(e)}'})
+        return jsonify({'error': f'Analysis error: {str(e)}'}), 500
 
 @app.route('/regression')
 def regression_route():
     symbol = request.args.get('symbol', '').strip()
-    if not symbol: 
-        return jsonify({'error': 'No symbol provided'})
-    
-    normalized_symbol, original = Analyzer.normalize_symbol(symbol)
-    if not normalized_symbol:
-        suggestions = []
-        symbol_upper = symbol.upper()
-        for ticker in sorted(ALL_VALID_TICKERS):
-            if symbol_upper in ticker or ticker in symbol_upper:
-                suggestions.append(ticker)
-                if len(suggestions) >= 5: 
-                    break
-        if suggestions: 
-            return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
-        else: 
-            return jsonify({'error': f'Invalid symbol "{original}". Not found in NSE database.'})
-    
+    norm_s, _ = analyzer.normalize_symbol(symbol)
     try:
-        result = analyzer.regression_analysis(normalized_symbol)
-        if not result: 
-            return jsonify({'error': f'Unable to perform regression analysis for {normalized_symbol}. Insufficient data available.'})
+        result = analyzer.regression_analysis(norm_s)
+        if not result: return jsonify({'error': 'Regression failed.'})
         return jsonify(result)
     except Exception as e:
-        print(f"Error in regression for {normalized_symbol}: {e}")
-        return jsonify({'error': f'Regression analysis failed for {normalized_symbol}: {str(e)}'})
-
-@app.route('/health')
-def health():
-    """Health check endpoint for Render"""
-    try:
-        cache_age = (time.time() - os.path.getmtime(market.CACHE_FILE)) / 3600 if os.path.exists(market.CACHE_FILE) else 999
-        return jsonify({
-            'status': 'healthy',
-            'stocks_loaded': len(ALL_VALID_TICKERS),
-            'sectors': len(STOCKS),
-            'cache_age_hours': round(cache_age, 2)
-        }), 200
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
