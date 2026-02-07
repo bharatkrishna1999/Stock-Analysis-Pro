@@ -33,6 +33,9 @@ logging.getLogger("yfinance").propagate = False
 
 app = Flask(__name__)
 
+DIVIDEND_CACHE_TTL = timedelta(hours=6)
+DIVIDEND_CACHE = {}
+
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX, but includes 500+ stocks
 
@@ -911,16 +914,44 @@ class Analyzer:
             expected_div = actual_amount * stock['dividend_yield'] / 100
             total_dividend += expected_div
             total_invested += actual_amount
-            allocation.append({
+            allocation_entry = {
                 'symbol': stock['symbol'],
-                'weight': round(w * 100, 2),
+                'weight': 0.0,
                 'shares': shares,
                 'amount': round(actual_amount, 2),
                 'price': stock['price'],
                 'dividend_yield': stock['dividend_yield'],
                 'expected_dividend': round(expected_div, 2),
                 'volatility': stock['volatility']
-            })
+            }
+            allocation.append(allocation_entry)
+
+        remaining = capital - total_invested
+        if remaining > 0 and allocation:
+            ranked = sorted(allocation, key=lambda x: x['dividend_yield'], reverse=True)
+            min_price = min(a['price'] for a in ranked if a['price'] > 0)
+            for stock in ranked:
+                if remaining < min_price:
+                    break
+                max_amount = capital * p['max_weight']
+                current_amount = stock['amount']
+                room = max_amount - current_amount
+                if room <= 0:
+                    continue
+                buyable = int(min(remaining, room) / stock['price'])
+                if buyable <= 0:
+                    continue
+                add_amount = buyable * stock['price']
+                stock['shares'] += buyable
+                stock['amount'] = round(current_amount + add_amount, 2)
+                add_div = add_amount * stock['dividend_yield'] / 100
+                stock['expected_dividend'] = round(stock['expected_dividend'] + add_div, 2)
+                total_dividend += add_div
+                total_invested += add_amount
+                remaining -= add_amount
+
+        for stock in allocation:
+            stock['weight'] = round((stock['amount'] / capital) * 100, 2)
 
         allocation.sort(key=lambda x: x['expected_dividend'], reverse=True)
         portfolio_yield = (total_dividend / total_invested * 100) if total_invested > 0 else 0
@@ -933,9 +964,7 @@ class Analyzer:
             'total_expected_dividend': round(total_dividend, 2),
             'portfolio_yield': round(portfolio_yield, 2),
             'num_stocks': len(allocation),
-            'risk_appetite': risk_appetite,
-            'stocks_scanned': n,
-            'dividend_stocks_found': len(stocks_data)
+            'risk_appetite': risk_appetite
         }
 
 analyzer = Analyzer()
@@ -1517,6 +1546,8 @@ def dividend_optimize_route():
         if not result:
             return jsonify({'error': 'Portfolio optimization failed'})
         result['all_dividend_stocks'] = stocks_data
+        result['stocks_scanned'] = len(symbols)
+        result['dividend_stocks_found'] = len(stocks_data)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'Analysis failed: {str(e)}'})
