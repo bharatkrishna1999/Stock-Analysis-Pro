@@ -10,7 +10,9 @@ Features:
 - Autocomplete for Search
 """
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response, stream_with_context
+import json
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -23,7 +25,9 @@ import io
 import base64
 import requests
 import logging
+import gc
 from scipy.optimize import minimize as scipy_minimize
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
@@ -35,6 +39,9 @@ app = Flask(__name__)
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
+DIVIDEND_MAX_RESULTS = 300
+DIVIDEND_BATCH_SIZE = 50
+DIVIDEND_MAX_WORKERS = 4
 
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX, but includes 500+ stocks
@@ -138,40 +145,183 @@ STOCKS = {
                'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS']
 }
 
-NSE_EQUITY_LIST_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 UNIVERSE_SECTOR_NAME = "All NSE"
 UNIVERSE_SOURCE = "Static list"
 
+# Persistent cache file stored next to this script so a known-good universe
+# survives process restarts (on Render this persists within a single deploy).
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+UNIVERSE_CACHE_FILE = os.path.join(_SCRIPT_DIR, ".nse_universe_cache.json")
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _extract_symbols_from_csv(text):
+    """Parse EQUITY_L.csv text and return a sorted list of symbols."""
+    df = pd.read_csv(io.StringIO(text))
+    symbols = (
+        df.get("SYMBOL", pd.Series(dtype=str))
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    return sorted({s for s in symbols if s})
+
+
+def _fetch_nsearchives():
+    """Source 1: New nsearchives subdomain (most reliable for CSV)."""
+    resp = requests.get(
+        "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+        headers={"User-Agent": _BROWSER_UA},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return _extract_symbols_from_csv(resp.text)
+
+
+def _fetch_old_archives():
+    """Source 2: Legacy archives subdomain."""
+    resp = requests.get(
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+        headers={"User-Agent": _BROWSER_UA},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return _extract_symbols_from_csv(resp.text)
+
+
+def _fetch_nse_api_indices():
+    """Source 3: NSE website JSON API (needs session cookies).
+
+    Fetches NIFTY TOTAL MARKET + NIFTY 500 and merges them for broad
+    coverage (~750 stocks).  Not the full universe but a good fallback.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _BROWSER_UA,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/",
+    })
+    # Establish session cookies
+    session.get("https://www.nseindia.com/", timeout=10)
+
+    symbols = set()
+    for index_name in ["NIFTY%20TOTAL%20MARKET", "NIFTY%20500"]:
+        try:
+            resp = session.get(
+                f"https://www.nseindia.com/api/equity-stockIndices?index={index_name}",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for item in data.get("data", []):
+                sym = item.get("symbol", "").strip()
+                if sym and sym != "NIFTY TOTAL MARKET" and sym != "NIFTY 500":
+                    symbols.add(sym)
+        except Exception:
+            continue
+    if not symbols:
+        raise RuntimeError("NSE API returned no symbols")
+    return sorted(symbols)
+
+
+def _load_universe_cache():
+    """Load cached universe from disk."""
+    try:
+        if os.path.exists(UNIVERSE_CACHE_FILE):
+            with open(UNIVERSE_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            symbols = data.get("symbols", [])
+            source = data.get("source", "disk cache")
+            if symbols:
+                print(f"  [cache] Loaded {len(symbols)} symbols from disk (source: {source})")
+                return symbols
+    except Exception as e:
+        print(f"  [cache] Failed to load cache: {e}")
+    return []
+
+
+def _save_universe_cache(symbols, source):
+    """Persist a known-good universe to disk."""
+    try:
+        with open(UNIVERSE_CACHE_FILE, "w") as f:
+            json.dump({"symbols": symbols, "source": source,
+                        "saved_at": datetime.utcnow().isoformat()}, f)
+        print(f"  [cache] Saved {len(symbols)} symbols to disk (source: {source})")
+    except Exception as e:
+        print(f"  [cache] Failed to save cache: {e}")
+
 
 def fetch_nse_universe():
-    """Fetch full NSE equity universe via NSE equity list API."""
-    try:
-        df = pd.read_csv(NSE_EQUITY_LIST_URL)
-        symbols = (
-            df.get("SYMBOL", pd.Series(dtype=str))
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .unique()
-            .tolist()
-        )
-        return sorted({s for s in symbols if s})
-    except Exception as e:
-        print(f"⚠️ Unable to fetch NSE universe from API: {e}")
-        return []
+    """Fetch the full NSE equity universe with multiple redundant sources.
+
+    Tries four sources in order, then merges with the last known-good cache
+    so that the list never shrinks (stocks never silently disappear).
+
+    Sources tried:
+      1. nsearchives.nseindia.com  (CSV, new subdomain)
+      2. archives.nseindia.com     (CSV, legacy subdomain)
+      3. NSE website JSON API      (session-cookie gated)
+      4. Disk cache                (last successful fetch)
+    """
+    sources = [
+        ("NSE Archives (new)", _fetch_nsearchives),
+        ("NSE Archives (legacy)", _fetch_old_archives),
+        ("NSE Website API", _fetch_nse_api_indices),
+    ]
+
+    fetched_symbols = []
+    fetched_source = None
+
+    for name, fetcher in sources:
+        try:
+            print(f"  [universe] Trying {name}...")
+            result = fetcher()
+            if result and len(result) >= 100:  # sanity: expect at least 100 stocks
+                fetched_symbols = result
+                fetched_source = name
+                print(f"  [universe] {name} returned {len(result)} symbols ✓")
+                break
+            else:
+                print(f"  [universe] {name} returned only {len(result)} symbols, skipping")
+        except Exception as e:
+            print(f"  [universe] {name} failed: {e}")
+
+    # Load previously cached list
+    cached_symbols = _load_universe_cache()
+
+    # Merge: take the union so the list never shrinks
+    if fetched_symbols:
+        merged = sorted(set(fetched_symbols) | set(cached_symbols))
+        _save_universe_cache(merged, fetched_source)
+        return merged, fetched_source
+    elif cached_symbols:
+        return cached_symbols, "Disk cache (all APIs unavailable)"
+    else:
+        return [], None
 
 
 def add_universe_sector(stocks_dict):
-    """Attach full NSE universe (API-driven) to stock sectors."""
+    """Attach full NSE universe (API-driven with fallbacks) to stock sectors."""
     global UNIVERSE_SOURCE
-    fallback = sorted({t for sector in stocks_dict.values() for t in sector})
-    api_symbols = fetch_nse_universe()
+    static_fallback = sorted({t for sector in stocks_dict.values() for t in sector})
+
+    api_symbols, source = fetch_nse_universe()
+
     if api_symbols:
-        UNIVERSE_SOURCE = "NSE Equity List API"
-        stocks_dict[UNIVERSE_SECTOR_NAME] = api_symbols
+        # Also merge with the static list so hand-curated stocks are never lost
+        merged = sorted(set(api_symbols) | set(static_fallback))
+        UNIVERSE_SOURCE = f"{source} ({len(api_symbols)} API + {len(static_fallback)} static = {len(merged)} merged)"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = merged
     else:
-        UNIVERSE_SOURCE = "Static list (API unavailable)"
-        stocks_dict[UNIVERSE_SECTOR_NAME] = fallback
+        UNIVERSE_SOURCE = "Static list (all APIs unavailable)"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = static_fallback
 
 
 add_universe_sector(STOCKS)
@@ -794,11 +944,13 @@ class Analyzer:
             traceback.print_exc()
             return None
 
-    def fetch_dividend_data(self, symbols):
+    def fetch_dividend_data(self, symbols, limit_results=True):
         """Fetch dividend yield, current price, and annualized volatility for given symbols."""
         results = []
+        dividend_found = 0
+
         if not symbols:
-            return results
+            return results, dividend_found
 
         def _batched(iterable, size):
             for idx in range(0, len(iterable), size):
@@ -842,6 +994,9 @@ class Analyzer:
                     dividend_yield = (annual_dividend / current_price) * 100
                     returns = close_series.pct_change().dropna()
                     volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+
+                    dividend_found += 1
+
                     results.append({
                         'symbol': symbol,
                         'price': round(current_price, 2),
@@ -852,7 +1007,11 @@ class Analyzer:
                 except Exception:
                     continue
 
-        return sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
+        results = sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
+        if limit_results and len(results) > DIVIDEND_MAX_RESULTS:
+            results = results[:DIVIDEND_MAX_RESULTS]
+
+        return results, dividend_found
 
     def optimize_dividend_portfolio(self, stocks_data, capital, risk_appetite):
         """Compute optimal portfolio allocation to maximize dividend income."""
@@ -1330,6 +1489,36 @@ def index():
         function toggleAllSectors(checked) {
             document.querySelectorAll('.sector-cb').forEach(cb => cb.checked = checked);
         }
+        let dividendStream = null;
+        let liveDividendEntries = [];
+        let liveDividendMax = 0;
+        let liveRenderTimer = null;
+        function renderLiveDividendRows() {
+            const tbody = document.getElementById('live-dividend-body');
+            if (!tbody) return;
+            const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
+            tbody.innerHTML = liveDividendEntries.map((s, idx) => `
+                <tr>
+                    <td>${idx + 1}. ${s.symbol}</td>
+                    <td style="text-align: right;">${fmt(s.price)}</td>
+                    <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
+                    <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
+                    <td>${s.volatility}%</td>
+                </tr>`).join('');
+        }
+        function scheduleLiveDividendRender() {
+            if (liveRenderTimer) return;
+            liveRenderTimer = setTimeout(() => {
+                liveRenderTimer = null;
+                renderLiveDividendRows();
+            }, 250);
+        }
+        function updateLiveStatus(scanned, dividendFound) {
+            const scannedEl = document.getElementById('live-scan-count');
+            const foundEl = document.getElementById('live-dividend-count');
+            if (scannedEl) scannedEl.textContent = scanned;
+            if (foundEl) foundEl.textContent = dividendFound;
+        }
         function analyzeDividends() {
             const capital = parseFloat(document.getElementById('capital-input').value);
             if (!capital || capital <= 0) { alert('Please enter a valid capital amount'); return; }
@@ -1343,18 +1532,75 @@ def index():
                 sectors = Array.from(checked).map(c => c.value).join(',');
             }
             const resultsDiv = document.getElementById('dividend-results');
-            resultsDiv.innerHTML = `<div class="loading" style="padding: 60px 20px;">
-                <div style="font-size: 1.5em; margin-bottom: 15px;">Scanning stocks for dividend data...</div>
-                <div style="color: var(--text-secondary); font-size: 0.9em;">Fetching dividend history, current prices, and volatility for each stock.</div>
-                <div style="color: var(--text-muted); font-size: 0.8em; margin-top: 10px;">This may take 30-120 seconds for large universes. Please wait.</div>
-            </div>`;
-            fetch(`/dividend-optimize?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) resultsDiv.innerHTML = `<div class="error">${data.error}</div>`;
-                    else showDividendResults(data, capital);
-                })
-                .catch(e => resultsDiv.innerHTML = `<div class="error">Request failed: ${e.message}. Try a smaller universe or retry.</div>`);
+            resultsDiv.innerHTML = `
+                <div class="result-card" style="margin-top: 30px;">
+                    <div class="header">
+                        <h2>Live Dividend Scan</h2>
+                        <div class="signal-badge" style="background: var(--accent-cyan); color: white;">LIVE</div>
+                    </div>
+                    <div class="action-banner">Scanning <span id="live-scan-count">0</span> / <span id="live-scan-total">0</span> stocks | <span id="live-dividend-count">0</span> dividend payers found</div>
+                    <div style="color: var(--text-secondary); font-size: 0.9em; margin-top: 8px;">New dividend yielders appear in the table below and move up if higher yield is found.</div>
+                    <h3 style="color: var(--accent-purple); margin: 20px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">Top Dividend Payers (Live)</h3>
+                    <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <table class="dividend-table">
+                            <thead><tr>
+                                <th>Stock</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                            </tr></thead>
+                            <tbody id="live-dividend-body"></tbody>
+                        </table>
+                    </div>
+                    <div style="color: var(--text-muted); font-size: 0.8em; margin-top: 10px;">This may take 30-120 seconds for large universes. Please wait.</div>
+                </div>`;
+
+            if (dividendStream) dividendStream.close();
+            liveDividendEntries = [];
+            liveDividendMax = 0;
+            document.getElementById('live-scan-total').textContent = '0';
+
+            const streamUrl = `/dividend-optimize-stream?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`;
+            dividendStream = new EventSource(streamUrl);
+            dividendStream.onmessage = (event) => {
+                const payload = JSON.parse(event.data);
+                if (payload.type === 'meta') {
+                    liveDividendMax = payload.max_results || 0;
+                    document.getElementById('live-scan-total').textContent = payload.total_scanned || 0;
+                    return;
+                }
+                if (payload.type === 'stock') {
+                    updateLiveStatus(payload.scanned, payload.dividend_found);
+                    liveDividendEntries.push(payload.entry);
+                    liveDividendEntries.sort((a, b) => b.dividend_yield - a.dividend_yield);
+                    if (liveDividendMax && liveDividendEntries.length > liveDividendMax) {
+                        liveDividendEntries = liveDividendEntries.slice(0, liveDividendMax);
+                    }
+                    scheduleLiveDividendRender();
+                    return;
+                }
+                if (payload.type === 'progress') {
+                    updateLiveStatus(payload.scanned, payload.dividend_found);
+                    return;
+                }
+                if (payload.type === 'error') {
+                    dividendStream.close();
+                    resultsDiv.innerHTML = `<div class="error">${payload.message}</div>`;
+                    return;
+                }
+                if (payload.type === 'done') {
+                    dividendStream.close();
+                    showDividendResults(payload.result, capital);
+                }
+            };
+            dividendStream.onerror = () => {
+                dividendStream.close();
+                resultsDiv.innerHTML = `<div class="error">Live stream failed. Retrying with standard request...</div>`;
+                fetch(`/dividend-optimize?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.error) resultsDiv.innerHTML = `<div class="error">${data.error}</div>`;
+                        else showDividendResults(data, capital);
+                    })
+                    .catch(e => resultsDiv.innerHTML = `<div class="error">Request failed: ${e.message}. Try a smaller universe or retry.</div>`);
+            };
         }
         function showDividendResults(data, capital) {
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
@@ -1414,7 +1660,8 @@ def index():
                             <tbody>${allocRows}</tbody>
                         </table>
                     </div>
-                    <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} found)</h3>
+                    <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
+                    ${data.dividend_results_truncated ? `<div style="margin-bottom: 10px; color: var(--warning); font-size: 0.85em;">Showing top ${data.all_dividend_stocks.length} dividend payers to reduce memory usage. ${data.dividend_stocks_found} total dividend-paying stocks found.</div>` : ''}
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
@@ -1506,8 +1753,13 @@ def dividend_scan_route():
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
-        results = analyzer.fetch_dividend_data(symbols)
-        return jsonify({'stocks': results, 'total_scanned': len(symbols), 'dividend_stocks': len(results)})
+        results, dividend_found = analyzer.fetch_dividend_data(symbols)
+        return jsonify({
+            'stocks': results,
+            'total_scanned': len(symbols),
+            'dividend_stocks': dividend_found,
+            'truncated': dividend_found > len(results)
+        })
     except Exception as e:
         return jsonify({'error': f'Scan failed: {str(e)}'})
 
@@ -1539,7 +1791,7 @@ def dividend_optimize_route():
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
-        stocks_data = analyzer.fetch_dividend_data(symbols)
+        stocks_data, dividend_found = analyzer.fetch_dividend_data(symbols)
         if not stocks_data:
             return jsonify({'error': 'No dividend-paying stocks found in the selected universe'})
         result = analyzer.optimize_dividend_portfolio(stocks_data, capital, risk)
@@ -1551,6 +1803,181 @@ def dividend_optimize_route():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': f'Analysis failed: {str(e)}'})
+
+@app.route('/dividend-optimize-stream')
+def dividend_optimize_stream_route():
+    """Stream dividend scan results while computing the optimized portfolio."""
+    try:
+        capital = float(request.args.get('capital', 0))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid capital amount'})
+    risk = request.args.get('risk', 'moderate')
+    sectors = request.args.get('sectors', 'all')
+    if capital <= 0:
+        return jsonify({'error': 'Please enter a valid capital amount'})
+    if risk not in ('conservative', 'moderate', 'aggressive'):
+        risk = 'moderate'
+    if sectors == 'all':
+        symbols = list(ALL_VALID_TICKERS)
+    else:
+        sector_list = [s.strip() for s in sectors.split(',')]
+        if UNIVERSE_SECTOR_NAME in sector_list:
+            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+        else:
+            symbols = []
+            for sector in sector_list:
+                if sector in STOCKS:
+                    symbols.extend(STOCKS[sector])
+            symbols = list(set(symbols))
+    if not symbols:
+        return jsonify({'error': 'No valid sectors selected'})
+
+    def generate():
+        try:
+            now = datetime.utcnow()
+            scanned = 0
+            dividend_found = 0
+            results = []
+            max_results = DIVIDEND_MAX_RESULTS
+            yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
+
+            # Serve cached entries first
+            cached_symbols = set()
+            for symbol in symbols:
+                cached = DIVIDEND_CACHE.get(symbol)
+                if cached and (now - cached['timestamp']) <= DIVIDEND_CACHE_TTL:
+                    entry = cached['data']
+                    results.append(entry)
+                    cached_symbols.add(symbol)
+                    scanned += 1
+                    dividend_found += 1
+                    payload = {
+                        'type': 'stock',
+                        'entry': entry,
+                        'scanned': scanned,
+                        'dividend_found': dividend_found
+                    }
+                    yield f"data: {json.dumps(payload)}\n\n"
+
+            symbols_to_fetch = [s for s in symbols if s not in cached_symbols]
+
+            def _batched(iterable, size):
+                for idx in range(0, len(iterable), size):
+                    yield iterable[idx:idx + size]
+
+            # Sequential batch processing -- one yf.download at a time.
+            # yfinance already parallelises internally (threads=True), so
+            # stacking concurrent downloads overwhelms Yahoo and most
+            # batches silently return empty DataFrames.
+            for batch in _batched(symbols_to_fetch, 75):
+                tickers = [f"{s}.NS" for s in batch]
+                try:
+                    data = yf.download(
+                        tickers=tickers,
+                        period='1y',
+                        interval='1d',
+                        group_by='column',
+                        actions=True,
+                        auto_adjust=False,
+                        progress=False,
+                        threads=True
+                    )
+                except Exception:
+                    data = None
+
+                for symbol in batch:
+                    scanned += 1
+                    try:
+                        if data is None or data.empty:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+                        ticker_symbol = f"{symbol}.NS"
+                        if isinstance(data.columns, pd.MultiIndex):
+                            close_series = data['Close'][ticker_symbol].dropna()
+                            dividends = data['Dividends'][ticker_symbol].dropna()
+                        else:
+                            close_series = data['Close'].dropna()
+                            dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                        if close_series.empty or len(close_series) < 10:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+                        current_price = float(close_series.iloc[-1])
+                        if current_price <= 0:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+                        annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                        if annual_dividend <= 0:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+                        dividend_yield = (annual_dividend / current_price) * 100
+                        returns = close_series.pct_change().dropna()
+                        volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+                        entry = {
+                            'symbol': symbol,
+                            'price': round(current_price, 2),
+                            'annual_dividend': round(annual_dividend, 2),
+                            'dividend_yield': round(dividend_yield, 2),
+                            'volatility': round(volatility, 2)
+                        }
+                        dividend_found += 1
+                        results.append(entry)
+                        DIVIDEND_CACHE[symbol] = {
+                            'timestamp': now,
+                            'data': entry
+                        }
+                        payload = {
+                            'type': 'stock',
+                            'entry': entry,
+                            'scanned': scanned,
+                            'dividend_found': dividend_found
+                        }
+                        yield f"data: {json.dumps(payload)}\n\n"
+                    except Exception:
+                        payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                        yield f"data: {json.dumps(payload)}\n\n"
+                        continue
+
+                # Free batch memory
+                del data
+                gc.collect()
+
+            if not results:
+                payload = {'type': 'error', 'message': 'No dividend-paying stocks found in the selected universe'}
+                yield f"data: {json.dumps(payload)}\n\n"
+                return
+
+            result = analyzer.optimize_dividend_portfolio(results, capital, risk)
+            if not result:
+                payload = {'type': 'error', 'message': 'Portfolio optimization failed'}
+                yield f"data: {json.dumps(payload)}\n\n"
+                return
+
+            display_stocks = sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
+            truncated = False
+            if len(display_stocks) > max_results:
+                display_stocks = display_stocks[:max_results]
+                truncated = True
+            result['all_dividend_stocks'] = display_stocks
+            result['stocks_scanned'] = len(symbols)
+            result['dividend_stocks_found'] = dividend_found
+            result['dividend_results_truncated'] = truncated
+
+            payload = {
+                'type': 'done',
+                'scanned': len(symbols),
+                'dividend_found': dividend_found,
+                'result': result
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
+        except Exception as e:
+            payload = {'type': 'error', 'message': f'Analysis failed: {str(e)}'}
+            yield f"data: {json.dumps(payload)}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 @app.route('/duplicates')
 def duplicates_route():
