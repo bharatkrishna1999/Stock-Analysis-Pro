@@ -132,6 +132,44 @@ STOCKS = {
                'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS']
 }
 
+NSE_EQUITY_LIST_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+UNIVERSE_SECTOR_NAME = "All NSE"
+UNIVERSE_SOURCE = "Static list"
+
+
+def fetch_nse_universe():
+    """Fetch full NSE equity universe via NSE equity list API."""
+    try:
+        df = pd.read_csv(NSE_EQUITY_LIST_URL)
+        symbols = (
+            df.get("SYMBOL", pd.Series(dtype=str))
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+        )
+        return sorted({s for s in symbols if s})
+    except Exception as e:
+        print(f"⚠️ Unable to fetch NSE universe from API: {e}")
+        return []
+
+
+def add_universe_sector(stocks_dict):
+    """Attach full NSE universe (API-driven) to stock sectors."""
+    global UNIVERSE_SOURCE
+    fallback = sorted({t for sector in stocks_dict.values() for t in sector})
+    api_symbols = fetch_nse_universe()
+    if api_symbols:
+        UNIVERSE_SOURCE = "NSE Equity List API"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = api_symbols
+    else:
+        UNIVERSE_SOURCE = "Static list (API unavailable)"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = fallback
+
+
+add_universe_sector(STOCKS)
+
 # Enhanced company name mapping with MANY more variations
 COMPANY_TO_TICKER = {
     # IT Sector
@@ -236,7 +274,7 @@ COMPANY_TO_TICKER = {
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
 }
 
-def deduplicate_stocks(stocks_dict):
+def deduplicate_stocks(stocks_dict, universe_sector=UNIVERSE_SECTOR_NAME):
     """
     Remove duplicate stock entries across sectors.
 
@@ -245,6 +283,7 @@ def deduplicate_stocks(stocks_dict):
       sector it appears in).
     - Index/collection sectors ('Nifty 50', 'Nifty Next 50', 'Conglomerate',
       'Others') keep only stocks not already placed elsewhere.
+    - The universe sector keeps the full list for "all stocks" scans.
     - Within each sector list, duplicates are removed while preserving order.
     """
     index_sectors = {'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
@@ -252,9 +291,12 @@ def deduplicate_stocks(stocks_dict):
     seen_globally = set()
     cleaned = {}
 
+    if universe_sector in stocks_dict:
+        cleaned[universe_sector] = sorted(set(stocks_dict[universe_sector]))
+
     # Pass 1: Process non-index sectors first (primary assignment)
     for sector, tickers in stocks_dict.items():
-        if sector in index_sectors:
+        if sector in index_sectors or sector == universe_sector:
             continue
         unique_in_sector = []
         seen_in_sector = set()
@@ -289,7 +331,10 @@ ALL_VALID_TICKERS = set()
 for sector_stocks in STOCKS.values():
     ALL_VALID_TICKERS.update(sector_stocks)
 
-print(f"✅ Loaded {len(ALL_VALID_TICKERS)} unique stocks across {len(STOCKS)} sectors (duplicates removed)")
+print(
+    f"✅ Loaded {len(ALL_VALID_TICKERS)} unique stocks across {len(STOCKS)} sectors "
+    f"(duplicates removed). Universe source: {UNIVERSE_SOURCE}"
+)
 
 # ===== REST OF CODE REMAINS IDENTICAL =====
 
@@ -988,6 +1033,9 @@ def index():
             <h1>📊 Stock Analysis Pro</h1>
             <p>Advanced Trading Insights with AI-Powered Analysis</p>
             <div class="stock-count">🚀 Now analyzing ''' + str(len(ALL_VALID_TICKERS)) + '''+ NSE stocks across ''' + str(len(STOCKS)) + ''' sectors</div>
+            <div style="margin-top: 8px; color: var(--text-muted); font-size: 0.85em;">
+                Universe source: ''' + UNIVERSE_SOURCE + '''. Market data requests are subject to API throttling.
+            </div>
         </header>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
@@ -1454,6 +1502,7 @@ def duplicates_route():
     return jsonify({
         'total_unique': len(ALL_VALID_TICKERS),
         'total_with_dups': len(all_tickers),
+        'universe_source': UNIVERSE_SOURCE,
         'sectors': {name: len(stocks) for name, stocks in STOCKS.items()},
         'remaining_duplicates': dups,
     })
