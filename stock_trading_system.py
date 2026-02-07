@@ -21,12 +21,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 import io
 import base64
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
+import logging
 from scipy.optimize import minimize as scipy_minimize
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
 warnings.filterwarnings('ignore')
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+logging.getLogger("yfinance").propagate = False
 
 app = Flask(__name__)
 
@@ -785,40 +788,60 @@ class Analyzer:
     def fetch_dividend_data(self, symbols):
         """Fetch dividend yield, current price, and annualized volatility for given symbols."""
         results = []
+        if not symbols:
+            return results
 
-        def _fetch_single(symbol):
+        def _batched(iterable, size):
+            for idx in range(0, len(iterable), size):
+                yield iterable[idx:idx + size]
+
+        for batch in _batched(symbols, 75):
+            tickers = [f"{symbol}.NS" for symbol in batch]
             try:
-                ticker = yf.Ticker(f"{symbol}.NS")
-                hist = ticker.history(period='1y')
-                if hist is None or hist.empty or len(hist) < 10:
-                    return None
-                current_price = float(hist['Close'].iloc[-1])
-                if current_price <= 0:
-                    return None
-                annual_dividend = 0.0
-                if 'Dividends' in hist.columns:
-                    annual_dividend = float(hist['Dividends'].sum())
-                if annual_dividend <= 0:
-                    return None
-                dividend_yield = (annual_dividend / current_price) * 100
-                returns = hist['Close'].pct_change().dropna()
-                volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
-                return {
-                    'symbol': symbol,
-                    'price': round(current_price, 2),
-                    'annual_dividend': round(annual_dividend, 2),
-                    'dividend_yield': round(dividend_yield, 2),
-                    'volatility': round(volatility, 2)
-                }
+                data = yf.download(
+                    tickers=tickers,
+                    period='1y',
+                    interval='1d',
+                    group_by='column',
+                    actions=True,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=True
+                )
             except Exception:
-                return None
+                data = None
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            futures = {executor.submit(_fetch_single, s): s for s in symbols}
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    results.append(result)
+            for symbol in batch:
+                try:
+                    if data is None or data.empty:
+                        continue
+                    ticker_symbol = f"{symbol}.NS"
+                    if isinstance(data.columns, pd.MultiIndex):
+                        close_series = data['Close'][ticker_symbol].dropna()
+                        dividends = data['Dividends'][ticker_symbol].dropna()
+                    else:
+                        close_series = data['Close'].dropna()
+                        dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                    if close_series.empty or len(close_series) < 10:
+                        continue
+                    current_price = float(close_series.iloc[-1])
+                    if current_price <= 0:
+                        continue
+                    annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                    if annual_dividend <= 0:
+                        continue
+                    dividend_yield = (annual_dividend / current_price) * 100
+                    returns = close_series.pct_change().dropna()
+                    volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+                    results.append({
+                        'symbol': symbol,
+                        'price': round(current_price, 2),
+                        'annual_dividend': round(annual_dividend, 2),
+                        'dividend_yield': round(dividend_yield, 2),
+                        'volatility': round(volatility, 2)
+                    })
+                except Exception:
+                    continue
 
         return sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
 
@@ -1437,11 +1460,14 @@ def dividend_scan_route():
         symbols = list(ALL_VALID_TICKERS)
     else:
         sector_list = [s.strip() for s in sectors.split(',')]
-        symbols = []
-        for sector in sector_list:
-            if sector in STOCKS:
-                symbols.extend(STOCKS[sector])
-        symbols = list(set(symbols))
+        if UNIVERSE_SECTOR_NAME in sector_list:
+            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+        else:
+            symbols = []
+            for sector in sector_list:
+                if sector in STOCKS:
+                    symbols.extend(STOCKS[sector])
+            symbols = list(set(symbols))
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
@@ -1467,11 +1493,14 @@ def dividend_optimize_route():
         symbols = list(ALL_VALID_TICKERS)
     else:
         sector_list = [s.strip() for s in sectors.split(',')]
-        symbols = []
-        for sector in sector_list:
-            if sector in STOCKS:
-                symbols.extend(STOCKS[sector])
-        symbols = list(set(symbols))
+        if UNIVERSE_SECTOR_NAME in sector_list:
+            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+        else:
+            symbols = []
+            for sector in sector_list:
+                if sector in STOCKS:
+                    symbols.extend(STOCKS[sector])
+            symbols = list(set(symbols))
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
