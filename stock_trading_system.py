@@ -21,6 +21,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 import io
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from scipy.optimize import minimize as scipy_minimize
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
@@ -735,6 +737,133 @@ class Analyzer:
             traceback.print_exc()
             return None
 
+    def fetch_dividend_data(self, symbols):
+        """Fetch dividend yield, current price, and annualized volatility for given symbols."""
+        results = []
+
+        def _fetch_single(symbol):
+            try:
+                ticker = yf.Ticker(f"{symbol}.NS")
+                hist = ticker.history(period='1y')
+                if hist is None or hist.empty or len(hist) < 10:
+                    return None
+                current_price = float(hist['Close'].iloc[-1])
+                if current_price <= 0:
+                    return None
+                annual_dividend = 0.0
+                if 'Dividends' in hist.columns:
+                    annual_dividend = float(hist['Dividends'].sum())
+                if annual_dividend <= 0:
+                    return None
+                dividend_yield = (annual_dividend / current_price) * 100
+                returns = hist['Close'].pct_change().dropna()
+                volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+                return {
+                    'symbol': symbol,
+                    'price': round(current_price, 2),
+                    'annual_dividend': round(annual_dividend, 2),
+                    'dividend_yield': round(dividend_yield, 2),
+                    'volatility': round(volatility, 2)
+                }
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = {executor.submit(_fetch_single, s): s for s in symbols}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    results.append(result)
+
+        return sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
+
+    def optimize_dividend_portfolio(self, stocks_data, capital, risk_appetite):
+        """Compute optimal portfolio allocation to maximize dividend income."""
+        if not stocks_data or capital <= 0:
+            return None
+
+        n = len(stocks_data)
+        yields_arr = np.array([s['dividend_yield'] for s in stocks_data])
+        vols_arr = np.array([s['volatility'] for s in stocks_data])
+
+        params = {
+            'conservative': {'max_weight': 0.08, 'vol_penalty': 0.15, 'min_yield': 1.0},
+            'moderate':     {'max_weight': 0.15, 'vol_penalty': 0.05, 'min_yield': 0.5},
+            'aggressive':   {'max_weight': 0.30, 'vol_penalty': 0.01, 'min_yield': 0.0}
+        }
+        p = params.get(risk_appetite, params['moderate'])
+
+        valid = [i for i in range(n) if yields_arr[i] >= p['min_yield']]
+        if len(valid) < 3:
+            valid = list(range(min(n, 10)))
+
+        m = len(valid)
+        v_yields = yields_arr[valid]
+        v_vols = vols_arr[valid]
+        v_stocks = [stocks_data[i] for i in valid]
+
+        def neg_objective(w):
+            port_yield = np.dot(w, v_yields)
+            port_vol = np.sqrt(np.sum((w ** 2) * (v_vols ** 2)))
+            return -(port_yield - p['vol_penalty'] * port_vol)
+
+        constraints = [{'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}]
+        bounds = [(0, p['max_weight']) for _ in range(m)]
+        w0 = np.ones(m) / m
+
+        result = scipy_minimize(neg_objective, w0, method='SLSQP', bounds=bounds,
+                                constraints=constraints, options={'maxiter': 1000, 'ftol': 1e-10})
+
+        if result.success:
+            weights = result.x
+        else:
+            weights = v_yields / v_yields.sum()
+            weights = np.minimum(weights, p['max_weight'])
+            weights = weights / weights.sum()
+
+        allocation = []
+        total_dividend = 0
+        total_invested = 0
+
+        for i, w in enumerate(weights):
+            if w < 0.005:
+                continue
+            stock = v_stocks[i]
+            target_amount = capital * w
+            shares = int(target_amount / stock['price']) if stock['price'] > 0 else 0
+            if shares == 0:
+                continue
+            actual_amount = shares * stock['price']
+            expected_div = actual_amount * stock['dividend_yield'] / 100
+            total_dividend += expected_div
+            total_invested += actual_amount
+            allocation.append({
+                'symbol': stock['symbol'],
+                'weight': round(w * 100, 2),
+                'shares': shares,
+                'amount': round(actual_amount, 2),
+                'price': stock['price'],
+                'dividend_yield': stock['dividend_yield'],
+                'expected_dividend': round(expected_div, 2),
+                'volatility': stock['volatility']
+            })
+
+        allocation.sort(key=lambda x: x['expected_dividend'], reverse=True)
+        portfolio_yield = (total_dividend / total_invested * 100) if total_invested > 0 else 0
+
+        return {
+            'allocation': allocation,
+            'total_invested': round(total_invested, 2),
+            'capital': capital,
+            'unallocated': round(capital - total_invested, 2),
+            'total_expected_dividend': round(total_dividend, 2),
+            'portfolio_yield': round(portfolio_yield, 2),
+            'num_stocks': len(allocation),
+            'risk_appetite': risk_appetite,
+            'stocks_scanned': n,
+            'dividend_stocks_found': len(stocks_data)
+        }
+
 analyzer = Analyzer()
 
 # ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
@@ -818,6 +947,28 @@ def index():
         .plot-container { background: var(--bg-card-hover); padding: 20px; border-radius: 12px; margin-bottom: 30px; border: 1px solid var(--border-color); text-align: center; }
         .plot-img { max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
         
+        .scope-btn, .risk-btn { padding: 10px 18px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.9em; font-weight: 500; transition: all 0.2s; }
+        .scope-btn.active, .risk-btn.active { background: var(--accent-cyan); color: var(--bg-dark); border-color: var(--accent-cyan); }
+        .scope-btn:hover, .risk-btn:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+        .scope-btn.active:hover, .risk-btn.active:hover { color: var(--bg-dark); }
+        .btn-group { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+        .sector-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 10px; max-height: 300px; overflow-y: auto; padding-right: 5px; }
+        .sector-grid label { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 6px 8px; border-radius: 4px; color: var(--text-secondary); font-size: 0.85em; transition: background 0.2s; }
+        .sector-grid label:hover { background: var(--bg-card-hover); }
+        .dividend-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+        .dividend-table th { padding: 12px 10px; text-align: left; border-bottom: 2px solid var(--border-color); color: var(--accent-cyan); font-weight: 600; text-transform: uppercase; font-size: 0.8em; letter-spacing: 0.5px; position: sticky; top: 0; background: var(--bg-card); }
+        .dividend-table td { padding: 10px; border-bottom: 1px solid var(--border-color); }
+        .dividend-table tr:hover { background: var(--bg-card-hover); }
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 25px 0; }
+        .summary-card { background: var(--bg-card-hover); padding: 22px; border-radius: 10px; text-align: center; border: 1px solid var(--border-color); transition: all 0.3s; }
+        .summary-card:hover { border-color: var(--accent-cyan); transform: translateY(-3px); }
+        .summary-value { font-size: 1.8em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
+        .summary-label { font-size: 0.85em; color: var(--text-secondary); margin-top: 8px; }
+        .optimize-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--accent-green), #059669); color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
+        .optimize-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(6, 255, 165, 0.3); }
+        .risk-desc { margin-top: 10px; padding: 12px; background: var(--bg-dark); border-radius: 6px; color: var(--text-muted); font-size: 0.85em; line-height: 1.5; border-left: 3px solid var(--accent-purple); }
+        #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; }
+        #capital-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(6, 255, 165, 0.1); }
         @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         .result-card { animation: slideIn 0.5s ease; }
         @media (max-width: 768px) {
@@ -841,6 +992,7 @@ def index():
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
             <button class="tab" onclick="switchTab('regression', event)">Regression vs Nifty</button>
+            <button class="tab" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
         </div>
         <div id="analysis-tab" class="tab-content active">
             <div id="search-view">
@@ -870,6 +1022,46 @@ def index():
                 <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze Regression</button>
             </div>
             <div id="regression-result" style="margin-top: 30px;"></div>
+        </div>
+        <div id="dividend-tab" class="tab-content">
+            <div class="grid">
+                <div class="card">
+                    <h3>Stock Universe</h3>
+                    <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9em;">Select which stocks to scan for dividend yields</p>
+                    <div class="btn-group">
+                        <button class="scope-btn active" onclick="setScope('all', this)">All Stocks</button>
+                        <button class="scope-btn" onclick="setScope('nifty50', this)">Nifty 50</button>
+                        <button class="scope-btn" onclick="setScope('largecap', this)">Large Cap 100</button>
+                        <button class="scope-btn" onclick="setScope('custom', this)">Custom Sectors</button>
+                    </div>
+                    <div id="sector-checkboxes" style="display:none; margin-top: 15px;">
+                        <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
+                            <label style="cursor: pointer; color: var(--accent-cyan); font-weight: 600; font-size: 0.9em;">
+                                <input type="checkbox" id="select-all-sectors" onchange="toggleAllSectors(this.checked)"> Select All Sectors
+                            </label>
+                        </div>
+                        <div id="sector-grid" class="sector-grid"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Portfolio Configuration</h3>
+                    <div style="margin-bottom: 22px;">
+                        <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Investment Capital (INR)</label>
+                        <input type="number" id="capital-input" placeholder="e.g. 1000000" min="1000">
+                    </div>
+                    <div style="margin-bottom: 22px;">
+                        <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Risk Appetite</label>
+                        <div class="btn-group">
+                            <button class="risk-btn" onclick="setRisk('conservative', this)">Conservative</button>
+                            <button class="risk-btn active" onclick="setRisk('moderate', this)">Moderate</button>
+                            <button class="risk-btn" onclick="setRisk('aggressive', this)">Aggressive</button>
+                        </div>
+                        <div class="risk-desc" id="risk-desc">Max 15% per stock. Balanced yield vs risk tradeoff. Good diversification across dividend payers.</div>
+                    </div>
+                    <button class="optimize-btn" onclick="analyzeDividends()">Scan Dividends & Optimize Portfolio</button>
+                </div>
+            </div>
+            <div id="dividend-results"></div>
         </div>
     </div>
     <script>
@@ -1010,7 +1202,134 @@ def index():
             document.getElementById('search').value = '';
             document.getElementById('suggestions').innerHTML = '';
         }
-        window.addEventListener('DOMContentLoaded', init);
+        let dividendScope = 'all';
+        let dividendRisk = 'moderate';
+        function setScope(scope, btn) {
+            dividendScope = scope;
+            document.querySelectorAll('.scope-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
+        }
+        function setRisk(risk, btn) {
+            dividendRisk = risk;
+            document.querySelectorAll('.risk-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const descs = {
+                conservative: 'Max 8% per stock. High penalty for volatility. Only stocks with yield above 1%. Prefers stable, consistent dividend payers.',
+                moderate: 'Max 15% per stock. Balanced yield vs risk tradeoff. Good diversification across dividend payers.',
+                aggressive: 'Max 30% per stock. Pure yield maximization with minimal volatility penalty. Higher concentration allowed.'
+            };
+            document.getElementById('risk-desc').innerText = descs[risk];
+        }
+        function toggleAllSectors(checked) {
+            document.querySelectorAll('.sector-cb').forEach(cb => cb.checked = checked);
+        }
+        function analyzeDividends() {
+            const capital = parseFloat(document.getElementById('capital-input').value);
+            if (!capital || capital <= 0) { alert('Please enter a valid capital amount'); return; }
+            let sectors = '';
+            if (dividendScope === 'all') sectors = 'all';
+            else if (dividendScope === 'nifty50') sectors = 'Nifty 50';
+            else if (dividendScope === 'largecap') sectors = 'Nifty 50,Nifty Next 50';
+            else {
+                const checked = document.querySelectorAll('.sector-cb:checked');
+                if (checked.length === 0) { alert('Please select at least one sector'); return; }
+                sectors = Array.from(checked).map(c => c.value).join(',');
+            }
+            const resultsDiv = document.getElementById('dividend-results');
+            resultsDiv.innerHTML = `<div class="loading" style="padding: 60px 20px;">
+                <div style="font-size: 1.5em; margin-bottom: 15px;">Scanning stocks for dividend data...</div>
+                <div style="color: var(--text-secondary); font-size: 0.9em;">Fetching dividend history, current prices, and volatility for each stock.</div>
+                <div style="color: var(--text-muted); font-size: 0.8em; margin-top: 10px;">This may take 30-120 seconds for large universes. Please wait.</div>
+            </div>`;
+            fetch(`/dividend-optimize?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) resultsDiv.innerHTML = `<div class="error">${data.error}</div>`;
+                    else showDividendResults(data, capital);
+                })
+                .catch(e => resultsDiv.innerHTML = `<div class="error">Request failed: ${e.message}. Try a smaller universe or retry.</div>`);
+        }
+        function showDividendResults(data, capital) {
+            const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
+            let allocRows = data.allocation.map((a, idx) => `
+                <tr>
+                    <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}</td>
+                    <td>${a.weight}%</td>
+                    <td style="text-align: right;">${a.shares}</td>
+                    <td style="text-align: right;">${fmt(a.price)}</td>
+                    <td style="text-align: right;">${fmt(a.amount)}</td>
+                    <td style="color: var(--accent-green); font-weight: 600;">${a.dividend_yield}%</td>
+                    <td style="color: var(--accent-green); font-weight: 700; text-align: right;">${fmt(a.expected_dividend)}</td>
+                    <td>${a.volatility}%</td>
+                </tr>`).join('');
+            let allStockRows = data.all_dividend_stocks.map((s, idx) => `
+                <tr>
+                    <td>${idx + 1}. ${s.symbol}</td>
+                    <td style="text-align: right;">${fmt(s.price)}</td>
+                    <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
+                    <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
+                    <td>${s.volatility}%</td>
+                </tr>`).join('');
+            const riskColors = { conservative: '#10b981', moderate: '#f59e0b', aggressive: '#ef4444' };
+            const riskColor = riskColors[data.risk_appetite] || '#f59e0b';
+            const html = `
+                <div class="result-card" style="margin-top: 30px;">
+                    <div class="header">
+                        <h2>Dividend Portfolio</h2>
+                        <div class="signal-badge" style="background: ${riskColor}; color: white;">${data.risk_appetite.toUpperCase()}</div>
+                    </div>
+                    <div class="action-banner">Optimized for Maximum Dividend Income | ${data.stocks_scanned} stocks scanned | ${data.dividend_stocks_found} pay dividends</div>
+                    <div class="summary-grid">
+                        <div class="summary-card">
+                            <div class="summary-value" style="color: var(--accent-green);">${data.portfolio_yield.toFixed(2)}%</div>
+                            <div class="summary-label">Portfolio Dividend Yield</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" style="color: var(--accent-cyan);">${fmt(data.total_expected_dividend)}</div>
+                            <div class="summary-label">Expected Annual Dividend (INR)</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value">${data.num_stocks}</div>
+                            <div class="summary-label">Stocks in Portfolio</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" style="color: var(--accent-purple);">${fmt(data.total_invested)}</div>
+                            <div class="summary-label">Capital Deployed (INR)</div>
+                        </div>
+                    </div>
+                    ${data.unallocated > 100 ? `<div style="margin: 15px 0; padding: 12px 15px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid var(--warning); border-radius: 8px; font-size: 0.9em;"><strong style="color: var(--warning);">Unallocated:</strong> <span style="color: var(--text-secondary);">INR ${fmt(data.unallocated)} (due to rounding to whole shares)</span></div>` : ''}
+                    <h3 style="color: var(--accent-cyan); margin: 30px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">Optimized Allocation</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="dividend-table">
+                            <thead><tr>
+                                <th>Stock</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
+                            </tr></thead>
+                            <tbody>${allocRows}</tbody>
+                        </table>
+                    </div>
+                    <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} found)</h3>
+                    <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
+                        <table class="dividend-table">
+                            <thead><tr>
+                                <th>Stock</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                            </tr></thead>
+                            <tbody>${allStockRows}</tbody>
+                        </table>
+                    </div>
+                </div>`;
+            document.getElementById('dividend-results').innerHTML = html;
+        }
+        function initDividendSectors() {
+            const grid = document.getElementById('sector-grid');
+            if (!grid) return;
+            Object.keys(stocks).forEach(sector => {
+                const label = document.createElement('label');
+                label.innerHTML = '<input type="checkbox" class="sector-cb" value="' + sector + '"> ' + sector + ' (' + stocks[sector].length + ')';
+                grid.appendChild(label);
+            });
+        }
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); });
     </script>
 </body>
 </html>'''
@@ -1061,6 +1380,63 @@ def regression_route():
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Regression analysis failed for {normalized_symbol}: {str(e)}'})
+
+@app.route('/dividend-scan')
+def dividend_scan_route():
+    """Scan stocks for dividend data."""
+    sectors = request.args.get('sectors', 'all')
+    if sectors == 'all':
+        symbols = list(ALL_VALID_TICKERS)
+    else:
+        sector_list = [s.strip() for s in sectors.split(',')]
+        symbols = []
+        for sector in sector_list:
+            if sector in STOCKS:
+                symbols.extend(STOCKS[sector])
+        symbols = list(set(symbols))
+    if not symbols:
+        return jsonify({'error': 'No valid sectors selected'})
+    try:
+        results = analyzer.fetch_dividend_data(symbols)
+        return jsonify({'stocks': results, 'total_scanned': len(symbols), 'dividend_stocks': len(results)})
+    except Exception as e:
+        return jsonify({'error': f'Scan failed: {str(e)}'})
+
+@app.route('/dividend-optimize')
+def dividend_optimize_route():
+    """Scan dividends and compute optimal portfolio allocation."""
+    try:
+        capital = float(request.args.get('capital', 0))
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid capital amount'})
+    risk = request.args.get('risk', 'moderate')
+    sectors = request.args.get('sectors', 'all')
+    if capital <= 0:
+        return jsonify({'error': 'Please enter a valid capital amount'})
+    if risk not in ('conservative', 'moderate', 'aggressive'):
+        risk = 'moderate'
+    if sectors == 'all':
+        symbols = list(ALL_VALID_TICKERS)
+    else:
+        sector_list = [s.strip() for s in sectors.split(',')]
+        symbols = []
+        for sector in sector_list:
+            if sector in STOCKS:
+                symbols.extend(STOCKS[sector])
+        symbols = list(set(symbols))
+    if not symbols:
+        return jsonify({'error': 'No valid sectors selected'})
+    try:
+        stocks_data = analyzer.fetch_dividend_data(symbols)
+        if not stocks_data:
+            return jsonify({'error': 'No dividend-paying stocks found in the selected universe'})
+        result = analyzer.optimize_dividend_portfolio(stocks_data, capital, risk)
+        if not result:
+            return jsonify({'error': 'Portfolio optimization failed'})
+        result['all_dividend_stocks'] = stocks_data
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': f'Analysis failed: {str(e)}'})
 
 @app.route('/duplicates')
 def duplicates_route():
