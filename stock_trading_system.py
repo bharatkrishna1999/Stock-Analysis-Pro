@@ -23,8 +23,6 @@ import io
 import base64
 import requests
 import logging
-import gc
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.optimize import minimize as scipy_minimize
 
 # Set non-interactive backend for Render server
@@ -37,8 +35,6 @@ app = Flask(__name__)
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
-DIVIDEND_BATCH_SIZE = 50
-DIVIDEND_MAX_WORKERS = 4
 
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX, but includes 500+ stocks
@@ -150,13 +146,7 @@ UNIVERSE_SOURCE = "Static list"
 def fetch_nse_universe():
     """Fetch full NSE equity universe via NSE equity list API."""
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; StockAnalysisPro/1.0)",
-            "Accept": "text/csv,application/csv;q=0.9,*/*;q=0.8",
-        }
-        response = requests.get(NSE_EQUITY_LIST_URL, headers=headers, timeout=8)
-        response.raise_for_status()
-        df = pd.read_csv(io.StringIO(response.text))
+        df = pd.read_csv(NSE_EQUITY_LIST_URL)
         symbols = (
             df.get("SYMBOL", pd.Series(dtype=str))
             .dropna()
@@ -814,21 +804,10 @@ class Analyzer:
             for idx in range(0, len(iterable), size):
                 yield iterable[idx:idx + size]
 
-        cached_symbols = []
-        now = datetime.utcnow()
-        for symbol in symbols:
-            cached = DIVIDEND_CACHE.get(symbol)
-            if cached and (now - cached['timestamp']) <= DIVIDEND_CACHE_TTL:
-                results.append(cached['data'])
-                cached_symbols.append(symbol)
-
-        symbols_to_fetch = [s for s in symbols if s not in cached_symbols]
-        batch_size = DIVIDEND_BATCH_SIZE
-
-        def _download_batch(batch):
+        for batch in _batched(symbols, 75):
             tickers = [f"{symbol}.NS" for symbol in batch]
             try:
-                return batch, yf.download(
+                data = yf.download(
                     tickers=tickers,
                     period='1y',
                     interval='1d',
@@ -839,50 +818,39 @@ class Analyzer:
                     threads=True
                 )
             except Exception:
-                return batch, None
+                data = None
 
-        batches = list(_batched(symbols_to_fetch, batch_size))
-        with ThreadPoolExecutor(max_workers=DIVIDEND_MAX_WORKERS) as executor:
-            futures = [executor.submit(_download_batch, batch) for batch in batches]
-            for future in as_completed(futures):
-                batch, data = future.result()
-                for symbol in batch:
-                    try:
-                        if data is None or data.empty:
-                            continue
-                        ticker_symbol = f"{symbol}.NS"
-                        if isinstance(data.columns, pd.MultiIndex):
-                            close_series = data['Close'][ticker_symbol].dropna()
-                            dividends = data['Dividends'][ticker_symbol].dropna()
-                        else:
-                            close_series = data['Close'].dropna()
-                            dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
-                        if close_series.empty or len(close_series) < 10:
-                            continue
-                        current_price = float(close_series.iloc[-1])
-                        if current_price <= 0:
-                            continue
-                        annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
-                        if annual_dividend <= 0:
-                            continue
-                        dividend_yield = (annual_dividend / current_price) * 100
-                        returns = close_series.pct_change().dropna()
-                        volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
-                        results.append({
-                            'symbol': symbol,
-                            'price': round(current_price, 2),
-                            'annual_dividend': round(annual_dividend, 2),
-                            'dividend_yield': round(dividend_yield, 2),
-                            'volatility': round(volatility, 2)
-                        })
-                        DIVIDEND_CACHE[symbol] = {
-                            'timestamp': now,
-                            'data': results[-1]
-                        }
-                    except Exception:
+            for symbol in batch:
+                try:
+                    if data is None or data.empty:
                         continue
-                del data
-                gc.collect()
+                    ticker_symbol = f"{symbol}.NS"
+                    if isinstance(data.columns, pd.MultiIndex):
+                        close_series = data['Close'][ticker_symbol].dropna()
+                        dividends = data['Dividends'][ticker_symbol].dropna()
+                    else:
+                        close_series = data['Close'].dropna()
+                        dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                    if close_series.empty or len(close_series) < 10:
+                        continue
+                    current_price = float(close_series.iloc[-1])
+                    if current_price <= 0:
+                        continue
+                    annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                    if annual_dividend <= 0:
+                        continue
+                    dividend_yield = (annual_dividend / current_price) * 100
+                    returns = close_series.pct_change().dropna()
+                    volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+                    results.append({
+                        'symbol': symbol,
+                        'price': round(current_price, 2),
+                        'annual_dividend': round(annual_dividend, 2),
+                        'dividend_yield': round(dividend_yield, 2),
+                        'volatility': round(volatility, 2)
+                    })
+                except Exception:
+                    continue
 
         return sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
 
