@@ -11,6 +11,8 @@ Features:
 """
 
 from flask import Flask, jsonify, request
+import json
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -138,40 +140,183 @@ STOCKS = {
                'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS']
 }
 
-NSE_EQUITY_LIST_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 UNIVERSE_SECTOR_NAME = "All NSE"
 UNIVERSE_SOURCE = "Static list"
 
+# Persistent cache file stored next to this script so a known-good universe
+# survives process restarts (on Render this persists within a single deploy).
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+UNIVERSE_CACHE_FILE = os.path.join(_SCRIPT_DIR, ".nse_universe_cache.json")
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _extract_symbols_from_csv(text):
+    """Parse EQUITY_L.csv text and return a sorted list of symbols."""
+    df = pd.read_csv(io.StringIO(text))
+    symbols = (
+        df.get("SYMBOL", pd.Series(dtype=str))
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .unique()
+        .tolist()
+    )
+    return sorted({s for s in symbols if s})
+
+
+def _fetch_nsearchives():
+    """Source 1: New nsearchives subdomain (most reliable for CSV)."""
+    resp = requests.get(
+        "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+        headers={"User-Agent": _BROWSER_UA},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return _extract_symbols_from_csv(resp.text)
+
+
+def _fetch_old_archives():
+    """Source 2: Legacy archives subdomain."""
+    resp = requests.get(
+        "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+        headers={"User-Agent": _BROWSER_UA},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return _extract_symbols_from_csv(resp.text)
+
+
+def _fetch_nse_api_indices():
+    """Source 3: NSE website JSON API (needs session cookies).
+
+    Fetches NIFTY TOTAL MARKET + NIFTY 500 and merges them for broad
+    coverage (~750 stocks).  Not the full universe but a good fallback.
+    """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": _BROWSER_UA,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.nseindia.com/",
+    })
+    # Establish session cookies
+    session.get("https://www.nseindia.com/", timeout=10)
+
+    symbols = set()
+    for index_name in ["NIFTY%20TOTAL%20MARKET", "NIFTY%20500"]:
+        try:
+            resp = session.get(
+                f"https://www.nseindia.com/api/equity-stockIndices?index={index_name}",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            for item in data.get("data", []):
+                sym = item.get("symbol", "").strip()
+                if sym and sym != "NIFTY TOTAL MARKET" and sym != "NIFTY 500":
+                    symbols.add(sym)
+        except Exception:
+            continue
+    if not symbols:
+        raise RuntimeError("NSE API returned no symbols")
+    return sorted(symbols)
+
+
+def _load_universe_cache():
+    """Load cached universe from disk."""
+    try:
+        if os.path.exists(UNIVERSE_CACHE_FILE):
+            with open(UNIVERSE_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            symbols = data.get("symbols", [])
+            source = data.get("source", "disk cache")
+            if symbols:
+                print(f"  [cache] Loaded {len(symbols)} symbols from disk (source: {source})")
+                return symbols
+    except Exception as e:
+        print(f"  [cache] Failed to load cache: {e}")
+    return []
+
+
+def _save_universe_cache(symbols, source):
+    """Persist a known-good universe to disk."""
+    try:
+        with open(UNIVERSE_CACHE_FILE, "w") as f:
+            json.dump({"symbols": symbols, "source": source,
+                        "saved_at": datetime.utcnow().isoformat()}, f)
+        print(f"  [cache] Saved {len(symbols)} symbols to disk (source: {source})")
+    except Exception as e:
+        print(f"  [cache] Failed to save cache: {e}")
+
 
 def fetch_nse_universe():
-    """Fetch full NSE equity universe via NSE equity list API."""
-    try:
-        df = pd.read_csv(NSE_EQUITY_LIST_URL)
-        symbols = (
-            df.get("SYMBOL", pd.Series(dtype=str))
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .unique()
-            .tolist()
-        )
-        return sorted({s for s in symbols if s})
-    except Exception as e:
-        print(f"⚠️ Unable to fetch NSE universe from API: {e}")
-        return []
+    """Fetch the full NSE equity universe with multiple redundant sources.
+
+    Tries four sources in order, then merges with the last known-good cache
+    so that the list never shrinks (stocks never silently disappear).
+
+    Sources tried:
+      1. nsearchives.nseindia.com  (CSV, new subdomain)
+      2. archives.nseindia.com     (CSV, legacy subdomain)
+      3. NSE website JSON API      (session-cookie gated)
+      4. Disk cache                (last successful fetch)
+    """
+    sources = [
+        ("NSE Archives (new)", _fetch_nsearchives),
+        ("NSE Archives (legacy)", _fetch_old_archives),
+        ("NSE Website API", _fetch_nse_api_indices),
+    ]
+
+    fetched_symbols = []
+    fetched_source = None
+
+    for name, fetcher in sources:
+        try:
+            print(f"  [universe] Trying {name}...")
+            result = fetcher()
+            if result and len(result) >= 100:  # sanity: expect at least 100 stocks
+                fetched_symbols = result
+                fetched_source = name
+                print(f"  [universe] {name} returned {len(result)} symbols ✓")
+                break
+            else:
+                print(f"  [universe] {name} returned only {len(result)} symbols, skipping")
+        except Exception as e:
+            print(f"  [universe] {name} failed: {e}")
+
+    # Load previously cached list
+    cached_symbols = _load_universe_cache()
+
+    # Merge: take the union so the list never shrinks
+    if fetched_symbols:
+        merged = sorted(set(fetched_symbols) | set(cached_symbols))
+        _save_universe_cache(merged, fetched_source)
+        return merged, fetched_source
+    elif cached_symbols:
+        return cached_symbols, "Disk cache (all APIs unavailable)"
+    else:
+        return [], None
 
 
 def add_universe_sector(stocks_dict):
-    """Attach full NSE universe (API-driven) to stock sectors."""
+    """Attach full NSE universe (API-driven with fallbacks) to stock sectors."""
     global UNIVERSE_SOURCE
-    fallback = sorted({t for sector in stocks_dict.values() for t in sector})
-    api_symbols = fetch_nse_universe()
+    static_fallback = sorted({t for sector in stocks_dict.values() for t in sector})
+
+    api_symbols, source = fetch_nse_universe()
+
     if api_symbols:
-        UNIVERSE_SOURCE = "NSE Equity List API"
-        stocks_dict[UNIVERSE_SECTOR_NAME] = api_symbols
+        # Also merge with the static list so hand-curated stocks are never lost
+        merged = sorted(set(api_symbols) | set(static_fallback))
+        UNIVERSE_SOURCE = f"{source} ({len(api_symbols)} API + {len(static_fallback)} static = {len(merged)} merged)"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = merged
     else:
-        UNIVERSE_SOURCE = "Static list (API unavailable)"
-        stocks_dict[UNIVERSE_SECTOR_NAME] = fallback
+        UNIVERSE_SOURCE = "Static list (all APIs unavailable)"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = static_fallback
 
 
 add_universe_sector(STOCKS)
