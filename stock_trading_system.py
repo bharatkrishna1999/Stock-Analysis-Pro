@@ -381,6 +381,12 @@ class Analyzer:
             close = data['Close'].dropna()
             high = data['High'].dropna()
             low = data['Low'].dropna()
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            if isinstance(high, pd.DataFrame):
+                high = high.iloc[:, 0]
+            if isinstance(low, pd.DataFrame):
+                low = low.iloc[:, 0]
             if len(close) < 14:
                 return None
             curr = float(close.iloc[-1])
