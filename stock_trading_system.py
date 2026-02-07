@@ -1841,13 +1841,14 @@ def dividend_optimize_stream_route():
             max_results = DIVIDEND_MAX_RESULTS
             yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
 
-            cached_symbols = []
+            # Serve cached entries first
+            cached_symbols = set()
             for symbol in symbols:
                 cached = DIVIDEND_CACHE.get(symbol)
                 if cached and (now - cached['timestamp']) <= DIVIDEND_CACHE_TTL:
                     entry = cached['data']
                     results.append(entry)
-                    cached_symbols.append(symbol)
+                    cached_symbols.add(symbol)
                     scanned += 1
                     dividend_found += 1
                     payload = {
@@ -1864,10 +1865,14 @@ def dividend_optimize_stream_route():
                 for idx in range(0, len(iterable), size):
                     yield iterable[idx:idx + size]
 
-            def _download_batch(batch):
-                tickers = [f"{symbol}.NS" for symbol in batch]
+            # Sequential batch processing -- one yf.download at a time.
+            # yfinance already parallelises internally (threads=True), so
+            # stacking concurrent downloads overwhelms Yahoo and most
+            # batches silently return empty DataFrames.
+            for batch in _batched(symbols_to_fetch, 75):
+                tickers = [f"{s}.NS" for s in batch]
                 try:
-                    return batch, yf.download(
+                    data = yf.download(
                         tickers=tickers,
                         period='1y',
                         interval='1d',
@@ -1878,63 +1883,52 @@ def dividend_optimize_stream_route():
                         threads=True
                     )
                 except Exception:
-                    return batch, None
+                    data = None
 
-            batch_size = DIVIDEND_BATCH_SIZE
-            batches = list(_batched(symbols_to_fetch, batch_size))
-            with ThreadPoolExecutor(max_workers=DIVIDEND_MAX_WORKERS) as executor:
-                futures = [executor.submit(_download_batch, batch) for batch in batches]
-                for future in as_completed(futures):
-                    batch, data = future.result()
-                    for symbol in batch:
-                        scanned += 1
-                        entry = None
-                        try:
-                            if data is None or data.empty:
-                                payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
-                                yield f"data: {json.dumps(payload)}\n\n"
-                                continue
-                            ticker_symbol = f"{symbol}.NS"
-                            if isinstance(data.columns, pd.MultiIndex):
-                                close_series = data['Close'][ticker_symbol].dropna()
-                                dividends = data['Dividends'][ticker_symbol].dropna()
-                            else:
-                                close_series = data['Close'].dropna()
-                                dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
-                            if close_series.empty or len(close_series) < 10:
-                                payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
-                                yield f"data: {json.dumps(payload)}\n\n"
-                                continue
-                            current_price = float(close_series.iloc[-1])
-                            if current_price <= 0:
-                                payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
-                                yield f"data: {json.dumps(payload)}\n\n"
-                                continue
-                            annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
-                            if annual_dividend <= 0:
-                                payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
-                                yield f"data: {json.dumps(payload)}\n\n"
-                                continue
-                            dividend_yield = (annual_dividend / current_price) * 100
-                            returns = close_series.pct_change().dropna()
-                            volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
-                            entry = {
-                                'symbol': symbol,
-                                'price': round(current_price, 2),
-                                'annual_dividend': round(annual_dividend, 2),
-                                'dividend_yield': round(dividend_yield, 2),
-                                'volatility': round(volatility, 2)
-                            }
-                            dividend_found += 1
-                            results.append(entry)
-                            DIVIDEND_CACHE[symbol] = {
-                                'timestamp': now,
-                                'data': entry
-                            }
-                        except Exception:
+                for symbol in batch:
+                    scanned += 1
+                    try:
+                        if data is None or data.empty:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
+                        ticker_symbol = f"{symbol}.NS"
+                        if isinstance(data.columns, pd.MultiIndex):
+                            close_series = data['Close'][ticker_symbol].dropna()
+                            dividends = data['Dividends'][ticker_symbol].dropna()
+                        else:
+                            close_series = data['Close'].dropna()
+                            dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                        if close_series.empty or len(close_series) < 10:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+                        current_price = float(close_series.iloc[-1])
+                        if current_price <= 0:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+                        annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                        if annual_dividend <= 0:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+                        dividend_yield = (annual_dividend / current_price) * 100
+                        returns = close_series.pct_change().dropna()
+                        volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+                        entry = {
+                            'symbol': symbol,
+                            'price': round(current_price, 2),
+                            'annual_dividend': round(annual_dividend, 2),
+                            'dividend_yield': round(dividend_yield, 2),
+                            'volatility': round(volatility, 2)
+                        }
+                        dividend_found += 1
+                        results.append(entry)
+                        DIVIDEND_CACHE[symbol] = {
+                            'timestamp': now,
+                            'data': entry
+                        }
                         payload = {
                             'type': 'stock',
                             'entry': entry,
@@ -1942,8 +1936,14 @@ def dividend_optimize_stream_route():
                             'dividend_found': dividend_found
                         }
                         yield f"data: {json.dumps(payload)}\n\n"
-                    del data
-                    gc.collect()
+                    except Exception:
+                        payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                        yield f"data: {json.dumps(payload)}\n\n"
+                        continue
+
+                # Free batch memory
+                del data
+                gc.collect()
 
             if not results:
                 payload = {'type': 'error', 'message': 'No dividend-paying stocks found in the selected universe'}
