@@ -23,6 +23,7 @@ import io
 import base64
 import requests
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.optimize import minimize as scipy_minimize
 
 # Set non-interactive backend for Render server
@@ -819,11 +820,12 @@ class Analyzer:
                 cached_symbols.append(symbol)
 
         symbols_to_fetch = [s for s in symbols if s not in cached_symbols]
+        batch_size = 200
 
-        for batch in _batched(symbols_to_fetch, 75):
+        def _download_batch(batch):
             tickers = [f"{symbol}.NS" for symbol in batch]
             try:
-                data = yf.download(
+                return batch, yf.download(
                     tickers=tickers,
                     period='1y',
                     interval='1d',
@@ -834,43 +836,48 @@ class Analyzer:
                     threads=True
                 )
             except Exception:
-                data = None
+                return batch, None
 
-            for symbol in batch:
-                try:
-                    if data is None or data.empty:
+        batches = list(_batched(symbols_to_fetch, batch_size))
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(_download_batch, batch) for batch in batches]
+            for future in as_completed(futures):
+                batch, data = future.result()
+                for symbol in batch:
+                    try:
+                        if data is None or data.empty:
+                            continue
+                        ticker_symbol = f"{symbol}.NS"
+                        if isinstance(data.columns, pd.MultiIndex):
+                            close_series = data['Close'][ticker_symbol].dropna()
+                            dividends = data['Dividends'][ticker_symbol].dropna()
+                        else:
+                            close_series = data['Close'].dropna()
+                            dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                        if close_series.empty or len(close_series) < 10:
+                            continue
+                        current_price = float(close_series.iloc[-1])
+                        if current_price <= 0:
+                            continue
+                        annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                        if annual_dividend <= 0:
+                            continue
+                        dividend_yield = (annual_dividend / current_price) * 100
+                        returns = close_series.pct_change().dropna()
+                        volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+                        results.append({
+                            'symbol': symbol,
+                            'price': round(current_price, 2),
+                            'annual_dividend': round(annual_dividend, 2),
+                            'dividend_yield': round(dividend_yield, 2),
+                            'volatility': round(volatility, 2)
+                        })
+                        DIVIDEND_CACHE[symbol] = {
+                            'timestamp': now,
+                            'data': results[-1]
+                        }
+                    except Exception:
                         continue
-                    ticker_symbol = f"{symbol}.NS"
-                    if isinstance(data.columns, pd.MultiIndex):
-                        close_series = data['Close'][ticker_symbol].dropna()
-                        dividends = data['Dividends'][ticker_symbol].dropna()
-                    else:
-                        close_series = data['Close'].dropna()
-                        dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
-                    if close_series.empty or len(close_series) < 10:
-                        continue
-                    current_price = float(close_series.iloc[-1])
-                    if current_price <= 0:
-                        continue
-                    annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
-                    if annual_dividend <= 0:
-                        continue
-                    dividend_yield = (annual_dividend / current_price) * 100
-                    returns = close_series.pct_change().dropna()
-                    volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
-                    results.append({
-                        'symbol': symbol,
-                        'price': round(current_price, 2),
-                        'annual_dividend': round(annual_dividend, 2),
-                        'dividend_yield': round(dividend_yield, 2),
-                        'volatility': round(volatility, 2)
-                    })
-                    DIVIDEND_CACHE[symbol] = {
-                        'timestamp': now,
-                        'data': results[-1]
-                    }
-                except Exception:
-                    continue
 
         return sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
 
