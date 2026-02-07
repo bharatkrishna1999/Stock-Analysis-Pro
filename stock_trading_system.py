@@ -234,12 +234,60 @@ COMPANY_TO_TICKER = {
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
 }
 
-# Build complete ticker set
+def deduplicate_stocks(stocks_dict):
+    """
+    Remove duplicate stock entries across sectors.
+
+    Strategy:
+    - Each stock is assigned to exactly ONE primary sector (the first non-index
+      sector it appears in).
+    - Index/collection sectors ('Nifty 50', 'Nifty Next 50', 'Conglomerate',
+      'Others') keep only stocks not already placed elsewhere.
+    - Within each sector list, duplicates are removed while preserving order.
+    """
+    index_sectors = {'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
+
+    seen_globally = set()
+    cleaned = {}
+
+    # Pass 1: Process non-index sectors first (primary assignment)
+    for sector, tickers in stocks_dict.items():
+        if sector in index_sectors:
+            continue
+        unique_in_sector = []
+        seen_in_sector = set()
+        for t in tickers:
+            if t not in seen_globally and t not in seen_in_sector:
+                unique_in_sector.append(t)
+                seen_in_sector.add(t)
+                seen_globally.add(t)
+        if unique_in_sector:
+            cleaned[sector] = unique_in_sector
+
+    # Pass 2: Process index/collection sectors (keep only unassigned stocks)
+    for sector in index_sectors:
+        if sector not in stocks_dict:
+            continue
+        tickers = stocks_dict[sector]
+        unique_in_sector = []
+        seen_in_sector = set()
+        for t in tickers:
+            if t not in seen_globally and t not in seen_in_sector:
+                unique_in_sector.append(t)
+                seen_in_sector.add(t)
+                seen_globally.add(t)
+        if unique_in_sector:
+            cleaned[sector] = unique_in_sector
+
+    return cleaned
+
+# Deduplicate and build ticker set
+STOCKS = deduplicate_stocks(STOCKS)
 ALL_VALID_TICKERS = set()
 for sector_stocks in STOCKS.values():
     ALL_VALID_TICKERS.update(sector_stocks)
 
-print(f"✅ Loaded {len(ALL_VALID_TICKERS)} stocks across {len(STOCKS)} sectors")
+print(f"✅ Loaded {len(ALL_VALID_TICKERS)} unique stocks across {len(STOCKS)} sectors (duplicates removed)")
 
 # ===== REST OF CODE REMAINS IDENTICAL =====
 
@@ -849,7 +897,7 @@ def index():
                     const q = e.target.value.toUpperCase();
                     const sug = document.getElementById(suggestionId);
                     if (q.length === 0) { sug.innerHTML = ''; return; }
-                    const all = Object.values(stocks).flat();
+                    const all = [...new Set(Object.values(stocks).flat())];
                     const filtered = all.filter(s => s.includes(q)).slice(0, 12);
                     sug.innerHTML = filtered.map(s => {
                         if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${s}</button>`;
@@ -1013,6 +1061,26 @@ def regression_route():
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Regression analysis failed for {normalized_symbol}: {str(e)}'})
+
+@app.route('/duplicates')
+def duplicates_route():
+    """Debug endpoint: show per-sector stock counts and verify no duplicates remain."""
+    all_tickers = []
+    for sector_stocks in STOCKS.values():
+        all_tickers.extend(sector_stocks)
+    seen = set()
+    dups = []
+    for t in all_tickers:
+        if t in seen:
+            sectors = [name for name, stocks in STOCKS.items() if t in stocks]
+            dups.append({'ticker': t, 'sectors': sectors})
+        seen.add(t)
+    return jsonify({
+        'total_unique': len(ALL_VALID_TICKERS),
+        'total_with_dups': len(all_tickers),
+        'sectors': {name: len(stocks) for name, stocks in STOCKS.items()},
+        'remaining_duplicates': dups,
+    })
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
