@@ -23,6 +23,7 @@ import io
 import base64
 import requests
 import logging
+import gc
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.optimize import minimize as scipy_minimize
 
@@ -820,7 +821,7 @@ class Analyzer:
                 cached_symbols.append(symbol)
 
         symbols_to_fetch = [s for s in symbols if s not in cached_symbols]
-        batch_size = 200
+        batch_size = 100
 
         def _download_batch(batch):
             tickers = [f"{symbol}.NS" for symbol in batch]
@@ -839,7 +840,7 @@ class Analyzer:
                 return batch, None
 
         batches = list(_batched(symbols_to_fetch, batch_size))
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             futures = [executor.submit(_download_batch, batch) for batch in batches]
             for future in as_completed(futures):
                 batch, data = future.result()
@@ -878,6 +879,8 @@ class Analyzer:
                         }
                     except Exception:
                         continue
+                del data
+                gc.collect()
 
         return sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
 
