@@ -143,13 +143,7 @@ UNIVERSE_SOURCE = "Static list"
 def fetch_nse_universe():
     """Fetch full NSE equity universe via NSE equity list API."""
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; StockAnalysisPro/1.0)",
-            "Accept": "text/csv,application/csv;q=0.9,*/*;q=0.8",
-        }
-        response = requests.get(NSE_EQUITY_LIST_URL, headers=headers, timeout=8)
-        response.raise_for_status()
-        df = pd.read_csv(io.StringIO(response.text))
+        df = pd.read_csv(NSE_EQUITY_LIST_URL)
         symbols = (
             df.get("SYMBOL", pd.Series(dtype=str))
             .dropna()
