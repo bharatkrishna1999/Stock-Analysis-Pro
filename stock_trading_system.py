@@ -21,12 +21,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 import io
 import base64
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import requests
+import logging
 from scipy.optimize import minimize as scipy_minimize
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
 warnings.filterwarnings('ignore')
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+logging.getLogger("yfinance").propagate = False
 
 app = Flask(__name__)
 
@@ -132,6 +135,50 @@ STOCKS = {
                'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS']
 }
 
+NSE_EQUITY_LIST_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+UNIVERSE_SECTOR_NAME = "All NSE"
+UNIVERSE_SOURCE = "Static list"
+
+
+def fetch_nse_universe():
+    """Fetch full NSE equity universe via NSE equity list API."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; StockAnalysisPro/1.0)",
+            "Accept": "text/csv,application/csv;q=0.9,*/*;q=0.8",
+        }
+        response = requests.get(NSE_EQUITY_LIST_URL, headers=headers, timeout=8)
+        response.raise_for_status()
+        df = pd.read_csv(io.StringIO(response.text))
+        symbols = (
+            df.get("SYMBOL", pd.Series(dtype=str))
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .unique()
+            .tolist()
+        )
+        return sorted({s for s in symbols if s})
+    except Exception as e:
+        print(f"⚠️ Unable to fetch NSE universe from API: {e}")
+        return []
+
+
+def add_universe_sector(stocks_dict):
+    """Attach full NSE universe (API-driven) to stock sectors."""
+    global UNIVERSE_SOURCE
+    fallback = sorted({t for sector in stocks_dict.values() for t in sector})
+    api_symbols = fetch_nse_universe()
+    if api_symbols:
+        UNIVERSE_SOURCE = "NSE Equity List API"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = api_symbols
+    else:
+        UNIVERSE_SOURCE = "Static list (API unavailable)"
+        stocks_dict[UNIVERSE_SECTOR_NAME] = fallback
+
+
+add_universe_sector(STOCKS)
+
 # Enhanced company name mapping with MANY more variations
 COMPANY_TO_TICKER = {
     # IT Sector
@@ -236,7 +283,7 @@ COMPANY_TO_TICKER = {
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
 }
 
-def deduplicate_stocks(stocks_dict):
+def deduplicate_stocks(stocks_dict, universe_sector=UNIVERSE_SECTOR_NAME):
     """
     Remove duplicate stock entries across sectors.
 
@@ -245,6 +292,7 @@ def deduplicate_stocks(stocks_dict):
       sector it appears in).
     - Index/collection sectors ('Nifty 50', 'Nifty Next 50', 'Conglomerate',
       'Others') keep only stocks not already placed elsewhere.
+    - The universe sector keeps the full list for "all stocks" scans.
     - Within each sector list, duplicates are removed while preserving order.
     """
     index_sectors = {'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
@@ -252,9 +300,12 @@ def deduplicate_stocks(stocks_dict):
     seen_globally = set()
     cleaned = {}
 
+    if universe_sector in stocks_dict:
+        cleaned[universe_sector] = sorted(set(stocks_dict[universe_sector]))
+
     # Pass 1: Process non-index sectors first (primary assignment)
     for sector, tickers in stocks_dict.items():
-        if sector in index_sectors:
+        if sector in index_sectors or sector == universe_sector:
             continue
         unique_in_sector = []
         seen_in_sector = set()
@@ -289,7 +340,10 @@ ALL_VALID_TICKERS = set()
 for sector_stocks in STOCKS.values():
     ALL_VALID_TICKERS.update(sector_stocks)
 
-print(f"✅ Loaded {len(ALL_VALID_TICKERS)} unique stocks across {len(STOCKS)} sectors (duplicates removed)")
+print(
+    f"✅ Loaded {len(ALL_VALID_TICKERS)} unique stocks across {len(STOCKS)} sectors "
+    f"(duplicates removed). Universe source: {UNIVERSE_SOURCE}"
+)
 
 # ===== REST OF CODE REMAINS IDENTICAL =====
 
@@ -333,6 +387,12 @@ class Analyzer:
             close = data['Close'].dropna()
             high = data['High'].dropna()
             low = data['Low'].dropna()
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            if isinstance(high, pd.DataFrame):
+                high = high.iloc[:, 0]
+            if isinstance(low, pd.DataFrame):
+                low = low.iloc[:, 0]
             if len(close) < 14:
                 return None
             curr = float(close.iloc[-1])
@@ -740,40 +800,60 @@ class Analyzer:
     def fetch_dividend_data(self, symbols):
         """Fetch dividend yield, current price, and annualized volatility for given symbols."""
         results = []
+        if not symbols:
+            return results
 
-        def _fetch_single(symbol):
+        def _batched(iterable, size):
+            for idx in range(0, len(iterable), size):
+                yield iterable[idx:idx + size]
+
+        for batch in _batched(symbols, 75):
+            tickers = [f"{symbol}.NS" for symbol in batch]
             try:
-                ticker = yf.Ticker(f"{symbol}.NS")
-                hist = ticker.history(period='1y')
-                if hist is None or hist.empty or len(hist) < 10:
-                    return None
-                current_price = float(hist['Close'].iloc[-1])
-                if current_price <= 0:
-                    return None
-                annual_dividend = 0.0
-                if 'Dividends' in hist.columns:
-                    annual_dividend = float(hist['Dividends'].sum())
-                if annual_dividend <= 0:
-                    return None
-                dividend_yield = (annual_dividend / current_price) * 100
-                returns = hist['Close'].pct_change().dropna()
-                volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
-                return {
-                    'symbol': symbol,
-                    'price': round(current_price, 2),
-                    'annual_dividend': round(annual_dividend, 2),
-                    'dividend_yield': round(dividend_yield, 2),
-                    'volatility': round(volatility, 2)
-                }
+                data = yf.download(
+                    tickers=tickers,
+                    period='1y',
+                    interval='1d',
+                    group_by='column',
+                    actions=True,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=True
+                )
             except Exception:
-                return None
+                data = None
 
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            futures = {executor.submit(_fetch_single, s): s for s in symbols}
-            for future in as_completed(futures):
-                result = future.result()
-                if result:
-                    results.append(result)
+            for symbol in batch:
+                try:
+                    if data is None or data.empty:
+                        continue
+                    ticker_symbol = f"{symbol}.NS"
+                    if isinstance(data.columns, pd.MultiIndex):
+                        close_series = data['Close'][ticker_symbol].dropna()
+                        dividends = data['Dividends'][ticker_symbol].dropna()
+                    else:
+                        close_series = data['Close'].dropna()
+                        dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                    if close_series.empty or len(close_series) < 10:
+                        continue
+                    current_price = float(close_series.iloc[-1])
+                    if current_price <= 0:
+                        continue
+                    annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                    if annual_dividend <= 0:
+                        continue
+                    dividend_yield = (annual_dividend / current_price) * 100
+                    returns = close_series.pct_change().dropna()
+                    volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
+                    results.append({
+                        'symbol': symbol,
+                        'price': round(current_price, 2),
+                        'annual_dividend': round(annual_dividend, 2),
+                        'dividend_yield': round(dividend_yield, 2),
+                        'volatility': round(volatility, 2)
+                    })
+                except Exception:
+                    continue
 
         return sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
 
@@ -988,6 +1068,9 @@ def index():
             <h1>📊 Stock Analysis Pro</h1>
             <p>Advanced Trading Insights with AI-Powered Analysis</p>
             <div class="stock-count">🚀 Now analyzing ''' + str(len(ALL_VALID_TICKERS)) + '''+ NSE stocks across ''' + str(len(STOCKS)) + ''' sectors</div>
+            <div style="margin-top: 8px; color: var(--text-muted); font-size: 0.85em;">
+                Universe source: ''' + UNIVERSE_SOURCE + '''. Market data requests are subject to API throttling.
+            </div>
         </header>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
@@ -1389,11 +1472,14 @@ def dividend_scan_route():
         symbols = list(ALL_VALID_TICKERS)
     else:
         sector_list = [s.strip() for s in sectors.split(',')]
-        symbols = []
-        for sector in sector_list:
-            if sector in STOCKS:
-                symbols.extend(STOCKS[sector])
-        symbols = list(set(symbols))
+        if UNIVERSE_SECTOR_NAME in sector_list:
+            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+        else:
+            symbols = []
+            for sector in sector_list:
+                if sector in STOCKS:
+                    symbols.extend(STOCKS[sector])
+            symbols = list(set(symbols))
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
@@ -1419,11 +1505,14 @@ def dividend_optimize_route():
         symbols = list(ALL_VALID_TICKERS)
     else:
         sector_list = [s.strip() for s in sectors.split(',')]
-        symbols = []
-        for sector in sector_list:
-            if sector in STOCKS:
-                symbols.extend(STOCKS[sector])
-        symbols = list(set(symbols))
+        if UNIVERSE_SECTOR_NAME in sector_list:
+            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+        else:
+            symbols = []
+            for sector in sector_list:
+                if sector in STOCKS:
+                    symbols.extend(STOCKS[sector])
+            symbols = list(set(symbols))
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
@@ -1454,6 +1543,7 @@ def duplicates_route():
     return jsonify({
         'total_unique': len(ALL_VALID_TICKERS),
         'total_with_dups': len(all_tickers),
+        'universe_source': UNIVERSE_SOURCE,
         'sectors': {name: len(stocks) for name, stocks in STOCKS.items()},
         'remaining_duplicates': dups,
     })
