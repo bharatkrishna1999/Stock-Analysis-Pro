@@ -488,6 +488,9 @@ def deduplicate_stocks(stocks_dict, universe_sector=UNIVERSE_SECTOR_NAME):
 
     return cleaned
 
+# Preserve original Nifty 50 list before deduplication removes them
+NIFTY_50_STOCKS = list(STOCKS.get('Nifty 50', []))
+
 # Deduplicate and build ticker set
 STOCKS = deduplicate_stocks(STOCKS)
 ALL_VALID_TICKERS = set()
@@ -975,7 +978,7 @@ class Analyzer:
                     interval='1d',
                     group_by='column',
                     actions=True,
-                    auto_adjust=False,
+                    auto_adjust=True,
                     progress=False,
                     threads=True
                 )
@@ -989,7 +992,7 @@ class Analyzer:
                     ticker_symbol = f"{symbol}.NS"
                     if isinstance(data.columns, pd.MultiIndex):
                         close_series = data['Close'][ticker_symbol].dropna()
-                        dividends = data['Dividends'][ticker_symbol].dropna()
+                        dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
                     else:
                         close_series = data['Close'].dropna()
                         dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
@@ -998,6 +1001,7 @@ class Analyzer:
                     current_price = float(close_series.iloc[-1])
                     if current_price <= 0:
                         continue
+                    # Dividends from auto_adjust=True are split-adjusted
                     annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
                     if annual_dividend <= 0:
                         continue
@@ -1350,6 +1354,7 @@ def index():
     </div>
     <script>
         const stocks = ''' + str(STOCKS).replace("'", '"') + ''';
+        const nifty50List = ''' + json.dumps(NIFTY_50_STOCKS) + ''';
         const tickerNames = ''' + json.dumps(TICKER_TO_NAME) + ''';
         function getStockName(symbol) {
             return tickerNames[symbol] || symbol;
@@ -1555,8 +1560,7 @@ def index():
         function initNifty50Checkboxes() {
             const grid = document.getElementById('nifty50-grid');
             if (!grid) return;
-            const niftyList = stocks['Nifty 50'] || [];
-            niftyList.forEach(symbol => {
+            nifty50List.forEach(symbol => {
                 const label = document.createElement('label');
                 label.innerHTML = '<input type="checkbox" class="nifty-cb" value="' + symbol + '" checked> ' + symbol + ' <span style="color:var(--text-muted);font-size:0.85em;">(' + getStockName(symbol) + ')</span>';
                 grid.appendChild(label);
@@ -1616,18 +1620,19 @@ def index():
             dividendScope = '_single_sector';
             const capital = getCapitalValue();
             if (!capital || capital <= 0) { alert('Please enter a valid capital amount'); return; }
-            _runDividendScan(sector, capital);
+            _runDividendScan(sector, capital, '');
         }
         function analyzeDividends() {
             const capital = getCapitalValue();
             if (!capital || capital <= 0) { alert('Please enter a valid capital amount'); return; }
             dividendHighlight = '';
             let sectors = '';
+            let symbolsParam = '';
             if (dividendScope === 'all') { sectors = 'all'; dividendSectorLabel = 'All NSE'; }
             else if (dividendScope === 'nifty50') {
                 const checked = document.querySelectorAll('.nifty-cb:checked');
                 if (checked.length === 0) { alert('Please select at least one Nifty 50 stock'); return; }
-                sectors = 'Nifty 50';
+                symbolsParam = Array.from(checked).map(c => c.value).join(',');
                 dividendSectorLabel = 'Nifty 50';
             }
             else if (dividendScope === 'custom') {
@@ -1640,9 +1645,9 @@ def index():
                 else dividendSectorLabel = 'Multi-Sector';
             }
             else { sectors = 'all'; dividendSectorLabel = 'All NSE'; }
-            _runDividendScan(sectors, capital);
+            _runDividendScan(sectors, capital, symbolsParam);
         }
-        function _runDividendScan(sectors, capital) {
+        function _runDividendScan(sectors, capital, symbolsParam) {
             const resultsDiv = document.getElementById('dividend-results');
             resultsDiv.innerHTML = `
                 <div class="result-card" style="margin-top: 30px;">
@@ -1669,7 +1674,8 @@ def index():
             liveDividendMax = 0;
             document.getElementById('live-scan-total').textContent = '0';
 
-            const streamUrl = `/dividend-optimize-stream?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`;
+            let streamUrl = `/dividend-optimize-stream?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`;
+            if (symbolsParam) streamUrl += `&symbols=${encodeURIComponent(symbolsParam)}`;
             dividendStream = new EventSource(streamUrl);
             dividendStream.onmessage = (event) => {
                 const payload = JSON.parse(event.data);
@@ -1705,7 +1711,7 @@ def index():
             dividendStream.onerror = () => {
                 dividendStream.close();
                 resultsDiv.innerHTML = `<div class="error">Live stream failed. Retrying with standard request...</div>`;
-                fetch(`/dividend-optimize?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`)
+                fetch(`/dividend-optimize?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}${symbolsParam ? '&symbols=' + encodeURIComponent(symbolsParam) : ''}`)
                     .then(r => r.json())
                     .then(data => {
                         if (data.error) resultsDiv.innerHTML = `<div class="error">${data.error}</div>`;
@@ -1887,6 +1893,24 @@ def dividend_scan_route():
     except Exception as e:
         return jsonify({'error': f'Scan failed: {str(e)}'})
 
+def _resolve_dividend_symbols(sectors_param, symbols_param=None):
+    """Resolve stock symbols from sectors or explicit symbols parameter."""
+    if symbols_param:
+        raw = [s.strip().upper() for s in symbols_param.split(',') if s.strip()]
+        return [s for s in raw if s in ALL_VALID_TICKERS]
+    if sectors_param == 'all':
+        return list(ALL_VALID_TICKERS)
+    sector_list = [s.strip() for s in sectors_param.split(',')]
+    if UNIVERSE_SECTOR_NAME in sector_list:
+        return list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+    symbols = []
+    for sector in sector_list:
+        if sector in STOCKS:
+            symbols.extend(STOCKS[sector])
+        elif sector == 'Nifty 50':
+            symbols.extend(NIFTY_50_STOCKS)
+    return list(set(symbols))
+
 @app.route('/dividend-optimize')
 def dividend_optimize_route():
     """Scan dividends and compute optimal portfolio allocation."""
@@ -1896,22 +1920,12 @@ def dividend_optimize_route():
         return jsonify({'error': 'Invalid capital amount'})
     risk = request.args.get('risk', 'moderate')
     sectors = request.args.get('sectors', 'all')
+    symbols_param = request.args.get('symbols', '')
     if capital <= 0:
         return jsonify({'error': 'Please enter a valid capital amount'})
     if risk not in ('conservative', 'moderate', 'aggressive'):
         risk = 'moderate'
-    if sectors == 'all':
-        symbols = list(ALL_VALID_TICKERS)
-    else:
-        sector_list = [s.strip() for s in sectors.split(',')]
-        if UNIVERSE_SECTOR_NAME in sector_list:
-            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
-        else:
-            symbols = []
-            for sector in sector_list:
-                if sector in STOCKS:
-                    symbols.extend(STOCKS[sector])
-            symbols = list(set(symbols))
+    symbols = _resolve_dividend_symbols(sectors, symbols_param)
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
@@ -1937,22 +1951,12 @@ def dividend_optimize_stream_route():
         return jsonify({'error': 'Invalid capital amount'})
     risk = request.args.get('risk', 'moderate')
     sectors = request.args.get('sectors', 'all')
+    symbols_param = request.args.get('symbols', '')
     if capital <= 0:
         return jsonify({'error': 'Please enter a valid capital amount'})
     if risk not in ('conservative', 'moderate', 'aggressive'):
         risk = 'moderate'
-    if sectors == 'all':
-        symbols = list(ALL_VALID_TICKERS)
-    else:
-        sector_list = [s.strip() for s in sectors.split(',')]
-        if UNIVERSE_SECTOR_NAME in sector_list:
-            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
-        else:
-            symbols = []
-            for sector in sector_list:
-                if sector in STOCKS:
-                    symbols.extend(STOCKS[sector])
-            symbols = list(set(symbols))
+    symbols = _resolve_dividend_symbols(sectors, symbols_param)
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
 
@@ -2002,7 +2006,7 @@ def dividend_optimize_stream_route():
                         interval='1d',
                         group_by='column',
                         actions=True,
-                        auto_adjust=False,
+                        auto_adjust=True,
                         progress=False,
                         threads=True
                     )
@@ -2019,7 +2023,7 @@ def dividend_optimize_stream_route():
                         ticker_symbol = f"{symbol}.NS"
                         if isinstance(data.columns, pd.MultiIndex):
                             close_series = data['Close'][ticker_symbol].dropna()
-                            dividends = data['Dividends'][ticker_symbol].dropna()
+                            dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
                         else:
                             close_series = data['Close'].dropna()
                             dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
@@ -2032,6 +2036,7 @@ def dividend_optimize_stream_route():
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
+                        # Dividends from auto_adjust=True are split-adjusted
                         annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
