@@ -1427,14 +1427,19 @@ def index():
                 const input = document.getElementById(inputId);
                 if(!input) return;
                 input.addEventListener('input', (e) => {
-                    const q = e.target.value.toUpperCase();
+                    const raw = e.target.value.trim();
+                    const q = raw.toUpperCase();
                     const sug = document.getElementById(suggestionId);
                     if (q.length === 0) { sug.innerHTML = ''; return; }
                     const all = [...new Set(Object.values(stocks).flat())];
-                    const filtered = all.filter(s => s.includes(q)).slice(0, 12);
+                    const filtered = all.filter(s => {
+                        const name = getStockName(s).toUpperCase();
+                        return s.includes(q) || name.includes(q);
+                    }).slice(0, 12);
                     sug.innerHTML = filtered.map(s => {
-                        if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${s}</button>`;
-                        else return `<button onclick="analyze('${s}')">${s}</button>`;
+                        const label = `${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span>`;
+                        if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${label}</button>`;
+                        else return `<button onclick="analyze('${s}')">${label}</button>`;
                     }).join('');
                 });
             }
@@ -1450,10 +1455,14 @@ def index():
             if (!input) return;
             const sug = document.getElementById('dividend-suggestions');
             input.addEventListener('input', () => {
-                const q = input.value.toUpperCase();
+                const raw = input.value.trim();
+                const q = raw.toUpperCase();
                 if (q.length === 0) { sug.innerHTML = ''; return; }
                 const all = [...new Set(Object.values(stocks).flat())];
-                const filtered = all.filter(s => s.includes(q)).slice(0, 12);
+                const filtered = all.filter(s => {
+                    const name = getStockName(s).toUpperCase();
+                    return s.includes(q) || name.includes(q);
+                }).slice(0, 12);
                 sug.innerHTML = filtered.map(s =>
                     `<button onclick="scanStockSector('${s}')">${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span></button>`
                 ).join('');
