@@ -2138,8 +2138,32 @@ def dividend_optimize_stream_route():
                         'dividend_found': dividend_found
                     }
                     yield f"data: {json.dumps(payload)}\n\n"
+                    if scanned - last_portfolio_update >= 50 and len(results) >= 3:
+                        live_portfolio = analyzer.optimize_dividend_portfolio(results, capital, risk)
+                        if live_portfolio:
+                            portfolio_payload = {
+                                'type': 'portfolio',
+                                'portfolio': live_portfolio,
+                                'partial': True,
+                                'scanned': scanned,
+                                'dividend_found': dividend_found
+                            }
+                            yield f"data: {json.dumps(portfolio_payload)}\n\n"
+                            last_portfolio_update = scanned
 
             symbols_to_fetch = [s for s in symbols if s not in cached_symbols]
+            if results and last_portfolio_update == 0:
+                live_portfolio = analyzer.optimize_dividend_portfolio(results, capital, risk)
+                if live_portfolio:
+                    portfolio_payload = {
+                        'type': 'portfolio',
+                        'portfolio': live_portfolio,
+                        'partial': True,
+                        'scanned': scanned,
+                        'dividend_found': dividend_found
+                    }
+                    yield f"data: {json.dumps(portfolio_payload)}\n\n"
+                    last_portfolio_update = scanned
 
             def _batched(iterable, size):
                 for idx in range(0, len(iterable), size):
