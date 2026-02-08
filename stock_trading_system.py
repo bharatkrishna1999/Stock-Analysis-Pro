@@ -1008,36 +1008,88 @@ class Analyzer:
             # --- HSIC computation (capped to 90 days, float32) -------------
             dep_score, raw_hsic, n_used = _hsic_score(X, y, max_samples=90)
 
-            # Qualitative label
+            # Qualitative label + layman-friendly badge
             if dep_score >= 0.75:
                 dep_label = "Strong Hidden Correlation"
                 dep_color = "#ff6b6b"
+                badge_text = "High Connection"
+                badge_bg = "#ff6b6b"
+                magnetism_plain = "This stock is strongly pulled along by the Nifty 50. When the market moves, this stock almost always reacts — even in ways that aren't obvious from a simple chart."
+                diversification_note = "Holding this alongside a Nifty 50 index fund adds little extra protection. In a market downturn, both are very likely to fall together."
             elif dep_score >= 0.50:
                 dep_label = "Moderate Non-Linear Link"
                 dep_color = "#ffa94d"
+                badge_text = "Medium Connection"
+                badge_bg = "#ffa94d"
+                magnetism_plain = "This stock has a noticeable pull towards the Nifty 50. It doesn't follow every move, but during big swings they tend to move together."
+                diversification_note = "Offers some diversification, but during sharp market drops this stock may still follow. Don't rely on it as your only hedge."
             elif dep_score >= 0.25:
                 dep_label = "Weak Dependency"
                 dep_color = "#69db7c"
+                badge_text = "Low Connection"
+                badge_bg = "#69db7c"
+                magnetism_plain = "This stock has only a faint pull towards the Nifty 50. It mostly does its own thing, driven by company-specific news and earnings."
+                diversification_note = "Good diversifier. Adding this to a Nifty-heavy portfolio can help spread your risk, since it behaves fairly independently."
             else:
                 dep_label = "Near Independence"
                 dep_color = "#a0aec0"
+                badge_text = "Very Low Connection"
+                badge_bg = "#10b981"
+                magnetism_plain = "This stock shows almost no connection to the Nifty 50. Market-wide ups and downs have very little effect on its price."
+                diversification_note = "Excellent diversifier. This stock can act as a safety net in your portfolio because it barely reacts to broad market crashes."
 
             # Linear correlation for comparison context
             correlation = float(np.corrcoef(X[-n_used:], y[-n_used:])[0, 1])
 
-            # Trading insight based on HSIC
-            if dep_score >= 0.75 and abs(correlation) < 0.5:
-                trading_insight = "NON-LINEAR LINK DETECTED: Hidden dependency not visible in linear metrics. Use caution hedging with market index."
-            elif dep_score >= 0.75:
-                trading_insight = "STRONG MARKET COUPLING: Stock is deeply tied to index moves (linear and non-linear)."
-            elif dep_score >= 0.50 and abs(correlation) < 0.4:
-                trading_insight = "HIDDEN DEPENDENCY: Moderate non-linear coupling suggests tail-risk co-movement."
-            elif dep_score >= 0.50:
-                trading_insight = "MODERATE LINK: Stock partially tracks market via mixed linear/non-linear channels."
-            elif dep_score < 0.25:
-                trading_insight = "INDEPENDENT STOCK: Driven by company-specific factors, not broad market."
+            # Mirror Test — compare linear correlation vs HSIC score
+            abs_corr = abs(correlation)
+            if dep_score >= 0.50 and abs_corr < 0.4:
+                hidden_sync = True
+                mirror_verdict = "Hidden Sync Detected"
+                mirror_color = "#ff6b6b"
+                mirror_explain = (
+                    f"The Mirror Test shows a low surface-level correlation ({correlation:+.2f}), but the Magnetism Score is high ({dep_score:.0%}). "
+                    "This means the stock and Nifty 50 are connected in complex, non-obvious ways — for example, they might crash together during crises "
+                    "even though they seem unrelated on normal days. This hidden link is the most dangerous kind for diversification."
+                )
+            elif dep_score >= 0.50 and abs_corr >= 0.4:
+                hidden_sync = False
+                mirror_verdict = "Visible Connection"
+                mirror_color = "#ffa94d"
+                mirror_explain = (
+                    f"Both the Mirror Test ({correlation:+.2f}) and the Magnetism Score ({dep_score:.0%}) agree — this stock clearly moves with the market. "
+                    "No hidden surprises here: what you see is what you get. The connection is straightforward and already reflected in the stock's daily price movements."
+                )
+            elif dep_score < 0.50 and abs_corr >= 0.5:
+                hidden_sync = False
+                mirror_verdict = "Surface-Level Only"
+                mirror_color = "#69db7c"
+                mirror_explain = (
+                    f"The Mirror Test shows some correlation ({correlation:+.2f}), but the deeper Magnetism Score is low ({dep_score:.0%}). "
+                    "The day-to-day similarity is superficial — during big market events, this stock is likely to chart its own path."
+                )
             else:
-                trading_insight = "WEAK LINK: Minimal detectable dependency on market index."
+                hidden_sync = False
+                mirror_verdict = "Independent"
+                mirror_color = "#10b981"
+                mirror_explain = (
+                    f"Both measures agree: this stock has little connection to Nifty 50 (correlation {correlation:+.2f}, magnetism {dep_score:.0%}). "
+                    "It moves to its own beat. Great for building a diversified portfolio."
+                )
+
+            # Trading insight — plain-English, diversification-focused
+            if dep_score >= 0.75 and abs_corr < 0.5:
+                trading_insight = "HIDDEN RISK: This stock looks independent but is secretly tied to the market. Don't count on it to protect your portfolio during a crash."
+            elif dep_score >= 0.75:
+                trading_insight = "HIGH MARKET RISK: This stock moves strongly with Nifty 50. In a downturn, expect it to fall just as hard — or harder."
+            elif dep_score >= 0.50 and abs_corr < 0.4:
+                trading_insight = "CAUTION — HIDDEN LINK: A moderate invisible connection to the market means surprise losses during sell-offs are possible."
+            elif dep_score >= 0.50:
+                trading_insight = "MODERATE MARKET RISK: This stock partially follows the market. Good on its own, but not a strong diversifier against Nifty 50."
+            elif dep_score < 0.25:
+                trading_insight = "STRONG DIVERSIFIER: This stock barely reacts to market swings. Great for reducing overall portfolio risk."
+            else:
+                trading_insight = "MILD DIVERSIFIER: Only a faint connection to the market. Can help spread risk in a Nifty-heavy portfolio."
 
             # --- Plot generation (scatter only, no trend line) -------------
             X_plot = X[-n_used:]
@@ -1085,8 +1137,16 @@ class Analyzer:
                 'dependency_score': round(dep_score, 4),
                 'dependency_label': dep_label,
                 'dependency_color': dep_color,
+                'badge_text': badge_text,
+                'badge_bg': badge_bg,
+                'magnetism_plain': magnetism_plain,
+                'diversification_note': diversification_note,
                 'raw_hsic': round(raw_hsic, 8),
                 'correlation': round(correlation, 4),
+                'mirror_verdict': mirror_verdict,
+                'mirror_color': mirror_color,
+                'mirror_explain': mirror_explain,
+                'hidden_sync': hidden_sync,
                 'data_points': n_used,
                 'market_source': nifty_source,
                 'trading_insight': trading_insight,
@@ -1376,7 +1436,29 @@ def index():
         .regression-metric-desc { font-size: 0.9em; color: var(--text-secondary); line-height: 1.5; }
         .plot-container { background: var(--bg-card-hover); padding: 20px; border-radius: 12px; margin-bottom: 30px; border: 1px solid var(--border-color); text-align: center; }
         .plot-img { max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        
+        .hsic-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: 700; font-size: 0.85em; letter-spacing: 0.5px; color: #fff; }
+        .hsic-hero { text-align: center; padding: 30px 20px; background: var(--bg-card-hover); border-radius: 14px; margin-bottom: 25px; border: 1px solid var(--border-color); position: relative; }
+        .hsic-hero-score { font-size: 3.5em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; line-height: 1.1; }
+        .hsic-hero-label { font-size: 1.1em; margin-top: 6px; color: var(--text-secondary); }
+        .hsic-hero-subtitle { font-size: 0.9em; margin-top: 12px; color: var(--text-muted); max-width: 600px; margin-left: auto; margin-right: auto; line-height: 1.6; }
+        .hsic-tooltip { position: relative; cursor: help; border-bottom: 1px dashed var(--text-muted); }
+        .hsic-tooltip .hsic-tooltip-text { visibility: hidden; opacity: 0; position: absolute; z-index: 10; bottom: 125%; left: 50%; transform: translateX(-50%); width: 300px; background: #1a1f2e; color: var(--text-secondary); padding: 14px; border-radius: 10px; font-size: 0.85em; line-height: 1.5; border: 1px solid var(--border-color); box-shadow: 0 8px 25px rgba(0,0,0,0.5); transition: opacity 0.2s; font-weight: 400; text-transform: none; letter-spacing: normal; }
+        .hsic-tooltip .hsic-tooltip-text::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -6px; border-width: 6px; border-style: solid; border-color: #1a1f2e transparent transparent transparent; }
+        .hsic-tooltip:hover .hsic-tooltip-text { visibility: visible; opacity: 1; }
+        .insight-card { background: var(--bg-card-hover); border-radius: 12px; padding: 22px; margin-bottom: 15px; border-left: 4px solid var(--accent-purple); }
+        .insight-card-title { font-size: 0.8em; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+        .insight-card-body { font-size: 0.95em; color: var(--text-secondary); line-height: 1.7; }
+        .mirror-verdict { font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 1.3em; margin-bottom: 6px; }
+        .tech-details-toggle { background: none; border: 1px solid var(--border-color); color: var(--text-muted); padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 0.85em; font-weight: 600; transition: all 0.2s; width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; margin-top: 20px; }
+        .tech-details-toggle:hover { border-color: var(--accent-cyan); color: var(--text-secondary); }
+        .tech-details-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; }
+        .tech-details-content.open { max-height: 500px; }
+        .tech-details-inner { padding: 20px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; }
+        .tech-detail-item { background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); }
+        .tech-detail-label { font-size: 0.75em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .tech-detail-value { font-size: 1.4em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; color: var(--text-primary); }
+        .tech-detail-note { font-size: 0.8em; color: var(--text-muted); margin-top: 4px; }
+
         .scope-btn, .risk-btn { padding: 10px 18px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.9em; font-weight: 500; transition: all 0.2s; }
         .scope-btn.active, .risk-btn.active { background: var(--accent-cyan); color: var(--bg-dark); border-color: var(--accent-cyan); }
         .scope-btn:hover, .risk-btn:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
@@ -1652,44 +1734,101 @@ def index():
         function showRegressionResult(data, symbol) {
             const marketInfo = data.market_source ? `<div style="background: rgba(0, 217, 255, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-cyan);"><strong>📊 Market Benchmark:</strong> ${data.market_source} ${data.market_source !== 'Nifty 50 Index' ? '<br><small style="color: var(--text-muted);">Note: Using alternative benchmark due to Nifty 50 data availability.</small>' : ''}</div>` : '';
             const scorePercent = (data.dependency_score * 100).toFixed(1);
+            const hiddenSyncTag = data.hidden_sync ? '<span style="background:rgba(255,107,107,0.15); color:#ff6b6b; padding:3px 10px; border-radius:12px; font-size:0.75em; font-weight:600; margin-left:8px;">HIDDEN SYNC</span>' : '';
             const html = `
                 <div class="result-card">
-                    <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">HSIC Non-Linear Dependency Analysis</div></div>
+                    <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">Market Connection Analysis</div></div>
                     <div style="margin: -20px 0 20px; font-size: 1.1em; color: var(--text-secondary);">${getStockName(symbol)} <span style="background: var(--bg-card-hover); padding: 3px 10px; border-radius: 4px; font-size: 0.8em; color: var(--accent-cyan); border: 1px solid var(--border-color);">${getStockSector(symbol)}</span></div>
                     ${marketInfo}
                     <div class="action-banner">${data.trading_insight}</div>
 
-                    <div class="plot-container">
-                        <h3 style="color: var(--accent-purple); margin-bottom: 15px;">🔍 Return Scatter — Non-Parametric View</h3>
-                        <img src="data:image/png;base64,${data.plot_url}" class="plot-img" alt="HSIC Scatter Plot">
+                    <!-- HERO: Magnetism Score -->
+                    <div class="hsic-hero">
+                        <div style="margin-bottom: 10px;">
+                            <span class="hsic-tooltip" style="font-size: 0.85em; color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px;">
+                                Magnetism Score
+                                <span class="hsic-tooltip-text">Think of this like a magnet between the stock and Nifty 50. A high score means the stock is strongly pulled by the market — including hidden, non-obvious connections that simple correlation misses. It detects both visible and invisible ties.</span>
+                            </span>
+                        </div>
+                        <div class="hsic-hero-score" style="color: ${data.dependency_color};">${scorePercent}%</div>
+                        <div class="hsic-hero-label">
+                            <span class="hsic-badge" style="background: ${data.badge_bg};">${data.badge_text}</span>
+                            ${hiddenSyncTag}
+                        </div>
+                        <div class="hsic-hero-subtitle">${data.magnetism_plain}</div>
                     </div>
 
-                    <div class="regression-grid">
-                        <div class="regression-metric" style="border-left: 4px solid ${data.dependency_color};">
-                            <div class="regression-metric-label">Dependency Score (HSIC)</div>
-                            <div class="regression-metric-value" style="color: ${data.dependency_color};">${scorePercent}%</div>
-                            <div class="regression-metric-desc">${data.dependency_label}</div>
+                    <!-- SCATTER PLOT -->
+                    <div class="plot-container">
+                        <h3 style="color: var(--accent-purple); margin-bottom: 5px;">Daily Returns — ${symbol} vs ${data.market_source || 'Market'}</h3>
+                        <p style="color: var(--text-muted); font-size: 0.85em; margin-bottom: 15px;">Each dot is one trading day. A tight cluster means the stock and market often move together.</p>
+                        <img src="data:image/png;base64,${data.plot_url}" class="plot-img" alt="Stock vs Market scatter plot">
+                    </div>
+
+                    <!-- INSIGHT CARDS -->
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        <!-- Mirror Test Card -->
+                        <div class="insight-card" style="border-left-color: ${data.mirror_color};">
+                            <div class="insight-card-title">
+                                <span class="hsic-tooltip">
+                                    Mirror Test
+                                    <span class="hsic-tooltip-text">The Mirror Test checks if the stock's daily price moves look similar to the market. If this is low but the Magnetism Score is high, the stock has a "Hidden Sync" — it follows the market in complex, non-obvious ways (e.g., crashing together during crises).</span>
+                                </span>
+                            </div>
+                            <div class="mirror-verdict" style="color: ${data.mirror_color};">${data.mirror_verdict}</div>
+                            <div class="insight-card-body">${data.mirror_explain}</div>
                         </div>
-                        <div class="regression-metric">
-                            <div class="regression-metric-label">Raw HSIC</div>
-                            <div class="regression-metric-value">${data.raw_hsic.toFixed(8)}</div>
-                            <div class="regression-metric-desc">Unnormalised kernel dependence statistic tr(K_c L_c)/n².</div>
-                        </div>
-                        <div class="regression-metric">
-                            <div class="regression-metric-label">Linear Correlation</div>
-                            <div class="regression-metric-value">${data.correlation.toFixed(4)}</div>
-                            <div class="regression-metric-desc">${Math.abs(data.correlation) > 0.6 ? 'Strong linear component.' : Math.abs(data.correlation) > 0.3 ? 'Moderate linear component.' : 'Weak linear relationship — non-linear effects may dominate.'}</div>
-                        </div>
-                        <div class="regression-metric">
-                            <div class="regression-metric-label">Data Points</div>
-                            <div class="regression-metric-value">${data.data_points}</div>
-                            <div class="regression-metric-desc">Trading days used (max 90).</div>
+
+                        <!-- Diversification Card -->
+                        <div class="insight-card" style="border-left-color: ${data.dependency_score >= 0.5 ? '#ff6b6b' : '#10b981'};">
+                            <div class="insight-card-title">
+                                <span class="hsic-tooltip">
+                                    Portfolio Protection
+                                    <span class="hsic-tooltip-text">Diversification means spreading risk. If a stock has a high market connection, it won't protect you when the market falls — it'll fall too. Low-connection stocks are better safety nets for your portfolio.</span>
+                                </span>
+                            </div>
+                            <div style="font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 1.3em; margin-bottom: 6px; color: ${data.dependency_score >= 0.5 ? '#ff6b6b' : '#10b981'};">
+                                ${data.dependency_score >= 0.5 ? 'Weak Protection' : 'Strong Protection'}
+                            </div>
+                            <div class="insight-card-body">${data.diversification_note}</div>
                         </div>
                     </div>
-                    <div class="trading-plan" style="margin-top: 25px;">
-                        <h3>💡 Practical Trading Applications</h3>
-                        <div class="plan-item"><span class="plan-label">Hidden Risk</span><span class="plan-value">${data.dependency_score >= 0.5 && Math.abs(data.correlation) < 0.4 ? 'Non-linear dependency detected despite weak linear correlation — tail risks may be correlated.' : data.dependency_score >= 0.5 ? 'Significant market coupling confirmed across linear and non-linear channels.' : 'Low dependency — stock behaves largely independent of market index.'}</span></div>
-                        <div class="plan-item"><span class="plan-label">Portfolio Use</span><span class="plan-value">${data.dependency_score >= 0.5 ? 'High dependency — limited diversification benefit vs Nifty 50.' : 'Low dependency — good diversifier in a Nifty-heavy portfolio.'}</span></div>
+
+                    <!-- WHAT DOES THIS MEAN FOR ME -->
+                    <div class="trading-plan" style="margin-top: 10px;">
+                        <h3>What Does This Mean For Me?</h3>
+                        <div class="plan-item"><span class="plan-label">If Nifty 50 crashes</span><span class="plan-value">${data.dependency_score >= 0.75 ? 'This stock will very likely fall with it. Holding both is like having two umbrellas with the same hole.' : data.dependency_score >= 0.5 ? 'This stock may get dragged down too, especially during sharp drops. Partial protection at best.' : data.dependency_score >= 0.25 ? 'This stock should hold up better than most. It has its own drivers and won\\'t blindly follow the market.' : 'This stock is like a separate world from Nifty 50. It\\'s one of your best options for true diversification.'}</span></div>
+                        <div class="plan-item"><span class="plan-label">If I already own Nifty funds</span><span class="plan-value">${data.dependency_score >= 0.5 ? 'Adding this stock doesn\\'t spread your risk much — you\\'re doubling down on the same market forces.' : 'Good choice for diversification. This stock adds genuine variety to a Nifty-heavy portfolio.'}</span></div>
+                        <div class="plan-item"><span class="plan-label">Hidden surprises?</span><span class="plan-value">${data.hidden_sync ? 'Yes — the Mirror Test is low but the Magnetism Score is high. This stock seems independent day-to-day, but shares deep, hidden connections with the market. Be cautious.' : 'No hidden connections detected. What you see is what you get.'}</span></div>
+                    </div>
+
+                    <!-- TECHNICAL DETAILS (collapsible) -->
+                    <button class="tech-details-toggle" onclick="this.nextElementSibling.classList.toggle('open'); this.querySelector('.arrow').textContent = this.nextElementSibling.classList.contains('open') ? '▲' : '▼';">
+                        Technical Details — For Advanced Users <span class="arrow">▼</span>
+                    </button>
+                    <div class="tech-details-content">
+                        <div class="tech-details-inner">
+                            <div class="tech-detail-item">
+                                <div class="tech-detail-label">HSIC Score (Normalised)</div>
+                                <div class="tech-detail-value" style="color: ${data.dependency_color};">${scorePercent}%</div>
+                                <div class="tech-detail-note">HSIC / sqrt(HSIC_xx * HSIC_yy), range 0-1.</div>
+                            </div>
+                            <div class="tech-detail-item">
+                                <div class="tech-detail-label">Raw HSIC (Unfiltered Signal)</div>
+                                <div class="tech-detail-value">${data.raw_hsic.toFixed(8)}</div>
+                                <div class="tech-detail-note">tr(K_c L_c) / n&sup2; — the unnormalised kernel statistic before scaling.</div>
+                            </div>
+                            <div class="tech-detail-item">
+                                <div class="tech-detail-label">Linear Correlation</div>
+                                <div class="tech-detail-value">${data.correlation >= 0 ? '+' : ''}${data.correlation.toFixed(4)}</div>
+                                <div class="tech-detail-note">Pearson r. Used as the "Mirror Test" baseline.</div>
+                            </div>
+                            <div class="tech-detail-item">
+                                <div class="tech-detail-label">Observations</div>
+                                <div class="tech-detail-value">${data.data_points}</div>
+                                <div class="tech-detail-note">Trading days analysed (capped at 90 for memory safety).</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             `;
