@@ -39,7 +39,7 @@ app = Flask(__name__)
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
-DIVIDEND_MAX_RESULTS = 300
+DIVIDEND_MAX_RESULTS = 150
 DIVIDEND_BATCH_SIZE = 50
 DIVIDEND_MAX_WORKERS = 4
 
@@ -260,6 +260,32 @@ def _save_universe_cache(symbols, source):
         print(f"  [cache] Saved {len(symbols)} symbols to disk (source: {source})")
     except Exception as e:
         print(f"  [cache] Failed to save cache: {e}")
+
+
+def _compute_split_adjusted_dividend(dividends, splits):
+    """Adjust historical dividends to current share count using split data."""
+    if dividends is None or dividends.empty:
+        return 0.0
+    if splits is None or splits.empty:
+        return float(dividends.sum())
+
+    splits = splits[splits > 0].sort_index()
+    if splits.empty:
+        return float(dividends.sum())
+
+    split_dates = splits.index
+    split_values = splits.values
+    cumulative_from_end = np.cumprod(split_values[::-1])[::-1]
+
+    adjusted_total = 0.0
+    for div_date, div_value in dividends.items():
+        idx = split_dates.searchsorted(div_date, side="right")
+        if idx < len(split_values):
+            factor = cumulative_from_end[idx]
+        else:
+            factor = 1.0
+        adjusted_total += float(div_value) / factor
+    return float(adjusted_total)
 
 
 def fetch_nse_universe():
@@ -1018,7 +1044,7 @@ class Analyzer:
                     interval='1d',
                     group_by='column',
                     actions=True,
-                    auto_adjust=True,
+                    auto_adjust=False,
                     progress=False,
                     threads=True
                 )
@@ -1033,16 +1059,27 @@ class Analyzer:
                     if isinstance(data.columns, pd.MultiIndex):
                         close_series = data['Close'][ticker_symbol].dropna()
                         dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
+                        if 'Stock Splits' in data.columns.get_level_values(0):
+                            splits = data['Stock Splits'][ticker_symbol].dropna()
+                        elif 'Splits' in data.columns.get_level_values(0):
+                            splits = data['Splits'][ticker_symbol].dropna()
+                        else:
+                            splits = pd.Series(dtype=float)
                     else:
                         close_series = data['Close'].dropna()
                         dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                        if 'Stock Splits' in data.columns:
+                            splits = data['Stock Splits'].dropna()
+                        elif 'Splits' in data.columns:
+                            splits = data['Splits'].dropna()
+                        else:
+                            splits = pd.Series(dtype=float)
                     if close_series.empty or len(close_series) < 10:
                         continue
                     current_price = float(close_series.iloc[-1])
                     if current_price <= 0:
                         continue
-                    # Dividends from auto_adjust=True are split-adjusted
-                    annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                    annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
                     if annual_dividend <= 0:
                         continue
                     dividend_yield = (annual_dividend / current_price) * 100
@@ -1405,7 +1442,7 @@ def index():
                 if (skipSectors.has(sector)) continue;
                 if (list.includes(symbol)) return sector;
             }
-            return "NSE";
+            return "";
         }
         let currentTab = 'analysis';
         function switchTab(tab, event) {
@@ -1715,6 +1752,7 @@ def index():
                             <tbody id="live-dividend-body"></tbody>
                         </table>
                     </div>
+                    <div id="live-portfolio" style="margin-top: 25px;"></div>
                     <div style="color: var(--text-muted); font-size: 0.8em; margin-top: 10px;">This may take 30-120 seconds for large universes. Please wait.</div>
                 </div>`;
 
@@ -1741,6 +1779,10 @@ def index():
                         liveDividendEntries = liveDividendEntries.slice(0, liveDividendMax);
                     }
                     scheduleLiveDividendRender();
+                    return;
+                }
+                if (payload.type === 'portfolio') {
+                    renderLivePortfolio(payload.portfolio, capital, payload.partial, payload.scanned, payload.dividend_found);
                     return;
                 }
                 if (payload.type === 'progress') {
@@ -1851,6 +1893,62 @@ def index():
                     </div>
                 </div>`;
             document.getElementById('dividend-results').innerHTML = html;
+        }
+        function renderLivePortfolio(data, capital, partial, scanned, dividendFound) {
+            if (!data || !data.allocation || data.allocation.length === 0) return;
+            const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
+            const status = partial ? 'LIVE (PARTIAL)' : 'LIVE';
+            const subText = partial ? `Updated after scanning ${scanned} stocks (${dividendFound} dividend payers)` : '';
+            const rows = data.allocation.slice(0, 10).map((a, idx) => `
+                <tr>
+                    <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}<br><span style="font-size:0.8em; font-weight:400; color: var(--text-muted);">${getStockName(a.symbol)}</span></td>
+                    <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(a.symbol)}</td>
+                    <td>${a.weight}%</td>
+                    <td style="text-align: right;">${a.shares}</td>
+                    <td style="text-align: right;">${fmt(a.price)}</td>
+                    <td style="text-align: right;">${fmt(a.amount)}</td>
+                    <td style="color: var(--accent-green); font-weight: 600;">${a.dividend_yield}%</td>
+                    <td style="color: var(--accent-green); font-weight: 700; text-align: right;">${fmt(a.expected_dividend)}</td>
+                    <td>${a.volatility}%</td>
+                </tr>`).join('');
+            const html = `
+                <div class="result-card">
+                    <div class="header">
+                        <h2>Optimized Portfolio (Live)</h2>
+                        <div class="signal-badge" style="background: var(--accent-purple); color: white;">${status}</div>
+                    </div>
+                    ${subText ? `<div style="color: var(--text-secondary); font-size: 0.85em; margin-bottom: 10px;">${subText}</div>` : ''}
+                    <div class="summary-grid">
+                        <div class="summary-card">
+                            <div class="summary-value" style="color: var(--accent-green);">${Number(data.portfolio_yield).toFixed(2)}%</div>
+                            <div class="summary-label">Portfolio Dividend Yield</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" style="color: var(--accent-cyan);">${fmt(data.total_expected_dividend)}</div>
+                            <div class="summary-label">Expected Annual Dividend (INR)</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value">${data.num_stocks}</div>
+                            <div class="summary-label">Stocks in Portfolio</div>
+                        </div>
+                        <div class="summary-card">
+                            <div class="summary-value" style="color: var(--accent-purple);">${fmt(data.total_invested)}</div>
+                            <div class="summary-label">Capital Deployed (INR)</div>
+                        </div>
+                    </div>
+                    <h3 style="color: var(--accent-cyan); margin: 20px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">Top Allocation (Live)</h3>
+                    <div style="overflow-x: auto;">
+                        <table class="dividend-table">
+                            <thead><tr>
+                                <th>Stock</th><th>Sector</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
+                            </tr></thead>
+                            <tbody>${rows}</tbody>
+                        </table>
+                    </div>
+                    <div style="color: var(--text-muted); font-size: 0.8em; margin-top: 8px;">Live portfolio updates every 50 stocks scanned to reduce memory usage.</div>
+                </div>`;
+            const target = document.getElementById('live-portfolio');
+            if (target) target.innerHTML = html;
         }
         function initDividendSectors() {
             const grid = document.getElementById('sector-grid');
@@ -2016,6 +2114,8 @@ def dividend_optimize_stream_route():
             dividend_found = 0
             results = []
             max_results = DIVIDEND_MAX_RESULTS
+            truncated = False
+            last_portfolio_update = 0
             yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
 
             # Serve cached entries first
@@ -2025,6 +2125,9 @@ def dividend_optimize_stream_route():
                 if cached and (now - cached['timestamp']) <= DIVIDEND_CACHE_TTL:
                     entry = cached['data']
                     results.append(entry)
+                    if len(results) > max_results:
+                        results = sorted(results, key=lambda x: x['dividend_yield'], reverse=True)[:max_results]
+                        truncated = True
                     cached_symbols.add(symbol)
                     scanned += 1
                     dividend_found += 1
@@ -2035,8 +2138,32 @@ def dividend_optimize_stream_route():
                         'dividend_found': dividend_found
                     }
                     yield f"data: {json.dumps(payload)}\n\n"
+                    if scanned - last_portfolio_update >= 50 and len(results) >= 3:
+                        live_portfolio = analyzer.optimize_dividend_portfolio(results, capital, risk)
+                        if live_portfolio:
+                            portfolio_payload = {
+                                'type': 'portfolio',
+                                'portfolio': live_portfolio,
+                                'partial': True,
+                                'scanned': scanned,
+                                'dividend_found': dividend_found
+                            }
+                            yield f"data: {json.dumps(portfolio_payload)}\n\n"
+                            last_portfolio_update = scanned
 
             symbols_to_fetch = [s for s in symbols if s not in cached_symbols]
+            if results and last_portfolio_update == 0:
+                live_portfolio = analyzer.optimize_dividend_portfolio(results, capital, risk)
+                if live_portfolio:
+                    portfolio_payload = {
+                        'type': 'portfolio',
+                        'portfolio': live_portfolio,
+                        'partial': True,
+                        'scanned': scanned,
+                        'dividend_found': dividend_found
+                    }
+                    yield f"data: {json.dumps(portfolio_payload)}\n\n"
+                    last_portfolio_update = scanned
 
             def _batched(iterable, size):
                 for idx in range(0, len(iterable), size):
@@ -2055,7 +2182,7 @@ def dividend_optimize_stream_route():
                         interval='1d',
                         group_by='column',
                         actions=True,
-                        auto_adjust=True,
+                        auto_adjust=False,
                         progress=False,
                         threads=True
                     )
@@ -2073,9 +2200,21 @@ def dividend_optimize_stream_route():
                         if isinstance(data.columns, pd.MultiIndex):
                             close_series = data['Close'][ticker_symbol].dropna()
                             dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
+                            if 'Stock Splits' in data.columns.get_level_values(0):
+                                splits = data['Stock Splits'][ticker_symbol].dropna()
+                            elif 'Splits' in data.columns.get_level_values(0):
+                                splits = data['Splits'][ticker_symbol].dropna()
+                            else:
+                                splits = pd.Series(dtype=float)
                         else:
                             close_series = data['Close'].dropna()
                             dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                            if 'Stock Splits' in data.columns:
+                                splits = data['Stock Splits'].dropna()
+                            elif 'Splits' in data.columns:
+                                splits = data['Splits'].dropna()
+                            else:
+                                splits = pd.Series(dtype=float)
                         if close_series.empty or len(close_series) < 10:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -2085,8 +2224,7 @@ def dividend_optimize_stream_route():
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
-                        # Dividends from auto_adjust=True are split-adjusted
-                        annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                        annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -2103,6 +2241,9 @@ def dividend_optimize_stream_route():
                         }
                         dividend_found += 1
                         results.append(entry)
+                        if len(results) > max_results:
+                            results = sorted(results, key=lambda x: x['dividend_yield'], reverse=True)[:max_results]
+                            truncated = True
                         DIVIDEND_CACHE[symbol] = {
                             'timestamp': now,
                             'data': entry
@@ -2114,6 +2255,18 @@ def dividend_optimize_stream_route():
                             'dividend_found': dividend_found
                         }
                         yield f"data: {json.dumps(payload)}\n\n"
+                        if scanned - last_portfolio_update >= 50 and len(results) >= 3:
+                            live_portfolio = analyzer.optimize_dividend_portfolio(results, capital, risk)
+                            if live_portfolio:
+                                portfolio_payload = {
+                                    'type': 'portfolio',
+                                    'portfolio': live_portfolio,
+                                    'partial': True,
+                                    'scanned': scanned,
+                                    'dividend_found': dividend_found
+                                }
+                                yield f"data: {json.dumps(portfolio_payload)}\n\n"
+                                last_portfolio_update = scanned
                     except Exception:
                         payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                         yield f"data: {json.dumps(payload)}\n\n"
@@ -2135,10 +2288,6 @@ def dividend_optimize_stream_route():
                 return
 
             display_stocks = sorted(results, key=lambda x: x['dividend_yield'], reverse=True)
-            truncated = False
-            if len(display_stocks) > max_results:
-                display_stocks = display_stocks[:max_results]
-                truncated = True
             result['all_dividend_stocks'] = display_stocks
             result['stocks_scanned'] = len(symbols)
             result['dividend_stocks_found'] = dividend_found
