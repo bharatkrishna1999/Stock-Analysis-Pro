@@ -3,8 +3,8 @@ Enhanced Large Cap Stocks Trading Dashboard - Flask Version (ALL NSE STOCKS)
 Features:
 - ALL NSE-listed stocks (500+ companies)
 - Z-score with percentage deviation
-- Linear regression analysis vs Nifty 50
-- VISUAL Regression Plots with Equation (y = mx + b)
+- HSIC non-linear dependency analysis vs Nifty 50
+- VISUAL Scatter Plots with Dependency Scores
 - Clear entry/exit explanations with confidence levels
 - Time-to-target predictions
 - Autocomplete for Search
@@ -889,7 +889,13 @@ class Analyzer:
         return self.signal(ind)
 
     def regression_analysis(self, stock_symbol):
-        """Perform linear regression analysis of stock vs Nifty 50"""
+        """Perform HSIC (Hilbert-Schmidt Independence Criterion) non-linear dependency analysis of stock vs Nifty 50.
+
+        Uses an RBF kernel with median-heuristic bandwidth to detect arbitrary
+        (including non-linear) statistical dependencies between daily returns.
+        Capped to the last 90 trading days and computed in float32 to stay
+        within the 512 MB Free-Tier RAM limit.
+        """
         def _clean_close(px_df):
             c = px_df.get("Close", None)
             if c is None: return pd.Series(dtype=float)
@@ -905,11 +911,70 @@ class Analyzer:
             s = pd.to_numeric(s, errors="coerce").dropna()
             return s
 
+        def _rbf_kernel_f32(x, sigma):
+            """Compute RBF (Gaussian) kernel matrix in float32.
+            K_ij = exp(-||x_i - x_j||^2 / (2 * sigma^2))
+            """
+            x = x.astype(np.float32).reshape(-1, 1)
+            sq_dists = (x - x.T) ** 2
+            return np.exp(-sq_dists / (np.float32(2.0) * np.float32(sigma) ** 2))
+
+        def _median_heuristic(x):
+            """Median heuristic for RBF bandwidth: sigma = median(|x_i - x_j|) for i != j."""
+            x = x.astype(np.float32).reshape(-1, 1)
+            dists = np.abs(x - x.T)
+            # Extract upper triangle (exclude diagonal zeros)
+            upper = dists[np.triu_indices_from(dists, k=1)]
+            med = float(np.median(upper))
+            return med if med > 1e-8 else 1e-4  # guard against zero bandwidth
+
+        def _hsic_score(x, y, max_samples=90):
+            """Compute normalised HSIC dependency score in [0, 1].
+
+            Steps:
+            1. Cap to last `max_samples` observations (memory-safe).
+            2. Compute RBF kernels K (for x) and L (for y) using median heuristic.
+            3. Center both kernels:  K_c = H K H,  L_c = H L H  where H = I - 1/n 11^T.
+            4. HSIC = tr(K_c L_c) / n^2.
+            5. Normalise: score = HSIC / sqrt(HSIC_xx * HSIC_yy) clamped to [0, 1].
+            """
+            # --- cap to last N trading days --------------------------------
+            if len(x) > max_samples:
+                x = x[-max_samples:]
+                y = y[-max_samples:]
+            n = len(x)
+
+            # --- float32 throughout ----------------------------------------
+            x = x.astype(np.float32)
+            y = y.astype(np.float32)
+
+            sigma_x = _median_heuristic(x)
+            sigma_y = _median_heuristic(y)
+
+            K = _rbf_kernel_f32(x, sigma_x)
+            L = _rbf_kernel_f32(y, sigma_y)
+
+            # Centering matrix H = I - (1/n) * 11^T
+            H = np.eye(n, dtype=np.float32) - np.float32(1.0 / n)
+
+            Kc = H @ K @ H
+            Lc = H @ L @ H
+
+            hsic_xy = float(np.trace(Kc @ Lc)) / (n * n)
+            hsic_xx = float(np.trace(Kc @ Kc)) / (n * n)
+            hsic_yy = float(np.trace(Lc @ Lc)) / (n * n)
+
+            denom = np.sqrt(max(hsic_xx, 0) * max(hsic_yy, 0))
+            if denom < 1e-12:
+                return 0.0, hsic_xy, n
+            score = float(np.clip(hsic_xy / denom, 0.0, 1.0))
+            return score, hsic_xy, n
+
         try:
             periods_to_try = ['1y', '6mo', '3mo']
             stock_data, nifty_data = None, None
             nifty_source = None
-            
+
             for period in periods_to_try:
                 try:
                     stock_data = yf.download(f"{stock_symbol}.NS", period=period, interval='1d', progress=False, threads=False)
@@ -922,7 +987,7 @@ class Analyzer:
                             nifty_source = "RELIANCE (proxy)"
                         else: nifty_source = "NIFTYBEES ETF"
                     else: nifty_source = "Nifty 50 Index"
-                    
+
                     if nifty_data is not None and not nifty_data.empty: break
                 except Exception: continue
 
@@ -940,85 +1005,96 @@ class Analyzer:
             X = rets["market"].to_numpy()
             y = rets["stock"].to_numpy()
 
-            slope, intercept, r_value, p_value, std_err = stats.linregress(X, y)
-            r_squared = r_value ** 2
-            
-            # Plot generation
+            # --- HSIC computation (capped to 90 days, float32) -------------
+            dep_score, raw_hsic, n_used = _hsic_score(X, y, max_samples=90)
+
+            # Qualitative label
+            if dep_score >= 0.75:
+                dep_label = "Strong Hidden Correlation"
+                dep_color = "#ff6b6b"
+            elif dep_score >= 0.50:
+                dep_label = "Moderate Non-Linear Link"
+                dep_color = "#ffa94d"
+            elif dep_score >= 0.25:
+                dep_label = "Weak Dependency"
+                dep_color = "#69db7c"
+            else:
+                dep_label = "Near Independence"
+                dep_color = "#a0aec0"
+
+            # Linear correlation for comparison context
+            correlation = float(np.corrcoef(X[-n_used:], y[-n_used:])[0, 1])
+
+            # Trading insight based on HSIC
+            if dep_score >= 0.75 and abs(correlation) < 0.5:
+                trading_insight = "NON-LINEAR LINK DETECTED: Hidden dependency not visible in linear metrics. Use caution hedging with market index."
+            elif dep_score >= 0.75:
+                trading_insight = "STRONG MARKET COUPLING: Stock is deeply tied to index moves (linear and non-linear)."
+            elif dep_score >= 0.50 and abs(correlation) < 0.4:
+                trading_insight = "HIDDEN DEPENDENCY: Moderate non-linear coupling suggests tail-risk co-movement."
+            elif dep_score >= 0.50:
+                trading_insight = "MODERATE LINK: Stock partially tracks market via mixed linear/non-linear channels."
+            elif dep_score < 0.25:
+                trading_insight = "INDEPENDENT STOCK: Driven by company-specific factors, not broad market."
+            else:
+                trading_insight = "WEAK LINK: Minimal detectable dependency on market index."
+
+            # --- Plot generation (scatter only, no trend line) -------------
+            X_plot = X[-n_used:]
+            y_plot = y[-n_used:]
+
             plt.style.use('dark_background')
             fig, ax = plt.subplots(figsize=(10, 6))
-            
+
             bg_color = '#131824'
             grid_color = '#2d3748'
-            
+
             fig.patch.set_facecolor(bg_color)
             ax.set_facecolor(bg_color)
-            
-            ax.scatter(X*100, y*100, alpha=0.6, c='#00d9ff', edgecolors='none', s=50, label='Daily Returns', zorder=1)
-            
-            x_range = np.linspace(X.min(), X.max(), 100)
-            y_pred = slope * x_range + intercept
-            ax.plot(x_range*100, y_pred*100, color='#9d4edd', linewidth=3, label=f'Regression Line', zorder=2)
 
-            sign = '+' if intercept >= 0 else '-'
+            ax.scatter(X_plot * 100, y_plot * 100, alpha=0.6, c='#00d9ff',
+                       edgecolors='none', s=50, label='Daily Returns', zorder=1)
+
             stats_text = (
-                f"$\\bf{{Regression\\ Stats}}$\n"
-                f"• Eq: $y = {slope:.2f}x {sign} {abs(intercept):.4f}$\n"
-                f"• $R^2$: {r_squared:.4f}\n"
-                f"• Beta ($\\beta$): {slope:.3f}"
+                f"$\\bf{{HSIC\\ Dependency}}$\n"
+                f"• Score: {dep_score:.4f}\n"
+                f"• Label: {dep_label}\n"
+                f"• Days: {n_used}"
             )
-            
-            ax.text(0.03, 0.97, stats_text, transform=ax.transAxes, fontsize=11, color='white', 
+
+            ax.text(0.03, 0.97, stats_text, transform=ax.transAxes, fontsize=11, color='white',
                     verticalalignment='top', bbox=dict(facecolor=bg_color, alpha=0.95, edgecolor=grid_color, boxstyle='round,pad=0.5'), zorder=3)
-            
-            ax.set_title(f'{stock_symbol} vs {nifty_source} Regression Analysis', fontsize=14, color='white', pad=15)
+
+            ax.set_title(f'{stock_symbol} vs {nifty_source} — HSIC Dependency Analysis', fontsize=14, color='white', pad=15)
             ax.set_xlabel(f'{nifty_source} Returns (%)', fontsize=12, color='#a0aec0')
             ax.set_ylabel(f'{stock_symbol} Returns (%)', fontsize=12, color='#a0aec0')
             ax.grid(True, linestyle='--', alpha=0.2, color=grid_color)
-            
+
             ax.legend(facecolor=bg_color, edgecolor=grid_color, labelcolor='white', loc='upper right')
-            
+
             for spine in ax.spines.values():
                 spine.set_edgecolor(grid_color)
-                
+
             img_buf = io.BytesIO()
             plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=100)
             img_buf.seek(0)
             plot_url = base64.b64encode(img_buf.getvalue()).decode()
             plt.close(fig)
 
-            residuals = y - (slope * X + intercept)
-            residual_std = np.std(residuals)
-            correlation = np.corrcoef(X, y)[0, 1]
-
-            if slope > 1.2: beta_interpret = f"HIGH BETA ({slope:.2f}): Aggressive/Volatile"
-            elif slope > 0.8: beta_interpret = f"MEDIUM BETA ({slope:.2f}): Market-Like"
-            elif slope > 0: beta_interpret = f"LOW BETA ({slope:.2f}): Defensive"
-            else: beta_interpret = f"NEGATIVE BETA ({slope:.2f}): Inverse Mover"
-
-            if r_squared > 0.7: r2_interpret = f"STRONG FIT ({r_squared:.2%})"
-            elif r_squared > 0.4: r2_interpret = f"MODERATE FIT ({r_squared:.2%})"
-            else: r2_interpret = f"WEAK FIT ({r_squared:.2%})"
-
-            if intercept > 0.001: alpha_interpret = f"POSITIVE ALPHA (+{intercept:.4f})"
-            elif intercept < -0.001: alpha_interpret = f"NEGATIVE ALPHA ({intercept:.4f})"
-            else: alpha_interpret = "NEUTRAL ALPHA"
-
-            if slope > 1.2 and r_squared > 0.6: trading_insight = f"LEVERAGED PLAY: Expect ~{slope:.1f}x market moves."
-            elif slope < 0.8 and r_squared > 0.6: trading_insight = "DEFENSIVE PLAY: Lower volatility exposure."
-            elif r_squared < 0.3: trading_insight = "INDEPENDENT STOCK: Driven by company news, not market."
-            else: trading_insight = "MARKET-LINKED: Follows general market trends."
-
             return {
-                'beta': slope, 'alpha': intercept, 'r_squared': r_squared,
-                'correlation': correlation, 'p_value': p_value, 'std_error': std_err,
-                'residual_std': residual_std, 'data_points': len(X), 'market_source': nifty_source,
-                'beta_interpret': beta_interpret, 'r2_interpret': r2_interpret,
-                'alpha_interpret': alpha_interpret, 'trading_insight': trading_insight,
+                'dependency_score': round(dep_score, 4),
+                'dependency_label': dep_label,
+                'dependency_color': dep_color,
+                'raw_hsic': round(raw_hsic, 8),
+                'correlation': round(correlation, 4),
+                'data_points': n_used,
+                'market_source': nifty_source,
+                'trading_insight': trading_insight,
                 'plot_url': plot_url
             }
 
         except Exception as e:
-            print(f"\n[FATAL ERROR] Regression failed for {stock_symbol}: {e}")
+            print(f"\n[FATAL ERROR] HSIC analysis failed for {stock_symbol}: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -1345,7 +1421,7 @@ def index():
         </header>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
-            <button class="tab" onclick="switchTab('regression', event)">Regression vs Nifty</button>
+            <button class="tab" onclick="switchTab('regression', event)">HSIC vs Nifty</button>
             <button class="tab" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
         </div>
         <div id="analysis-tab" class="tab-content active">
@@ -1369,11 +1445,11 @@ def index():
         </div>
         <div id="regression-tab" class="tab-content">
             <div class="card">
-                <h3>📈 Linear Regression Analysis vs Nifty 50</h3>
-                <p style="color: var(--text-secondary); margin-bottom: 20px;">Analyze how any NSE stock correlates with Nifty 50 index movements</p>
+                <h3>📈 HSIC Non-Linear Dependency Analysis vs Nifty 50</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 20px;">Detect hidden non-linear dependencies between any NSE stock and Nifty 50 using kernel methods</p>
                 <input type="text" id="regression-search" placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)">
                 <div class="suggestions" id="regression-suggestions"></div>
-                <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze Regression</button>
+                <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze HSIC Dependency</button>
             </div>
             <div id="regression-result" style="margin-top: 30px;"></div>
         </div>
@@ -1564,7 +1640,7 @@ def index():
         function analyzeRegression() {
             const symbol = document.getElementById('regression-search').value.toUpperCase().trim();
             if (!symbol) { alert('Please enter a stock symbol'); return; }
-            document.getElementById('regression-result').innerHTML = '<div class="loading">⏳ Running regression analysis for ' + symbol + '...<br><small style="font-size: 0.8em; color: var(--text-secondary);">This may take 10-30 seconds</small></div>';
+            document.getElementById('regression-result').innerHTML = '<div class="loading">⏳ Running HSIC dependency analysis for ' + symbol + '...<br><small style="font-size: 0.8em; color: var(--text-secondary);">This may take 10-30 seconds</small></div>';
             fetch(`/regression?symbol=${symbol}`)
                 .then(r => r.json())
                 .then(data => {
@@ -1575,32 +1651,45 @@ def index():
         }
         function showRegressionResult(data, symbol) {
             const marketInfo = data.market_source ? `<div style="background: rgba(0, 217, 255, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-cyan);"><strong>📊 Market Benchmark:</strong> ${data.market_source} ${data.market_source !== 'Nifty 50 Index' ? '<br><small style="color: var(--text-muted);">Note: Using alternative benchmark due to Nifty 50 data availability.</small>' : ''}</div>` : '';
+            const scorePercent = (data.dependency_score * 100).toFixed(1);
             const html = `
                 <div class="result-card">
-                    <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">Linear Regression Analysis</div></div>
+                    <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">HSIC Non-Linear Dependency Analysis</div></div>
                     <div style="margin: -20px 0 20px; font-size: 1.1em; color: var(--text-secondary);">${getStockName(symbol)} <span style="background: var(--bg-card-hover); padding: 3px 10px; border-radius: 4px; font-size: 0.8em; color: var(--accent-cyan); border: 1px solid var(--border-color);">${getStockSector(symbol)}</span></div>
                     ${marketInfo}
                     <div class="action-banner">${data.trading_insight}</div>
-                    
+
                     <div class="plot-container">
-                        <h3 style="color: var(--accent-purple); margin-bottom: 15px;">🔍 Visual Regression Analysis</h3>
-                        <img src="data:image/png;base64,${data.plot_url}" class="plot-img" alt="Regression Plot">
+                        <h3 style="color: var(--accent-purple); margin-bottom: 15px;">🔍 Return Scatter — Non-Parametric View</h3>
+                        <img src="data:image/png;base64,${data.plot_url}" class="plot-img" alt="HSIC Scatter Plot">
                     </div>
-                    
+
                     <div class="regression-grid">
-                        <div class="regression-metric"><div class="regression-metric-label">Beta (β)</div><div class="regression-metric-value">${data.beta.toFixed(3)}</div><div class="regression-metric-desc">${data.beta_interpret}</div></div>
-                        <div class="regression-metric"><div class="regression-metric-label">R-Squared (R²)</div><div class="regression-metric-value">${(data.r_squared * 100).toFixed(1)}%</div><div class="regression-metric-desc">${data.r2_interpret}</div></div>
-                        <div class="regression-metric"><div class="regression-metric-label">Alpha (α)</div><div class="regression-metric-value">${(data.alpha * 100).toFixed(3)}%</div><div class="regression-metric-desc">${data.alpha_interpret}</div></div>
-                        <div class="regression-metric"><div class="regression-metric-label">Correlation</div><div class="regression-metric-value">${data.correlation.toFixed(3)}</div><div class="regression-metric-desc">Measures linear relationship strength.</div></div>
-                        <div class="regression-metric"><div class="regression-metric-label">P-Value</div><div class="regression-metric-value">${data.p_value.toFixed(6)}</div><div class="regression-metric-desc">${data.p_value < 0.05 ? 'Statistically SIGNIFICANT (p < 0.05).' : 'Not statistically significant.'}</div></div>
-                        <div class="regression-metric"><div class="regression-metric-label">Std Error</div><div class="regression-metric-value">${data.std_error.toFixed(4)}</div><div class="regression-metric-desc">Uncertainty in beta estimate.</div></div>
-                        <div class="regression-metric"><div class="regression-metric-label">Residual Std</div><div class="regression-metric-value">${(data.residual_std * 100).toFixed(2)}%</div><div class="regression-metric-desc">Average prediction error.</div></div>
-                        <div class="regression-metric"><div class="regression-metric-label">Data Points</div><div class="regression-metric-value">${data.data_points}</div><div class="regression-metric-desc">Observations used.</div></div>
+                        <div class="regression-metric" style="border-left: 4px solid ${data.dependency_color};">
+                            <div class="regression-metric-label">Dependency Score (HSIC)</div>
+                            <div class="regression-metric-value" style="color: ${data.dependency_color};">${scorePercent}%</div>
+                            <div class="regression-metric-desc">${data.dependency_label}</div>
+                        </div>
+                        <div class="regression-metric">
+                            <div class="regression-metric-label">Raw HSIC</div>
+                            <div class="regression-metric-value">${data.raw_hsic.toFixed(8)}</div>
+                            <div class="regression-metric-desc">Unnormalised kernel dependence statistic tr(K_c L_c)/n².</div>
+                        </div>
+                        <div class="regression-metric">
+                            <div class="regression-metric-label">Linear Correlation</div>
+                            <div class="regression-metric-value">${data.correlation.toFixed(4)}</div>
+                            <div class="regression-metric-desc">${Math.abs(data.correlation) > 0.6 ? 'Strong linear component.' : Math.abs(data.correlation) > 0.3 ? 'Moderate linear component.' : 'Weak linear relationship — non-linear effects may dominate.'}</div>
+                        </div>
+                        <div class="regression-metric">
+                            <div class="regression-metric-label">Data Points</div>
+                            <div class="regression-metric-value">${data.data_points}</div>
+                            <div class="regression-metric-desc">Trading days used (max 90).</div>
+                        </div>
                     </div>
                     <div class="trading-plan" style="margin-top: 25px;">
                         <h3>💡 Practical Trading Applications</h3>
-                        <div class="plan-item"><span class="plan-label">Market Direction</span><span class="plan-value">${data.beta > 1.2 ? `High beta stock - amplifies market moves.` : data.beta < 0.8 ? `Low beta stock - defensive play.` : 'Moderate beta - moves in line with market.'}</span></div>
-                        <div class="plan-item"><span class="plan-label">Portfolio Use</span><span class="plan-value">${data.r_squared > 0.6 ? 'Strong market correlation.' : 'Weak market correlation. Stock driven by company-specific factors.'}</span></div>
+                        <div class="plan-item"><span class="plan-label">Hidden Risk</span><span class="plan-value">${data.dependency_score >= 0.5 && Math.abs(data.correlation) < 0.4 ? 'Non-linear dependency detected despite weak linear correlation — tail risks may be correlated.' : data.dependency_score >= 0.5 ? 'Significant market coupling confirmed across linear and non-linear channels.' : 'Low dependency — stock behaves largely independent of market index.'}</span></div>
+                        <div class="plan-item"><span class="plan-label">Portfolio Use</span><span class="plan-value">${data.dependency_score >= 0.5 ? 'High dependency — limited diversification benefit vs Nifty 50.' : 'Low dependency — good diversifier in a Nifty-heavy portfolio.'}</span></div>
                     </div>
                 </div>
             `;
@@ -2003,13 +2092,13 @@ def regression_route():
         else: return jsonify({'error': f'Invalid symbol "{original}".'})
     try:
         result = analyzer.regression_analysis(normalized_symbol)
-        if not result: return jsonify({'error': f'Unable to perform regression analysis for {normalized_symbol}.'})
+        if not result: return jsonify({'error': f'Unable to perform HSIC dependency analysis for {normalized_symbol}.'})
         return jsonify(result)
     except Exception as e:
-        print(f"Error in regression for {normalized_symbol}: {e}")
+        print(f"Error in HSIC analysis for {normalized_symbol}: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({'error': f'Regression analysis failed for {normalized_symbol}: {str(e)}'})
+        return jsonify({'error': f'HSIC dependency analysis failed for {normalized_symbol}: {str(e)}'})
 
 @app.route('/dividend-scan')
 def dividend_scan_route():
