@@ -39,7 +39,7 @@ app = Flask(__name__)
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
-DIVIDEND_MAX_RESULTS = 300
+DIVIDEND_MAX_RESULTS = 150
 DIVIDEND_BATCH_SIZE = 50
 DIVIDEND_MAX_WORKERS = 4
 
@@ -1442,7 +1442,7 @@ def index():
                 if (skipSectors.has(sector)) continue;
                 if (list.includes(symbol)) return sector;
             }
-            return "NSE";
+            return "";
         }
         let currentTab = 'analysis';
         function switchTab(tab, event) {
