@@ -1578,7 +1578,7 @@ def index():
         </header>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
-            <button class="tab" onclick="switchTab('regression', event)">HSIC vs Nifty</button>
+            <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
             <button class="tab" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
         </div>
         <div id="analysis-tab" class="tab-content active">
@@ -1602,11 +1602,32 @@ def index():
         </div>
         <div id="regression-tab" class="tab-content">
             <div class="card">
-                <h3>📈 HSIC Non-Linear Dependency Analysis vs Nifty 50</h3>
-                <p style="color: var(--text-secondary); margin-bottom: 20px;">Detect hidden non-linear dependencies between any NSE stock and Nifty 50 using kernel methods</p>
+                <h3>📈 Market Connection Analysis</h3>
+                <p style="color: var(--text-secondary); margin-bottom: 20px;">Find out how closely any NSE stock is tied to the Nifty 50 — including hidden connections that simple charts don't show</p>
                 <input type="text" id="regression-search" placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)">
                 <div class="suggestions" id="regression-suggestions"></div>
-                <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze HSIC Dependency</button>
+                <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze Connection</button>
+            </div>
+            <div class="card" style="margin-top: 20px; border-left: 3px solid var(--accent-purple); padding: 20px 25px;">
+                <h4 style="color: var(--accent-purple); margin-bottom: 10px; font-family: 'Space Grotesk', sans-serif;">How to read your results</h4>
+                <p style="color: var(--text-secondary); font-size: 0.92em; line-height: 1.8; margin: 0;">
+                    This tool measures how connected a stock is to the Nifty 50 index. It goes beyond simple correlation by using a technique called <strong style="color: var(--text-primary);">HSIC</strong> (Hilbert-Schmidt Independence Criterion) — think of it as an X-ray that can detect both <em>obvious</em> and <em>hidden</em> links between a stock and the market.
+                </p>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin-top: 15px;">
+                    <div style="background: var(--bg-dark); padding: 12px 15px; border-radius: 8px;">
+                        <strong style="color: var(--text-primary);">Market Connection %</strong>
+                        <p style="color: var(--text-muted); font-size: 0.85em; margin: 4px 0 0;">The main score. Higher = more tied to the market. A stock with a high score tends to fall when Nifty 50 falls, offering less portfolio protection.</p>
+                    </div>
+                    <div style="background: var(--bg-dark); padding: 12px 15px; border-radius: 8px;">
+                        <strong style="color: var(--text-primary);">Mirror Test</strong>
+                        <p style="color: var(--text-muted); font-size: 0.85em; margin: 4px 0 0;">Compares visible co-movement with deeper hidden links. If these disagree, the stock may surprise you during a crash — even if it looks independent on normal days.</p>
+                    </div>
+                    <div style="background: var(--bg-dark); padding: 12px 15px; border-radius: 8px;">
+                        <strong style="color: var(--text-primary);">Downside Beta</strong>
+                        <p style="color: var(--text-muted); font-size: 0.85em; margin: 4px 0 0;">How much the stock falls when the market falls. Above 1.0 means it drops harder than Nifty 50 on bad days. The most important number for crash protection.</p>
+                    </div>
+                </div>
+                <p style="color: var(--text-muted); font-size: 0.82em; margin-top: 12px; margin-bottom: 0; font-style: italic;">All results are based on historical data (up to 1 year) and describe past behaviour — they do not guarantee future performance.</p>
             </div>
             <div id="regression-result" style="margin-top: 30px;"></div>
         </div>
@@ -1797,7 +1818,7 @@ def index():
         function analyzeRegression() {
             const symbol = document.getElementById('regression-search').value.toUpperCase().trim();
             if (!symbol) { alert('Please enter a stock symbol'); return; }
-            document.getElementById('regression-result').innerHTML = '<div class="loading">⏳ Running HSIC dependency analysis for ' + symbol + '...<br><small style="font-size: 0.8em; color: var(--text-secondary);">This may take 10-30 seconds</small></div>';
+            document.getElementById('regression-result').innerHTML = '<div class="loading">⏳ Analysing market connection for ' + symbol + '...<br><small style="font-size: 0.8em; color: var(--text-secondary);">This may take 10-30 seconds</small></div>';
             fetch(`/regression?symbol=${symbol}`)
                 .then(r => r.json())
                 .then(data => {
