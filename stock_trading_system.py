@@ -262,6 +262,32 @@ def _save_universe_cache(symbols, source):
         print(f"  [cache] Failed to save cache: {e}")
 
 
+def _compute_split_adjusted_dividend(dividends, splits):
+    """Adjust historical dividends to current share count using split data."""
+    if dividends is None or dividends.empty:
+        return 0.0
+    if splits is None or splits.empty:
+        return float(dividends.sum())
+
+    splits = splits[splits > 0].sort_index()
+    if splits.empty:
+        return float(dividends.sum())
+
+    split_dates = splits.index
+    split_values = splits.values
+    cumulative_from_end = np.cumprod(split_values[::-1])[::-1]
+
+    adjusted_total = 0.0
+    for div_date, div_value in dividends.items():
+        idx = split_dates.searchsorted(div_date, side="right")
+        if idx < len(split_values):
+            factor = cumulative_from_end[idx]
+        else:
+            factor = 1.0
+        adjusted_total += float(div_value) / factor
+    return float(adjusted_total)
+
+
 def fetch_nse_universe():
     """Fetch the full NSE equity universe with multiple redundant sources.
 
@@ -1018,7 +1044,7 @@ class Analyzer:
                     interval='1d',
                     group_by='column',
                     actions=True,
-                    auto_adjust=True,
+                    auto_adjust=False,
                     progress=False,
                     threads=True
                 )
@@ -1033,16 +1059,27 @@ class Analyzer:
                     if isinstance(data.columns, pd.MultiIndex):
                         close_series = data['Close'][ticker_symbol].dropna()
                         dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
+                        if 'Stock Splits' in data.columns.get_level_values(0):
+                            splits = data['Stock Splits'][ticker_symbol].dropna()
+                        elif 'Splits' in data.columns.get_level_values(0):
+                            splits = data['Splits'][ticker_symbol].dropna()
+                        else:
+                            splits = pd.Series(dtype=float)
                     else:
                         close_series = data['Close'].dropna()
                         dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                        if 'Stock Splits' in data.columns:
+                            splits = data['Stock Splits'].dropna()
+                        elif 'Splits' in data.columns:
+                            splits = data['Splits'].dropna()
+                        else:
+                            splits = pd.Series(dtype=float)
                     if close_series.empty or len(close_series) < 10:
                         continue
                     current_price = float(close_series.iloc[-1])
                     if current_price <= 0:
                         continue
-                    # Dividends from auto_adjust=True are split-adjusted
-                    annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                    annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
                     if annual_dividend <= 0:
                         continue
                     dividend_yield = (annual_dividend / current_price) * 100
@@ -2055,7 +2092,7 @@ def dividend_optimize_stream_route():
                         interval='1d',
                         group_by='column',
                         actions=True,
-                        auto_adjust=True,
+                        auto_adjust=False,
                         progress=False,
                         threads=True
                     )
@@ -2073,9 +2110,21 @@ def dividend_optimize_stream_route():
                         if isinstance(data.columns, pd.MultiIndex):
                             close_series = data['Close'][ticker_symbol].dropna()
                             dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
+                            if 'Stock Splits' in data.columns.get_level_values(0):
+                                splits = data['Stock Splits'][ticker_symbol].dropna()
+                            elif 'Splits' in data.columns.get_level_values(0):
+                                splits = data['Splits'][ticker_symbol].dropna()
+                            else:
+                                splits = pd.Series(dtype=float)
                         else:
                             close_series = data['Close'].dropna()
                             dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
+                            if 'Stock Splits' in data.columns:
+                                splits = data['Stock Splits'].dropna()
+                            elif 'Splits' in data.columns:
+                                splits = data['Splits'].dropna()
+                            else:
+                                splits = pd.Series(dtype=float)
                         if close_series.empty or len(close_series) < 10:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -2085,8 +2134,7 @@ def dividend_optimize_stream_route():
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
-                        # Dividends from auto_adjust=True are split-adjusted
-                        annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
+                        annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
