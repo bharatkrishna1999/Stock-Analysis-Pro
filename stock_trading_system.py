@@ -928,11 +928,12 @@ class Analyzer:
             med = float(np.median(upper))
             return med if med > 1e-8 else 1e-4  # guard against zero bandwidth
 
-        def _hsic_score(x, y, max_samples=90):
+        def _hsic_score(x, y, max_samples=252):
             """Compute normalised HSIC dependency score in [0, 1].
 
             Steps:
-            1. Cap to last `max_samples` observations (memory-safe).
+            1. Cap to last `max_samples` observations (memory-safe for 512 MB).
+               252 days ≈ 1 trading year. 252×252 float32 matrix ≈ 254 KB.
             2. Compute RBF kernels K (for x) and L (for y) using median heuristic.
             3. Center both kernels:  K_c = H K H,  L_c = H L H  where H = I - 1/n 11^T.
             4. HSIC = tr(K_c L_c) / n^2.
@@ -1005,96 +1006,166 @@ class Analyzer:
             X = rets["market"].to_numpy()
             y = rets["stock"].to_numpy()
 
-            # --- HSIC computation (capped to 90 days, float32) -------------
-            dep_score, raw_hsic, n_used = _hsic_score(X, y, max_samples=90)
+            # --- HSIC computation (252 trading-day lookback, float32) ------
+            # 252 days ≈ 1 trading year — sufficient for structural claims.
+            # 252×252 float32 matrix ≈ 254 KB; well within 512 MB limit.
+            dep_score, raw_hsic, n_used = _hsic_score(X, y, max_samples=252)
 
-            # Qualitative label + layman-friendly badge
-            if dep_score >= 0.75:
-                dep_label = "Strong Hidden Correlation"
+            # Slice arrays to the window actually used
+            X_win = X[-n_used:]
+            y_win = y[-n_used:]
+
+            # --- Beta & downside beta (OLS, contextualises crash behaviour) -
+            X32 = X_win.astype(np.float32)
+            y32 = y_win.astype(np.float32)
+            cov_xy = float(np.mean((X32 - X32.mean()) * (y32 - y32.mean())))
+            var_x = float(np.var(X32, ddof=0))
+            beta = round(cov_xy / var_x, 4) if var_x > 1e-12 else 0.0
+
+            # Downside beta: beta computed only on days when market fell
+            down_mask = X32 < 0
+            if down_mask.sum() >= 10:
+                Xd = X32[down_mask]
+                yd = y32[down_mask]
+                cov_d = float(np.mean((Xd - Xd.mean()) * (yd - yd.mean())))
+                var_d = float(np.var(Xd, ddof=0))
+                downside_beta = round(cov_d / var_d, 4) if var_d > 1e-12 else beta
+            else:
+                downside_beta = beta  # too few down days to estimate separately
+
+            # --- Pearson correlation ----------------------------------------
+            correlation = round(float(np.corrcoef(X_win, y_win)[0, 1]), 4)
+            abs_corr = abs(correlation)
+
+            # --- Composite connection score (accounts for BOTH measures) ----
+            # Neither HSIC nor correlation alone tells the full story.
+            # Composite = weighted blend so that high correlation can never
+            # be overridden by a low HSIC into a "low connection" verdict.
+            composite = round(0.5 * dep_score + 0.3 * abs_corr + 0.2 * min(abs(beta), 2.0) / 2.0, 4)
+            composite = min(composite, 1.0)
+
+            # --- Classification (recalibrated thresholds) -------------------
+            # The composite ensures a stock with corr=0.64 never falls below
+            # "Moderate".  Thresholds: High ≥0.55, Moderate ≥0.35, Low ≥0.18.
+            if composite >= 0.55:
+                dep_label = "High Dependence"
                 dep_color = "#ff6b6b"
                 badge_text = "High Connection"
                 badge_bg = "#ff6b6b"
-                magnetism_plain = "This stock is strongly pulled along by the Nifty 50. When the market moves, this stock almost always reacts — even in ways that aren't obvious from a simple chart."
-                diversification_note = "Holding this alongside a Nifty 50 index fund adds little extra protection. In a market downturn, both are very likely to fall together."
-            elif dep_score >= 0.50:
-                dep_label = "Moderate Non-Linear Link"
+                magnetism_plain = (
+                    "This stock is closely tied to the Nifty 50. Both visible day-to-day co-movement "
+                    "and deeper structural links are present. It tends to amplify market swings."
+                )
+                diversification_note = (
+                    "Adding this to a Nifty-heavy portfolio provides limited extra protection. "
+                    "In a broad market sell-off, this stock is likely to decline alongside the index."
+                )
+            elif composite >= 0.35:
+                dep_label = "Moderate Dependence"
                 dep_color = "#ffa94d"
-                badge_text = "Medium Connection"
+                badge_text = "Moderate Connection"
                 badge_bg = "#ffa94d"
-                magnetism_plain = "This stock has a noticeable pull towards the Nifty 50. It doesn't follow every move, but during big swings they tend to move together."
-                diversification_note = "Offers some diversification, but during sharp market drops this stock may still follow. Don't rely on it as your only hedge."
-            elif dep_score >= 0.25:
-                dep_label = "Weak Dependency"
+                magnetism_plain = (
+                    "This stock has a meaningful connection to the Nifty 50. It doesn't mirror every move, "
+                    "but during significant market swings they often move in the same direction."
+                )
+                diversification_note = (
+                    "Provides partial diversification, but may still follow the market during sharp corrections. "
+                    "Consider pairing with genuinely uncorrelated assets for better risk spread."
+                )
+            elif composite >= 0.18:
+                dep_label = "Low Dependence"
                 dep_color = "#69db7c"
                 badge_text = "Low Connection"
                 badge_bg = "#69db7c"
-                magnetism_plain = "This stock has only a faint pull towards the Nifty 50. It mostly does its own thing, driven by company-specific news and earnings."
-                diversification_note = "Good diversifier. Adding this to a Nifty-heavy portfolio can help spread your risk, since it behaves fairly independently."
+                magnetism_plain = (
+                    "This stock shows limited connection to the Nifty 50. It appears to be driven "
+                    "more by company-specific factors than broad market sentiment."
+                )
+                diversification_note = (
+                    "Can contribute to portfolio diversification. Historical data suggests limited "
+                    "co-movement with the index, though this is not a guarantee of future behaviour."
+                )
             else:
                 dep_label = "Near Independence"
                 dep_color = "#a0aec0"
                 badge_text = "Very Low Connection"
                 badge_bg = "#10b981"
-                magnetism_plain = "This stock shows almost no connection to the Nifty 50. Market-wide ups and downs have very little effect on its price."
-                diversification_note = "Excellent diversifier. This stock can act as a safety net in your portfolio because it barely reacts to broad market crashes."
+                magnetism_plain = (
+                    "Very little statistical connection to the Nifty 50 was detected over the lookback window. "
+                    "This stock's returns appear largely independent of market-wide movements."
+                )
+                diversification_note = (
+                    "Among the better diversifiers against Nifty 50 exposure. Historical independence "
+                    "from the index suggests it may behave differently during market stress, though "
+                    "correlations can spike in extreme sell-offs."
+                )
 
-            # Linear correlation for comparison context
-            correlation = float(np.corrcoef(X[-n_used:], y[-n_used:])[0, 1])
-
-            # Mirror Test — compare linear correlation vs HSIC score
-            abs_corr = abs(correlation)
-            if dep_score >= 0.50 and abs_corr < 0.4:
+            # --- Mirror Test (correlation vs HSIC divergence) ---------------
+            if dep_score >= 0.40 and abs_corr < 0.35:
                 hidden_sync = True
                 mirror_verdict = "Hidden Sync Detected"
                 mirror_color = "#ff6b6b"
                 mirror_explain = (
-                    f"The Mirror Test shows a low surface-level correlation ({correlation:+.2f}), but the Magnetism Score is high ({dep_score:.0%}). "
-                    "This means the stock and Nifty 50 are connected in complex, non-obvious ways — for example, they might crash together during crises "
-                    "even though they seem unrelated on normal days. This hidden link is the most dangerous kind for diversification."
+                    f"The Mirror Test shows a low surface-level correlation ({correlation:+.2f}), "
+                    f"but the Magnetism Score is elevated ({dep_score:.0%}). This suggests non-linear "
+                    "links — for example, the stock and index may diverge on normal days but move "
+                    "together during tail events. Exercise caution when relying on this stock as a hedge."
                 )
-            elif dep_score >= 0.50 and abs_corr >= 0.4:
+            elif abs_corr >= 0.5 and dep_score >= 0.30:
                 hidden_sync = False
-                mirror_verdict = "Visible Connection"
+                mirror_verdict = "Confirmed Co-Movement"
                 mirror_color = "#ffa94d"
                 mirror_explain = (
-                    f"Both the Mirror Test ({correlation:+.2f}) and the Magnetism Score ({dep_score:.0%}) agree — this stock clearly moves with the market. "
-                    "No hidden surprises here: what you see is what you get. The connection is straightforward and already reflected in the stock's daily price movements."
+                    f"Both linear correlation ({correlation:+.2f}) and the Magnetism Score ({dep_score:.0%}) "
+                    "indicate meaningful co-movement with the market. The connection is straightforward "
+                    "and visible in daily returns — no hidden surprises, but limited hedging value."
                 )
-            elif dep_score < 0.50 and abs_corr >= 0.5:
+            elif abs_corr >= 0.5 and dep_score < 0.30:
                 hidden_sync = False
-                mirror_verdict = "Surface-Level Only"
-                mirror_color = "#69db7c"
+                mirror_verdict = "Linear Co-Movement"
+                mirror_color = "#ffa94d"
                 mirror_explain = (
-                    f"The Mirror Test shows some correlation ({correlation:+.2f}), but the deeper Magnetism Score is low ({dep_score:.0%}). "
-                    "The day-to-day similarity is superficial — during big market events, this stock is likely to chart its own path."
+                    f"Daily returns show noticeable correlation ({correlation:+.2f}), though the deeper "
+                    f"kernel analysis ({dep_score:.0%}) is lower. The relationship appears mostly linear "
+                    "— the stock tracks the market's direction but without complex non-linear coupling."
                 )
-            else:
+            elif abs_corr < 0.3 and dep_score < 0.25:
                 hidden_sync = False
                 mirror_verdict = "Independent"
                 mirror_color = "#10b981"
                 mirror_explain = (
-                    f"Both measures agree: this stock has little connection to Nifty 50 (correlation {correlation:+.2f}, magnetism {dep_score:.0%}). "
-                    "It moves to its own beat. Great for building a diversified portfolio."
+                    f"Both correlation ({correlation:+.2f}) and magnetism ({dep_score:.0%}) are low. "
+                    "This stock appears largely independent of Nifty 50 over the analysis window. "
+                    "Note that independence can break down during extreme market events."
+                )
+            else:
+                hidden_sync = False
+                mirror_verdict = "Mixed Signals"
+                mirror_color = "#a0aec0"
+                mirror_explain = (
+                    f"Correlation ({correlation:+.2f}) and magnetism ({dep_score:.0%}) tell slightly "
+                    "different stories. The relationship may be context-dependent — stronger during "
+                    "certain market regimes. Treat diversification claims with caution."
                 )
 
-            # Trading insight — plain-English, diversification-focused
-            if dep_score >= 0.75 and abs_corr < 0.5:
-                trading_insight = "HIDDEN RISK: This stock looks independent but is secretly tied to the market. Don't count on it to protect your portfolio during a crash."
-            elif dep_score >= 0.75:
-                trading_insight = "HIGH MARKET RISK: This stock moves strongly with Nifty 50. In a downturn, expect it to fall just as hard — or harder."
-            elif dep_score >= 0.50 and abs_corr < 0.4:
-                trading_insight = "CAUTION — HIDDEN LINK: A moderate invisible connection to the market means surprise losses during sell-offs are possible."
-            elif dep_score >= 0.50:
-                trading_insight = "MODERATE MARKET RISK: This stock partially follows the market. Good on its own, but not a strong diversifier against Nifty 50."
-            elif dep_score < 0.25:
-                trading_insight = "STRONG DIVERSIFIER: This stock barely reacts to market swings. Great for reducing overall portfolio risk."
+            # --- Trading insight — hedged language, no false certainty ------
+            if composite >= 0.55:
+                if downside_beta > 1.2:
+                    trading_insight = f"HIGH MARKET EXPOSURE: Composite score {composite:.0%} with downside beta {downside_beta:.2f}. This stock has historically amplified market losses."
+                else:
+                    trading_insight = f"SIGNIFICANT MARKET LINK: Composite score {composite:.0%}. This stock tends to track Nifty 50 closely in both up and down markets."
+            elif composite >= 0.35:
+                if hidden_sync:
+                    trading_insight = f"CAUTION — HIDDEN LINK: Despite moderate surface correlation, non-linear analysis ({dep_score:.0%}) reveals deeper coupling. Hedging effectiveness may be limited."
+                else:
+                    trading_insight = f"MODERATE MARKET LINK: Composite score {composite:.0%}. Partial co-movement with Nifty 50 — some diversification value, but not a reliable hedge."
+            elif composite >= 0.18:
+                trading_insight = f"LIMITED MARKET LINK: Composite score {composite:.0%}. Historically shows some independence from Nifty 50, though this may not hold in all market conditions."
             else:
-                trading_insight = "MILD DIVERSIFIER: Only a faint connection to the market. Can help spread risk in a Nifty-heavy portfolio."
+                trading_insight = f"HISTORICALLY INDEPENDENT: Composite score {composite:.0%}. Low connection to Nifty 50 over the lookback window. Past independence does not guarantee future behaviour."
 
             # --- Plot generation (scatter only, no trend line) -------------
-            X_plot = X[-n_used:]
-            y_plot = y[-n_used:]
-
             plt.style.use('dark_background')
             fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -1104,17 +1175,18 @@ class Analyzer:
             fig.patch.set_facecolor(bg_color)
             ax.set_facecolor(bg_color)
 
-            ax.scatter(X_plot * 100, y_plot * 100, alpha=0.6, c='#00d9ff',
+            ax.scatter(X_win * 100, y_win * 100, alpha=0.6, c='#00d9ff',
                        edgecolors='none', s=50, label='Daily Returns', zorder=1)
 
             stats_text = (
-                f"$\\bf{{HSIC\\ Dependency}}$\n"
-                f"• Score: {dep_score:.4f}\n"
-                f"• Label: {dep_label}\n"
-                f"• Days: {n_used}"
+                f"$\\bf{{HSIC\\ Analysis}}$\n"
+                f"• Magnetism: {dep_score:.4f}\n"
+                f"• Correlation: {correlation:+.4f}\n"
+                f"• Beta: {beta:.3f}  |  Down-Beta: {downside_beta:.3f}\n"
+                f"• Composite: {composite:.4f}  |  Days: {n_used}"
             )
 
-            ax.text(0.03, 0.97, stats_text, transform=ax.transAxes, fontsize=11, color='white',
+            ax.text(0.03, 0.97, stats_text, transform=ax.transAxes, fontsize=10, color='white',
                     verticalalignment='top', bbox=dict(facecolor=bg_color, alpha=0.95, edgecolor=grid_color, boxstyle='round,pad=0.5'), zorder=3)
 
             ax.set_title(f'{stock_symbol} vs {nifty_source} — HSIC Dependency Analysis', fontsize=14, color='white', pad=15)
@@ -1135,6 +1207,7 @@ class Analyzer:
 
             return {
                 'dependency_score': round(dep_score, 4),
+                'composite_score': composite,
                 'dependency_label': dep_label,
                 'dependency_color': dep_color,
                 'badge_text': badge_text,
@@ -1142,7 +1215,9 @@ class Analyzer:
                 'magnetism_plain': magnetism_plain,
                 'diversification_note': diversification_note,
                 'raw_hsic': round(raw_hsic, 8),
-                'correlation': round(correlation, 4),
+                'correlation': correlation,
+                'beta': beta,
+                'downside_beta': downside_beta,
                 'mirror_verdict': mirror_verdict,
                 'mirror_color': mirror_color,
                 'mirror_explain': mirror_explain,
@@ -1734,7 +1809,12 @@ def index():
         function showRegressionResult(data, symbol) {
             const marketInfo = data.market_source ? `<div style="background: rgba(0, 217, 255, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-cyan);"><strong>📊 Market Benchmark:</strong> ${data.market_source} ${data.market_source !== 'Nifty 50 Index' ? '<br><small style="color: var(--text-muted);">Note: Using alternative benchmark due to Nifty 50 data availability.</small>' : ''}</div>` : '';
             const scorePercent = (data.dependency_score * 100).toFixed(1);
+            const compositePercent = (data.composite_score * 100).toFixed(1);
+            const cs = data.composite_score;
             const hiddenSyncTag = data.hidden_sync ? '<span style="background:rgba(255,107,107,0.15); color:#ff6b6b; padding:3px 10px; border-radius:12px; font-size:0.75em; font-weight:600; margin-left:8px;">HIDDEN SYNC</span>' : '';
+            const protColor = cs >= 0.35 ? '#ff6b6b' : '#10b981';
+            const protLabel = cs >= 0.55 ? 'Weak Protection' : cs >= 0.35 ? 'Partial Protection' : 'Good Protection';
+            const dbSign = data.downside_beta >= 0 ? '' : '';
             const html = `
                 <div class="result-card">
                     <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">Market Connection Analysis</div></div>
@@ -1742,26 +1822,52 @@ def index():
                     ${marketInfo}
                     <div class="action-banner">${data.trading_insight}</div>
 
-                    <!-- HERO: Magnetism Score -->
+                    <!-- HERO: Composite Connection Score -->
                     <div class="hsic-hero">
                         <div style="margin-bottom: 10px;">
                             <span class="hsic-tooltip" style="font-size: 0.85em; color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px;">
-                                Magnetism Score
-                                <span class="hsic-tooltip-text">Think of this like a magnet between the stock and Nifty 50. A high score means the stock is strongly pulled by the market — including hidden, non-obvious connections that simple correlation misses. It detects both visible and invisible ties.</span>
+                                Market Connection
+                                <span class="hsic-tooltip-text">A composite score combining three measures: the Magnetism Score (HSIC — detects hidden non-linear ties), Pearson correlation (daily co-movement), and beta (sensitivity to market swings). Higher = more connected to Nifty 50.</span>
                             </span>
                         </div>
-                        <div class="hsic-hero-score" style="color: ${data.dependency_color};">${scorePercent}%</div>
+                        <div class="hsic-hero-score" style="color: ${data.dependency_color};">${compositePercent}%</div>
                         <div class="hsic-hero-label">
                             <span class="hsic-badge" style="background: ${data.badge_bg};">${data.badge_text}</span>
                             ${hiddenSyncTag}
                         </div>
                         <div class="hsic-hero-subtitle">${data.magnetism_plain}</div>
+                        <div style="margin-top: 16px; display: flex; justify-content: center; gap: 30px; flex-wrap: wrap;">
+                            <div style="text-align:center;">
+                                <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
+                                    <span class="hsic-tooltip">Magnetism (HSIC)<span class="hsic-tooltip-text">The Magnetism Score uses a kernel method (HSIC) to detect all types of statistical ties — including non-linear ones that correlation misses. Think of it as an X-ray for hidden market connections.</span></span>
+                                </div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:var(--text-primary);">${scorePercent}%</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
+                                    <span class="hsic-tooltip">Correlation<span class="hsic-tooltip-text">How closely the stock's daily returns move with the market. +1 = perfect match, 0 = no pattern, -1 = opposite.</span></span>
+                                </div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:var(--text-primary);">${data.correlation >= 0 ? '+' : ''}${data.correlation.toFixed(2)}</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
+                                    <span class="hsic-tooltip">Beta<span class="hsic-tooltip-text">If Nifty 50 moves 1%, this stock historically moves about ${Math.abs(data.beta).toFixed(1)}% in the ${data.beta >= 0 ? 'same' : 'opposite'} direction. Beta > 1 means it amplifies market moves.</span></span>
+                                </div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:var(--text-primary);">${data.beta.toFixed(2)}</div>
+                            </div>
+                            <div style="text-align:center;">
+                                <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
+                                    <span class="hsic-tooltip">Downside Beta<span class="hsic-tooltip-text">Same as beta, but measured only on days when the market fell. A high downside beta means the stock tends to fall harder than the market during sell-offs — the most relevant measure for crash protection.</span></span>
+                                </div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:${data.downside_beta > 1.2 ? '#ff6b6b' : data.downside_beta > 0.8 ? '#ffa94d' : 'var(--text-primary)'};">${data.downside_beta.toFixed(2)}</div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- SCATTER PLOT -->
                     <div class="plot-container">
                         <h3 style="color: var(--accent-purple); margin-bottom: 5px;">Daily Returns — ${symbol} vs ${data.market_source || 'Market'}</h3>
-                        <p style="color: var(--text-muted); font-size: 0.85em; margin-bottom: 15px;">Each dot is one trading day. A tight cluster means the stock and market often move together.</p>
+                        <p style="color: var(--text-muted); font-size: 0.85em; margin-bottom: 15px;">Each dot is one trading day over the last ${data.data_points} sessions. A tight diagonal cluster means the stock and market often move together.</p>
                         <img src="data:image/png;base64,${data.plot_url}" class="plot-img" alt="Stock vs Market scatter plot">
                     </div>
 
@@ -1772,7 +1878,7 @@ def index():
                             <div class="insight-card-title">
                                 <span class="hsic-tooltip">
                                     Mirror Test
-                                    <span class="hsic-tooltip-text">The Mirror Test checks if the stock's daily price moves look similar to the market. If this is low but the Magnetism Score is high, the stock has a "Hidden Sync" — it follows the market in complex, non-obvious ways (e.g., crashing together during crises).</span>
+                                    <span class="hsic-tooltip-text">Compares simple correlation with the deeper HSIC analysis. If correlation is low but HSIC is high, the stock has a "Hidden Sync" — it follows the market in complex, non-obvious ways that only appear during stress events.</span>
                                 </span>
                             </div>
                             <div class="mirror-verdict" style="color: ${data.mirror_color};">${data.mirror_verdict}</div>
@@ -1780,15 +1886,15 @@ def index():
                         </div>
 
                         <!-- Diversification Card -->
-                        <div class="insight-card" style="border-left-color: ${data.dependency_score >= 0.5 ? '#ff6b6b' : '#10b981'};">
+                        <div class="insight-card" style="border-left-color: ${protColor};">
                             <div class="insight-card-title">
                                 <span class="hsic-tooltip">
                                     Portfolio Protection
-                                    <span class="hsic-tooltip-text">Diversification means spreading risk. If a stock has a high market connection, it won't protect you when the market falls — it'll fall too. Low-connection stocks are better safety nets for your portfolio.</span>
+                                    <span class="hsic-tooltip-text">Based on the composite score and downside beta. A stock with high market connection and high downside beta offers little crash protection. Genuinely uncorrelated stocks — where both HSIC and correlation are low — are the best diversifiers.</span>
                                 </span>
                             </div>
-                            <div style="font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 1.3em; margin-bottom: 6px; color: ${data.dependency_score >= 0.5 ? '#ff6b6b' : '#10b981'};">
-                                ${data.dependency_score >= 0.5 ? 'Weak Protection' : 'Strong Protection'}
+                            <div style="font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 1.3em; margin-bottom: 6px; color: ${protColor};">
+                                ${protLabel}
                             </div>
                             <div class="insight-card-body">${data.diversification_note}</div>
                         </div>
@@ -1797,9 +1903,9 @@ def index():
                     <!-- WHAT DOES THIS MEAN FOR ME -->
                     <div class="trading-plan" style="margin-top: 10px;">
                         <h3>What Does This Mean For Me?</h3>
-                        <div class="plan-item"><span class="plan-label">If Nifty 50 crashes</span><span class="plan-value">${data.dependency_score >= 0.75 ? 'This stock will very likely fall with it. Holding both is like having two umbrellas with the same hole.' : data.dependency_score >= 0.5 ? 'This stock may get dragged down too, especially during sharp drops. Partial protection at best.' : data.dependency_score >= 0.25 ? 'This stock should hold up better than most. It has its own drivers and won\\'t blindly follow the market.' : 'This stock is like a separate world from Nifty 50. It\\'s one of your best options for true diversification.'}</span></div>
-                        <div class="plan-item"><span class="plan-label">If I already own Nifty funds</span><span class="plan-value">${data.dependency_score >= 0.5 ? 'Adding this stock doesn\\'t spread your risk much — you\\'re doubling down on the same market forces.' : 'Good choice for diversification. This stock adds genuine variety to a Nifty-heavy portfolio.'}</span></div>
-                        <div class="plan-item"><span class="plan-label">Hidden surprises?</span><span class="plan-value">${data.hidden_sync ? 'Yes — the Mirror Test is low but the Magnetism Score is high. This stock seems independent day-to-day, but shares deep, hidden connections with the market. Be cautious.' : 'No hidden connections detected. What you see is what you get.'}</span></div>
+                        <div class="plan-item"><span class="plan-label">If Nifty 50 crashes</span><span class="plan-value">${cs >= 0.55 ? (data.downside_beta > 1.0 ? 'Based on historical data, this stock has tended to fall as much or more than the market (downside beta ' + data.downside_beta.toFixed(2) + '). Holding both concentrates your risk.' : 'This stock has historically moved with the market. In a sharp downturn, it is likely to decline as well, though perhaps not as sharply (downside beta ' + data.downside_beta.toFixed(2) + ').') : cs >= 0.35 ? 'Moderate market connection means this stock may get pulled down during a sell-off, especially if the decline is severe. It offers some — but not full — cushioning.' : cs >= 0.18 ? 'Historical data suggests limited market linkage. This stock may be less affected than the broader market, though no stock is fully immune to a severe crash.' : 'Over the analysis window, this stock showed little connection to Nifty 50. It may behave differently during a market downturn, but correlations can spike during extreme events.'}</span></div>
+                        <div class="plan-item"><span class="plan-label">If I already own Nifty funds</span><span class="plan-value">${cs >= 0.55 ? 'Adding this stock provides limited additional diversification — it is already closely linked to the same market forces driving Nifty 50.' : cs >= 0.35 ? 'Adds some variety, but the moderate connection to Nifty means overlapping risk. Consider pairing with lower-connection stocks for better spread.' : 'Historically independent enough to add genuine diversification to a Nifty-heavy portfolio. A reasonable choice for spreading risk.'}</span></div>
+                        <div class="plan-item"><span class="plan-label">Hidden surprises?</span><span class="plan-value">${data.hidden_sync ? 'The Mirror Test flagged a discrepancy: daily correlation appears low, but the deeper HSIC analysis detected non-linear coupling. This stock may seem independent on calm days but move with the market during crises. Factor this into hedging decisions.' : 'No significant discrepancy between linear and non-linear measures. The visible relationship is a fair representation of the underlying connection.'}</span></div>
                     </div>
 
                     <!-- TECHNICAL DETAILS (collapsible) -->
@@ -1809,24 +1915,39 @@ def index():
                     <div class="tech-details-content">
                         <div class="tech-details-inner">
                             <div class="tech-detail-item">
-                                <div class="tech-detail-label">HSIC Score (Normalised)</div>
-                                <div class="tech-detail-value" style="color: ${data.dependency_color};">${scorePercent}%</div>
-                                <div class="tech-detail-note">HSIC / sqrt(HSIC_xx * HSIC_yy), range 0-1.</div>
+                                <div class="tech-detail-label">Composite Score</div>
+                                <div class="tech-detail-value" style="color: ${data.dependency_color};">${compositePercent}%</div>
+                                <div class="tech-detail-note">0.5 × HSIC + 0.3 × |corr| + 0.2 × min(|β|,2)/2</div>
+                            </div>
+                            <div class="tech-detail-item">
+                                <div class="tech-detail-label">HSIC (Normalised)</div>
+                                <div class="tech-detail-value">${scorePercent}%</div>
+                                <div class="tech-detail-note">HSIC / sqrt(HSIC_xx × HSIC_yy), range 0–1.</div>
                             </div>
                             <div class="tech-detail-item">
                                 <div class="tech-detail-label">Raw HSIC (Unfiltered Signal)</div>
                                 <div class="tech-detail-value">${data.raw_hsic.toFixed(8)}</div>
-                                <div class="tech-detail-note">tr(K_c L_c) / n&sup2; — the unnormalised kernel statistic before scaling.</div>
+                                <div class="tech-detail-note">tr(K_c L_c) / n&sup2; — unnormalised kernel statistic.</div>
                             </div>
                             <div class="tech-detail-item">
-                                <div class="tech-detail-label">Linear Correlation</div>
+                                <div class="tech-detail-label">Pearson Correlation</div>
                                 <div class="tech-detail-value">${data.correlation >= 0 ? '+' : ''}${data.correlation.toFixed(4)}</div>
-                                <div class="tech-detail-note">Pearson r. Used as the "Mirror Test" baseline.</div>
+                                <div class="tech-detail-note">Linear co-movement. Basis for Mirror Test.</div>
+                            </div>
+                            <div class="tech-detail-item">
+                                <div class="tech-detail-label">Beta (OLS)</div>
+                                <div class="tech-detail-value">${data.beta.toFixed(4)}</div>
+                                <div class="tech-detail-note">Slope of stock vs market returns.</div>
+                            </div>
+                            <div class="tech-detail-item">
+                                <div class="tech-detail-label">Downside Beta</div>
+                                <div class="tech-detail-value" style="color: ${data.downside_beta > 1.2 ? '#ff6b6b' : 'var(--text-primary)'};">${data.downside_beta.toFixed(4)}</div>
+                                <div class="tech-detail-note">Beta on market-down days only. Key crash metric.</div>
                             </div>
                             <div class="tech-detail-item">
                                 <div class="tech-detail-label">Observations</div>
                                 <div class="tech-detail-value">${data.data_points}</div>
-                                <div class="tech-detail-note">Trading days analysed (capped at 90 for memory safety).</div>
+                                <div class="tech-detail-note">Trading days analysed (up to 252).</div>
                             </div>
                         </div>
                     </div>
