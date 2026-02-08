@@ -1162,6 +1162,7 @@ def index():
         .card h3 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
         #search, #regression-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
         #search:focus, #regression-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
+        #dividend-search:focus, #scope-list-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
         .suggestions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 15px; max-height: 300px; overflow-y: auto; }
         .category { margin-bottom: 20px; }
         .category h4 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
@@ -1299,6 +1300,17 @@ def index():
                         <button class="scope-btn" onclick="setScope('largecap', this)">Large Cap 100</button>
                         <button class="scope-btn" onclick="setScope('custom', this)">Custom Sectors</button>
                     </div>
+                    <div style="margin-top: 15px;">
+                        <input type="text" id="dividend-search" placeholder="Search stocks (e.g., TCS, RELIANCE, INFY)..." style="width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s;">
+                        <div class="suggestions" id="dividend-suggestions"></div>
+                    </div>
+                    <div id="scope-stock-list" style="display:none; margin-top: 15px;">
+                        <div style="color: var(--accent-cyan); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;" id="scope-list-title"></div>
+                        <div id="scope-list-filter" style="margin-bottom: 10px;">
+                            <input type="text" id="scope-list-search" placeholder="Filter stocks..." style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 0.85em; background: var(--bg-dark); color: var(--text-primary);">
+                        </div>
+                        <div id="scope-list-grid" class="stocks" style="max-height: 300px; overflow-y: auto;"></div>
+                    </div>
                     <div id="sector-checkboxes" style="display:none; margin-top: 15px;">
                         <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
                             <label style="cursor: pointer; color: var(--accent-cyan); font-weight: 600; font-size: 0.9em;">
@@ -1312,7 +1324,7 @@ def index():
                     <h3>Portfolio Configuration</h3>
                     <div style="margin-bottom: 22px;">
                         <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Investment Capital (INR)</label>
-                        <input type="number" id="capital-input" placeholder="e.g. 1000000" min="1000">
+                        <input type="text" id="capital-input" inputmode="numeric" placeholder="e.g. 10,00,000" value="1,00,000">
                     </div>
                     <div style="margin-bottom: 22px;">
                         <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Risk Appetite</label>
@@ -1364,6 +1376,7 @@ def index():
             }
             setupAutocomplete('search', 'suggestions', 'analyze');
             setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
+            setupAutocomplete('dividend-search', 'dividend-suggestions', 'analyze');
             document.getElementById('regression-search').addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') analyzeRegression();
             });
@@ -1469,11 +1482,60 @@ def index():
         }
         let dividendScope = 'all';
         let dividendRisk = 'moderate';
+        function formatIndianNumber(num) {
+            num = num.toString();
+            let lastThree = num.substring(num.length - 3);
+            let otherNumbers = num.substring(0, num.length - 3);
+            if (otherNumbers !== '') lastThree = ',' + lastThree;
+            return otherNumbers.replace(/\\B(?=(\\d{2})+(?!\\d))/g, ',') + lastThree;
+        }
+        function setupCapitalInput() {
+            const inp = document.getElementById('capital-input');
+            inp.addEventListener('input', function() {
+                let raw = this.value.replace(/,/g, '').replace(/[^0-9]/g, '');
+                if (raw === '') { this.value = ''; return; }
+                this.value = formatIndianNumber(raw);
+            });
+        }
+        function getCapitalValue() {
+            return parseFloat(document.getElementById('capital-input').value.replace(/,/g, ''));
+        }
         function setScope(scope, btn) {
             dividendScope = scope;
             document.querySelectorAll('.scope-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
+            const listDiv = document.getElementById('scope-stock-list');
+            const listGrid = document.getElementById('scope-list-grid');
+            const listTitle = document.getElementById('scope-list-title');
+            const filterInput = document.getElementById('scope-list-search');
+            if (scope === 'nifty50' || scope === 'largecap') {
+                let stockList = [];
+                if (scope === 'nifty50') {
+                    stockList = stocks['Nifty 50'] || [];
+                    listTitle.textContent = 'Nifty 50 Stocks (' + stockList.length + ')';
+                } else {
+                    stockList = [...(stocks['Nifty 50'] || []), ...(stocks['Nifty Next 50'] || [])];
+                    stockList = [...new Set(stockList)].sort();
+                    listTitle.textContent = 'Large Cap 100 Stocks (' + stockList.length + ')';
+                }
+                renderScopeList(stockList);
+                listDiv.style.display = 'block';
+                filterInput.value = '';
+                filterInput.oninput = function() {
+                    const q = this.value.toUpperCase();
+                    const filtered = q ? stockList.filter(s => s.includes(q)) : stockList;
+                    renderScopeList(filtered);
+                };
+            } else {
+                listDiv.style.display = 'none';
+            }
+        }
+        function renderScopeList(stockList) {
+            const grid = document.getElementById('scope-list-grid');
+            grid.innerHTML = stockList.map(s =>
+                '<button style="font-size:0.82em; padding:7px 12px;" onclick="document.getElementById(\\'dividend-search\\').value=\\'' + s + '\\';">' + s + '</button>'
+            ).join('');
         }
         function setRisk(risk, btn) {
             dividendRisk = risk;
@@ -1520,7 +1582,7 @@ def index():
             if (foundEl) foundEl.textContent = dividendFound;
         }
         function analyzeDividends() {
-            const capital = parseFloat(document.getElementById('capital-input').value);
+            const capital = getCapitalValue();
             if (!capital || capital <= 0) { alert('Please enter a valid capital amount'); return; }
             let sectors = '';
             if (dividendScope === 'all') sectors = 'all';
@@ -1682,7 +1744,7 @@ def index():
                 grid.appendChild(label);
             });
         }
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); });
     </script>
 </body>
 </html>'''
