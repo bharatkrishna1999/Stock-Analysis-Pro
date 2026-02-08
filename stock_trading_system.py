@@ -430,6 +430,13 @@ COMPANY_TO_TICKER = {
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
 }
 
+# Build reverse mapping: ticker -> best company name (longest/most descriptive)
+TICKER_TO_NAME = {}
+for _name, _ticker in COMPANY_TO_TICKER.items():
+    _title = _name.title()
+    if _ticker not in TICKER_TO_NAME or len(_title) > len(TICKER_TO_NAME[_ticker]):
+        TICKER_TO_NAME[_ticker] = _title
+
 def deduplicate_stocks(stocks_dict, universe_sector=UNIVERSE_SECTOR_NAME):
     """
     Remove duplicate stock entries across sectors.
@@ -481,6 +488,9 @@ def deduplicate_stocks(stocks_dict, universe_sector=UNIVERSE_SECTOR_NAME):
 
     return cleaned
 
+# Preserve original Nifty 50 list before deduplication removes them
+NIFTY_50_STOCKS = list(STOCKS.get('Nifty 50', []))
+
 # Deduplicate and build ticker set
 STOCKS = deduplicate_stocks(STOCKS)
 ALL_VALID_TICKERS = set()
@@ -520,8 +530,11 @@ class Analyzer:
         try:
             ticker = f"{symbol}.NS"
             data = yf.download(ticker, period=period, interval=interval, progress=False)
-            if data.empty:
-                return None
+            if data.empty or len(data) < 14:
+                # Fallback: try daily data with longer period
+                data = yf.download(ticker, period='1mo', interval='1d', progress=False)
+                if data.empty:
+                    return None
             return data
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
@@ -965,7 +978,7 @@ class Analyzer:
                     interval='1d',
                     group_by='column',
                     actions=True,
-                    auto_adjust=False,
+                    auto_adjust=True,
                     progress=False,
                     threads=True
                 )
@@ -979,7 +992,7 @@ class Analyzer:
                     ticker_symbol = f"{symbol}.NS"
                     if isinstance(data.columns, pd.MultiIndex):
                         close_series = data['Close'][ticker_symbol].dropna()
-                        dividends = data['Dividends'][ticker_symbol].dropna()
+                        dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
                     else:
                         close_series = data['Close'].dropna()
                         dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
@@ -988,6 +1001,7 @@ class Analyzer:
                     current_price = float(close_series.iloc[-1])
                     if current_price <= 0:
                         continue
+                    # Dividends from auto_adjust=True are split-adjusted
                     annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
                     if annual_dividend <= 0:
                         continue
@@ -1162,6 +1176,7 @@ def index():
         .card h3 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
         #search, #regression-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
         #search:focus, #regression-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
+        #dividend-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
         .suggestions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 15px; max-height: 300px; overflow-y: auto; }
         .category { margin-bottom: 20px; }
         .category h4 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
@@ -1250,9 +1265,6 @@ def index():
             <h1>📊 Stock Analysis Pro</h1>
             <p>Advanced Trading Insights with AI-Powered Analysis</p>
             <div class="stock-count">🚀 Now analyzing ''' + str(len(ALL_VALID_TICKERS)) + '''+ NSE stocks across ''' + str(len(STOCKS)) + ''' sectors</div>
-            <div style="margin-top: 8px; color: var(--text-muted); font-size: 0.85em;">
-                Universe source: ''' + UNIVERSE_SOURCE + '''. Market data requests are subject to API throttling.
-            </div>
         </header>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
@@ -1296,8 +1308,19 @@ def index():
                     <div class="btn-group">
                         <button class="scope-btn active" onclick="setScope('all', this)">All Stocks</button>
                         <button class="scope-btn" onclick="setScope('nifty50', this)">Nifty 50</button>
-                        <button class="scope-btn" onclick="setScope('largecap', this)">Large Cap 100</button>
                         <button class="scope-btn" onclick="setScope('custom', this)">Custom Sectors</button>
+                    </div>
+                    <div id="dividend-search-wrap" style="margin-top: 15px;">
+                        <input type="text" id="dividend-search" placeholder="Search stocks (e.g., TCS, RELIANCE, INFY)..." style="width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s;">
+                        <div class="suggestions" id="dividend-suggestions"></div>
+                    </div>
+                    <div id="nifty50-checkboxes" style="display:none; margin-top: 15px;">
+                        <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
+                            <label style="cursor: pointer; color: var(--accent-cyan); font-weight: 600; font-size: 0.9em;">
+                                <input type="checkbox" id="select-all-nifty" checked onchange="toggleAllNifty(this.checked)"> Select All Nifty 50
+                            </label>
+                        </div>
+                        <div id="nifty50-grid" class="sector-grid"></div>
                     </div>
                     <div id="sector-checkboxes" style="display:none; margin-top: 15px;">
                         <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
@@ -1312,7 +1335,7 @@ def index():
                     <h3>Portfolio Configuration</h3>
                     <div style="margin-bottom: 22px;">
                         <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Investment Capital (INR)</label>
-                        <input type="number" id="capital-input" placeholder="e.g. 1000000" min="1000">
+                        <input type="text" id="capital-input" inputmode="numeric" placeholder="e.g. 10,00,000" value="1,00,000">
                     </div>
                     <div style="margin-bottom: 22px;">
                         <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Risk Appetite</label>
@@ -1331,6 +1354,19 @@ def index():
     </div>
     <script>
         const stocks = ''' + str(STOCKS).replace("'", '"') + ''';
+        const nifty50List = ''' + json.dumps(NIFTY_50_STOCKS) + ''';
+        const tickerNames = ''' + json.dumps(TICKER_TO_NAME) + ''';
+        function getStockName(symbol) {
+            return tickerNames[symbol] || symbol;
+        }
+        function getStockSector(symbol) {
+            const skipSectors = new Set(["All NSE", "Nifty 50", "Nifty Next 50", "Others", "Conglomerate"]);
+            for (const [sector, list] of Object.entries(stocks)) {
+                if (skipSectors.has(sector)) continue;
+                if (list.includes(symbol)) return sector;
+            }
+            return "NSE";
+        }
         let currentTab = 'analysis';
         function switchTab(tab, event) {
             currentTab = tab;
@@ -1364,8 +1400,29 @@ def index():
             }
             setupAutocomplete('search', 'suggestions', 'analyze');
             setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
+            setupDividendSearch();
             document.getElementById('regression-search').addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') analyzeRegression();
+            });
+        }
+        function setupDividendSearch() {
+            const input = document.getElementById('dividend-search');
+            if (!input) return;
+            const sug = document.getElementById('dividend-suggestions');
+            input.addEventListener('input', () => {
+                const q = input.value.toUpperCase();
+                if (q.length === 0) { sug.innerHTML = ''; return; }
+                const all = [...new Set(Object.values(stocks).flat())];
+                const filtered = all.filter(s => s.includes(q)).slice(0, 12);
+                sug.innerHTML = filtered.map(s =>
+                    `<button onclick="scanStockSector('${s}')">${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span></button>`
+                ).join('');
+            });
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const q = input.value.toUpperCase().trim();
+                    if (q) scanStockSector(q);
+                }
             });
         }
         function analyze(symbol) {
@@ -1388,6 +1445,7 @@ def index():
             const html = `
                 <div class="result-card">
                     <div class="header"><h2>${symbol}</h2><div class="signal-badge signal-${s.signal}">${s.signal}</div></div>
+                    <div style="margin: -20px 0 20px; font-size: 1.1em; color: var(--text-secondary);">${getStockName(symbol)} <span style="background: var(--bg-card-hover); padding: 3px 10px; border-radius: 4px; font-size: 0.8em; color: var(--accent-cyan); border: 1px solid var(--border-color);">${getStockSector(symbol)}</span></div>
                     <div class="action-banner">${s.action}</div>
                     <div class="rec-box"><strong>💡 Recommendation:</strong> ${s.rec}</div>
                     <div class="confidence-meter"><div class="confidence-label">Confidence Level</div><div class="confidence-bar-container"><div class="confidence-bar" style="width: ${s.confidence}%; background: linear-gradient(90deg, ${confidenceColor}, ${confidenceColor}dd);">${s.confidence}%</div></div><div class="confidence-text">${s.confidence_explain}</div></div>
@@ -1434,6 +1492,7 @@ def index():
             const html = `
                 <div class="result-card">
                     <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">Linear Regression Analysis</div></div>
+                    <div style="margin: -20px 0 20px; font-size: 1.1em; color: var(--text-secondary);">${getStockName(symbol)} <span style="background: var(--bg-card-hover); padding: 3px 10px; border-radius: 4px; font-size: 0.8em; color: var(--accent-cyan); border: 1px solid var(--border-color);">${getStockSector(symbol)}</span></div>
                     ${marketInfo}
                     <div class="action-banner">${data.trading_insight}</div>
                     
@@ -1469,11 +1528,43 @@ def index():
         }
         let dividendScope = 'all';
         let dividendRisk = 'moderate';
+        function formatIndianNumber(num) {
+            num = num.toString();
+            let lastThree = num.substring(num.length - 3);
+            let otherNumbers = num.substring(0, num.length - 3);
+            if (otherNumbers !== '') lastThree = ',' + lastThree;
+            return otherNumbers.replace(/\\B(?=(\\d{2})+(?!\\d))/g, ',') + lastThree;
+        }
+        function setupCapitalInput() {
+            const inp = document.getElementById('capital-input');
+            inp.addEventListener('input', function() {
+                let raw = this.value.replace(/,/g, '').replace(/[^0-9]/g, '');
+                if (raw === '') { this.value = ''; return; }
+                this.value = formatIndianNumber(raw);
+            });
+        }
+        function getCapitalValue() {
+            return parseFloat(document.getElementById('capital-input').value.replace(/,/g, ''));
+        }
         function setScope(scope, btn) {
             dividendScope = scope;
             document.querySelectorAll('.scope-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
+            document.getElementById('nifty50-checkboxes').style.display = scope === 'nifty50' ? 'block' : 'none';
+            document.getElementById('dividend-search-wrap').style.display = scope === 'all' ? 'block' : 'none';
+        }
+        function toggleAllNifty(checked) {
+            document.querySelectorAll('.nifty-cb').forEach(cb => cb.checked = checked);
+        }
+        function initNifty50Checkboxes() {
+            const grid = document.getElementById('nifty50-grid');
+            if (!grid) return;
+            nifty50List.forEach(symbol => {
+                const label = document.createElement('label');
+                label.innerHTML = '<input type="checkbox" class="nifty-cb" value="' + symbol + '" checked> ' + symbol + ' <span style="color:var(--text-muted);font-size:0.85em;">(' + getStockName(symbol) + ')</span>';
+                grid.appendChild(label);
+            });
         }
         function setRisk(risk, btn) {
             dividendRisk = risk;
@@ -1499,7 +1590,8 @@ def index():
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
             tbody.innerHTML = liveDividendEntries.map((s, idx) => `
                 <tr>
-                    <td>${idx + 1}. ${s.symbol}</td>
+                    <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span></td>
+                    <td style="font-size:0.8em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
                     <td style="text-align: right;">${fmt(s.price)}</td>
                     <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
@@ -1519,18 +1611,43 @@ def index():
             if (scannedEl) scannedEl.textContent = scanned;
             if (foundEl) foundEl.textContent = dividendFound;
         }
-        function analyzeDividends() {
-            const capital = parseFloat(document.getElementById('capital-input').value);
+        let dividendHighlight = '';
+        let dividendSectorLabel = '';
+        function scanStockSector(symbol) {
+            const sector = getStockSector(symbol);
+            dividendHighlight = symbol;
+            dividendSectorLabel = sector;
+            dividendScope = '_single_sector';
+            const capital = getCapitalValue();
             if (!capital || capital <= 0) { alert('Please enter a valid capital amount'); return; }
+            _runDividendScan(sector, capital, '');
+        }
+        function analyzeDividends() {
+            const capital = getCapitalValue();
+            if (!capital || capital <= 0) { alert('Please enter a valid capital amount'); return; }
+            dividendHighlight = '';
             let sectors = '';
-            if (dividendScope === 'all') sectors = 'all';
-            else if (dividendScope === 'nifty50') sectors = 'Nifty 50';
-            else if (dividendScope === 'largecap') sectors = 'Nifty 50,Nifty Next 50';
-            else {
+            let symbolsParam = '';
+            if (dividendScope === 'all') { sectors = 'all'; dividendSectorLabel = 'All NSE'; }
+            else if (dividendScope === 'nifty50') {
+                const checked = document.querySelectorAll('.nifty-cb:checked');
+                if (checked.length === 0) { alert('Please select at least one Nifty 50 stock'); return; }
+                symbolsParam = Array.from(checked).map(c => c.value).join(',');
+                dividendSectorLabel = 'Nifty 50';
+            }
+            else if (dividendScope === 'custom') {
                 const checked = document.querySelectorAll('.sector-cb:checked');
                 if (checked.length === 0) { alert('Please select at least one sector'); return; }
-                sectors = Array.from(checked).map(c => c.value).join(',');
+                const sectorList = Array.from(checked).map(c => c.value);
+                sectors = sectorList.join(',');
+                if (sectorList.length === 1) dividendSectorLabel = sectorList[0];
+                else if (sectorList.length <= 3) dividendSectorLabel = sectorList.join(' | ');
+                else dividendSectorLabel = 'Multi-Sector';
             }
+            else { sectors = 'all'; dividendSectorLabel = 'All NSE'; }
+            _runDividendScan(sectors, capital, symbolsParam);
+        }
+        function _runDividendScan(sectors, capital, symbolsParam) {
             const resultsDiv = document.getElementById('dividend-results');
             resultsDiv.innerHTML = `
                 <div class="result-card" style="margin-top: 30px;">
@@ -1544,7 +1661,7 @@ def index():
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
                             </tr></thead>
                             <tbody id="live-dividend-body"></tbody>
                         </table>
@@ -1557,7 +1674,8 @@ def index():
             liveDividendMax = 0;
             document.getElementById('live-scan-total').textContent = '0';
 
-            const streamUrl = `/dividend-optimize-stream?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`;
+            let streamUrl = `/dividend-optimize-stream?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`;
+            if (symbolsParam) streamUrl += `&symbols=${encodeURIComponent(symbolsParam)}`;
             dividendStream = new EventSource(streamUrl);
             dividendStream.onmessage = (event) => {
                 const payload = JSON.parse(event.data);
@@ -1593,7 +1711,7 @@ def index():
             dividendStream.onerror = () => {
                 dividendStream.close();
                 resultsDiv.innerHTML = `<div class="error">Live stream failed. Retrying with standard request...</div>`;
-                fetch(`/dividend-optimize?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}`)
+                fetch(`/dividend-optimize?capital=${capital}&risk=${dividendRisk}&sectors=${encodeURIComponent(sectors)}${symbolsParam ? '&symbols=' + encodeURIComponent(symbolsParam) : ''}`)
                     .then(r => r.json())
                     .then(data => {
                         if (data.error) resultsDiv.innerHTML = `<div class="error">${data.error}</div>`;
@@ -1606,7 +1724,8 @@ def index():
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
             let allocRows = data.allocation.map((a, idx) => `
                 <tr>
-                    <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}</td>
+                    <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}<br><span style="font-size:0.8em; font-weight:400; color: var(--text-muted);">${getStockName(a.symbol)}</span></td>
+                    <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(a.symbol)}</td>
                     <td>${a.weight}%</td>
                     <td style="text-align: right;">${a.shares}</td>
                     <td style="text-align: right;">${fmt(a.price)}</td>
@@ -1615,20 +1734,31 @@ def index():
                     <td style="color: var(--accent-green); font-weight: 700; text-align: right;">${fmt(a.expected_dividend)}</td>
                     <td>${a.volatility}%</td>
                 </tr>`).join('');
-            let allStockRows = data.all_dividend_stocks.map((s, idx) => `
-                <tr>
-                    <td>${idx + 1}. ${s.symbol}</td>
+            let sortedStocks = [...data.all_dividend_stocks];
+            if (dividendHighlight) {
+                sortedStocks.sort((a, b) => {
+                    if (a.symbol === dividendHighlight) return -1;
+                    if (b.symbol === dividendHighlight) return 1;
+                    return b.dividend_yield - a.dividend_yield;
+                });
+            }
+            let allStockRows = sortedStocks.map((s, idx) => {
+                const isHL = s.symbol === dividendHighlight;
+                return `<tr style="${isHL ? 'background: rgba(0,217,255,0.1); border-left: 3px solid var(--accent-cyan);' : ''}">
+                    <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span></td>
+                    <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
                     <td style="text-align: right;">${fmt(s.price)}</td>
                     <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
                     <td>${s.volatility}%</td>
-                </tr>`).join('');
+                </tr>`;
+            }).join('');
             const riskColors = { conservative: '#10b981', moderate: '#f59e0b', aggressive: '#ef4444' };
             const riskColor = riskColors[data.risk_appetite] || '#f59e0b';
             const html = `
                 <div class="result-card" style="margin-top: 30px;">
                     <div class="header">
-                        <h2>Dividend Portfolio</h2>
+                        <h2>Dividend Portfolio <span style="font-size: 0.5em; color: var(--accent-cyan); font-weight: 400;">| ${dividendSectorLabel}</span></h2>
                         <div class="signal-badge" style="background: ${riskColor}; color: white;">${data.risk_appetite.toUpperCase()}</div>
                     </div>
                     <div class="action-banner">Optimized for Maximum Dividend Income | ${data.stocks_scanned} stocks scanned | ${data.dividend_stocks_found} pay dividends</div>
@@ -1655,7 +1785,7 @@ def index():
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${allocRows}</tbody>
                         </table>
@@ -1665,7 +1795,7 @@ def index():
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${allStockRows}</tbody>
                         </table>
@@ -1682,7 +1812,7 @@ def index():
                 grid.appendChild(label);
             });
         }
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); initNifty50Checkboxes(); setupCapitalInput(); });
     </script>
 </body>
 </html>'''
@@ -1763,6 +1893,24 @@ def dividend_scan_route():
     except Exception as e:
         return jsonify({'error': f'Scan failed: {str(e)}'})
 
+def _resolve_dividend_symbols(sectors_param, symbols_param=None):
+    """Resolve stock symbols from sectors or explicit symbols parameter."""
+    if symbols_param:
+        raw = [s.strip().upper() for s in symbols_param.split(',') if s.strip()]
+        return [s for s in raw if s in ALL_VALID_TICKERS]
+    if sectors_param == 'all':
+        return list(ALL_VALID_TICKERS)
+    sector_list = [s.strip() for s in sectors_param.split(',')]
+    if UNIVERSE_SECTOR_NAME in sector_list:
+        return list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+    symbols = []
+    for sector in sector_list:
+        if sector in STOCKS:
+            symbols.extend(STOCKS[sector])
+        elif sector == 'Nifty 50':
+            symbols.extend(NIFTY_50_STOCKS)
+    return list(set(symbols))
+
 @app.route('/dividend-optimize')
 def dividend_optimize_route():
     """Scan dividends and compute optimal portfolio allocation."""
@@ -1772,22 +1920,12 @@ def dividend_optimize_route():
         return jsonify({'error': 'Invalid capital amount'})
     risk = request.args.get('risk', 'moderate')
     sectors = request.args.get('sectors', 'all')
+    symbols_param = request.args.get('symbols', '')
     if capital <= 0:
         return jsonify({'error': 'Please enter a valid capital amount'})
     if risk not in ('conservative', 'moderate', 'aggressive'):
         risk = 'moderate'
-    if sectors == 'all':
-        symbols = list(ALL_VALID_TICKERS)
-    else:
-        sector_list = [s.strip() for s in sectors.split(',')]
-        if UNIVERSE_SECTOR_NAME in sector_list:
-            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
-        else:
-            symbols = []
-            for sector in sector_list:
-                if sector in STOCKS:
-                    symbols.extend(STOCKS[sector])
-            symbols = list(set(symbols))
+    symbols = _resolve_dividend_symbols(sectors, symbols_param)
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
     try:
@@ -1813,22 +1951,12 @@ def dividend_optimize_stream_route():
         return jsonify({'error': 'Invalid capital amount'})
     risk = request.args.get('risk', 'moderate')
     sectors = request.args.get('sectors', 'all')
+    symbols_param = request.args.get('symbols', '')
     if capital <= 0:
         return jsonify({'error': 'Please enter a valid capital amount'})
     if risk not in ('conservative', 'moderate', 'aggressive'):
         risk = 'moderate'
-    if sectors == 'all':
-        symbols = list(ALL_VALID_TICKERS)
-    else:
-        sector_list = [s.strip() for s in sectors.split(',')]
-        if UNIVERSE_SECTOR_NAME in sector_list:
-            symbols = list(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
-        else:
-            symbols = []
-            for sector in sector_list:
-                if sector in STOCKS:
-                    symbols.extend(STOCKS[sector])
-            symbols = list(set(symbols))
+    symbols = _resolve_dividend_symbols(sectors, symbols_param)
     if not symbols:
         return jsonify({'error': 'No valid sectors selected'})
 
@@ -1878,7 +2006,7 @@ def dividend_optimize_stream_route():
                         interval='1d',
                         group_by='column',
                         actions=True,
-                        auto_adjust=False,
+                        auto_adjust=True,
                         progress=False,
                         threads=True
                     )
@@ -1895,7 +2023,7 @@ def dividend_optimize_stream_route():
                         ticker_symbol = f"{symbol}.NS"
                         if isinstance(data.columns, pd.MultiIndex):
                             close_series = data['Close'][ticker_symbol].dropna()
-                            dividends = data['Dividends'][ticker_symbol].dropna()
+                            dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
                         else:
                             close_series = data['Close'].dropna()
                             dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
@@ -1908,6 +2036,7 @@ def dividend_optimize_stream_route():
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
+                        # Dividends from auto_adjust=True are split-adjusted
                         annual_dividend = float(dividends.sum()) if not dividends.empty else 0.0
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
