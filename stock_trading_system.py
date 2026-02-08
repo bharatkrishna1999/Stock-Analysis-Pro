@@ -102,7 +102,7 @@ STOCKS = {
     
     'Media': ['ZEEL', 'SUNTV', 'PVRINOX', 'SAREGAMA', 'TIPS', 'NAZARA', 'NETWORK18'],
     
-    'Chemicals': ['UPL', 'PIDILITIND', 'AARTI', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT', 
+    'Chemicals': ['UPL', 'PIDILITIND', 'AARTIIND', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT', 
                   'TATACHEM', 'BALRAMCHIN', 'ALKYLAMINE', 'CLEAN', 'NOCIL', 'TATAchemicals',
                   'ATUL', 'FINEORG', 'NAVINFLUOR'],
     
@@ -428,6 +428,7 @@ COMPANY_TO_TICKER = {
     # Others
     'ZOMATO': 'ZOMATO', 'PAYTM': 'PAYTM', 'NYKAA': 'NYKAA', 'POLICYBAZAAR': 'POLICYBZR',
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
+    'AARTI': 'AARTIIND', 'AARTI INDUSTRIES': 'AARTIIND',
 }
 
 # Build reverse mapping: ticker -> best company name (longest/most descriptive)
@@ -527,15 +528,44 @@ class Analyzer:
         return None, original
 
     def get_data(self, symbol, period='10d', interval='1h'):
+        def _download(ticker, period, interval):
+            return yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                progress=False,
+                threads=False
+            )
+
+        def _has_enough_data(df, minimum_rows):
+            if df is None or df.empty:
+                return False
+            close_series = df.get("Close")
+            if close_series is None:
+                return False
+            if isinstance(close_series, pd.DataFrame):
+                close_series = close_series.iloc[:, 0]
+            return len(close_series.dropna()) >= minimum_rows
+
         try:
             ticker = f"{symbol}.NS"
-            data = yf.download(ticker, period=period, interval=interval, progress=False)
-            if data.empty or len(data) < 14:
-                # Fallback: try daily data with longer period
-                data = yf.download(ticker, period='1mo', interval='1d', progress=False)
-                if data.empty:
-                    return None
-            return data
+            attempts = [
+                (period, interval, 14),
+                ("1mo", "1d", 10),
+                ("3mo", "1d", 10),
+                ("6mo", "1d", 10),
+            ]
+            for try_period, try_interval, min_rows in attempts:
+                data = _download(ticker, try_period, try_interval)
+                if _has_enough_data(data, min_rows):
+                    return data
+            try:
+                history = yf.Ticker(ticker).history(period="6mo", interval="1d")
+                if _has_enough_data(history, 10):
+                    return history
+            except Exception:
+                pass
+            return None
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
             return None
