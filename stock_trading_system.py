@@ -430,6 +430,13 @@ COMPANY_TO_TICKER = {
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
 }
 
+# Build reverse mapping: ticker -> best company name (longest/most descriptive)
+TICKER_TO_NAME = {}
+for _name, _ticker in COMPANY_TO_TICKER.items():
+    _title = _name.title()
+    if _ticker not in TICKER_TO_NAME or len(_title) > len(TICKER_TO_NAME[_ticker]):
+        TICKER_TO_NAME[_ticker] = _title
+
 def deduplicate_stocks(stocks_dict, universe_sector=UNIVERSE_SECTOR_NAME):
     """
     Remove duplicate stock entries across sectors.
@@ -1251,9 +1258,6 @@ def index():
             <h1>📊 Stock Analysis Pro</h1>
             <p>Advanced Trading Insights with AI-Powered Analysis</p>
             <div class="stock-count">🚀 Now analyzing ''' + str(len(ALL_VALID_TICKERS)) + '''+ NSE stocks across ''' + str(len(STOCKS)) + ''' sectors</div>
-            <div style="margin-top: 8px; color: var(--text-muted); font-size: 0.85em;">
-                Universe source: ''' + UNIVERSE_SOURCE + '''. Market data requests are subject to API throttling.
-            </div>
         </header>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
@@ -1343,6 +1347,18 @@ def index():
     </div>
     <script>
         const stocks = ''' + str(STOCKS).replace("'", '"') + ''';
+        const tickerNames = ''' + json.dumps(TICKER_TO_NAME) + ''';
+        function getStockName(symbol) {
+            return tickerNames[symbol] || symbol;
+        }
+        function getStockSector(symbol) {
+            const skipSectors = new Set(["All NSE", "Nifty 50", "Nifty Next 50", "Others", "Conglomerate"]);
+            for (const [sector, list] of Object.entries(stocks)) {
+                if (skipSectors.has(sector)) continue;
+                if (list.includes(symbol)) return sector;
+            }
+            return "NSE";
+        }
         let currentTab = 'analysis';
         function switchTab(tab, event) {
             currentTab = tab;
@@ -1401,6 +1417,7 @@ def index():
             const html = `
                 <div class="result-card">
                     <div class="header"><h2>${symbol}</h2><div class="signal-badge signal-${s.signal}">${s.signal}</div></div>
+                    <div style="margin: -20px 0 20px; font-size: 1.1em; color: var(--text-secondary);">${getStockName(symbol)} <span style="background: var(--bg-card-hover); padding: 3px 10px; border-radius: 4px; font-size: 0.8em; color: var(--accent-cyan); border: 1px solid var(--border-color);">${getStockSector(symbol)}</span></div>
                     <div class="action-banner">${s.action}</div>
                     <div class="rec-box"><strong>💡 Recommendation:</strong> ${s.rec}</div>
                     <div class="confidence-meter"><div class="confidence-label">Confidence Level</div><div class="confidence-bar-container"><div class="confidence-bar" style="width: ${s.confidence}%; background: linear-gradient(90deg, ${confidenceColor}, ${confidenceColor}dd);">${s.confidence}%</div></div><div class="confidence-text">${s.confidence_explain}</div></div>
@@ -1447,6 +1464,7 @@ def index():
             const html = `
                 <div class="result-card">
                     <div class="header"><h2>${symbol} vs Market</h2><div style="color: var(--accent-cyan); font-size: 1.2em;">Linear Regression Analysis</div></div>
+                    <div style="margin: -20px 0 20px; font-size: 1.1em; color: var(--text-secondary);">${getStockName(symbol)} <span style="background: var(--bg-card-hover); padding: 3px 10px; border-radius: 4px; font-size: 0.8em; color: var(--accent-cyan); border: 1px solid var(--border-color);">${getStockSector(symbol)}</span></div>
                     ${marketInfo}
                     <div class="action-banner">${data.trading_insight}</div>
                     
@@ -1561,7 +1579,8 @@ def index():
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
             tbody.innerHTML = liveDividendEntries.map((s, idx) => `
                 <tr>
-                    <td>${idx + 1}. ${s.symbol}</td>
+                    <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span></td>
+                    <td style="font-size:0.8em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
                     <td style="text-align: right;">${fmt(s.price)}</td>
                     <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
@@ -1606,7 +1625,7 @@ def index():
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
                             </tr></thead>
                             <tbody id="live-dividend-body"></tbody>
                         </table>
@@ -1668,7 +1687,8 @@ def index():
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
             let allocRows = data.allocation.map((a, idx) => `
                 <tr>
-                    <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}</td>
+                    <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}<br><span style="font-size:0.8em; font-weight:400; color: var(--text-muted);">${getStockName(a.symbol)}</span></td>
+                    <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(a.symbol)}</td>
                     <td>${a.weight}%</td>
                     <td style="text-align: right;">${a.shares}</td>
                     <td style="text-align: right;">${fmt(a.price)}</td>
@@ -1679,7 +1699,8 @@ def index():
                 </tr>`).join('');
             let allStockRows = data.all_dividend_stocks.map((s, idx) => `
                 <tr>
-                    <td>${idx + 1}. ${s.symbol}</td>
+                    <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span></td>
+                    <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
                     <td style="text-align: right;">${fmt(s.price)}</td>
                     <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
@@ -1717,7 +1738,7 @@ def index():
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${allocRows}</tbody>
                         </table>
@@ -1727,7 +1748,7 @@ def index():
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${allStockRows}</tbody>
                         </table>
