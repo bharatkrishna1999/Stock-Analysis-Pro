@@ -43,6 +43,10 @@ DIVIDEND_MAX_RESULTS = 300
 DIVIDEND_BATCH_SIZE = 50
 DIVIDEND_MAX_WORKERS = 4
 
+YAHOO_TICKER_ALIASES = {
+    "ETERNAL": ["ZOMATO"],
+}
+
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX, but includes 500+ stocks
 
@@ -102,7 +106,7 @@ STOCKS = {
     
     'Media': ['ZEEL', 'SUNTV', 'PVRINOX', 'SAREGAMA', 'TIPS', 'NAZARA', 'NETWORK18'],
     
-    'Chemicals': ['UPL', 'PIDILITIND', 'AARTI', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT', 
+    'Chemicals': ['UPL', 'PIDILITIND', 'AARTIIND', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT', 
                   'TATACHEM', 'BALRAMCHIN', 'ALKYLAMINE', 'CLEAN', 'NOCIL', 'TATAchemicals',
                   'ATUL', 'FINEORG', 'NAVINFLUOR'],
     
@@ -139,9 +143,9 @@ STOCKS = {
                       'ICICIGI', 'ICICIPRULI', 'IDEA', 'INDIGO', 'LUPIN', 'MCDOWELL-N', 'MARICO',
                       'MOTHERSON', 'MUTHOOTFIN', 'NMDC', 'NYKAA', 'OFSS', 'OIL', 'PAGEIND', 'PIDILITIND',
                       'PNB', 'PEL', 'PETRONET', 'PFIZER', 'SIEMENS', 'SRF', 'SBICARD', 'SHREECEM',
-                      'TATACOMM', 'TORNTPHARM', 'TRENT', 'TVSMOTOR', 'VEDL', 'VOLTAS', 'ZEEL', 'ZOMATO'],
+                      'TATACOMM', 'TORNTPHARM', 'TRENT', 'TVSMOTOR', 'VEDL', 'VOLTAS', 'ZEEL', 'ETERNAL'],
     
-    'Others': ['ZOMATO', 'PAYTM', 'NYKAA', 'POLICYBZR', 'DELHIVERY', 'CARTRADE', 'EASEMYTRIP',
+    'Others': ['ETERNAL', 'PAYTM', 'NYKAA', 'POLICYBZR', 'DELHIVERY', 'CARTRADE', 'EASEMYTRIP',
                'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS']
 }
 
@@ -426,8 +430,9 @@ COMPANY_TO_TICKER = {
     'PVR INOX': 'PVRINOX',
     
     # Others
-    'ZOMATO': 'ZOMATO', 'PAYTM': 'PAYTM', 'NYKAA': 'NYKAA', 'POLICYBAZAAR': 'POLICYBZR',
+    'ZOMATO': 'ETERNAL', 'ETERNAL': 'ETERNAL', 'PAYTM': 'PAYTM', 'NYKAA': 'NYKAA', 'POLICYBAZAAR': 'POLICYBZR',
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
+    'AARTI': 'AARTIIND', 'AARTI INDUSTRIES': 'AARTIIND',
 }
 
 # Build reverse mapping: ticker -> best company name (longest/most descriptive)
@@ -527,21 +532,53 @@ class Analyzer:
         return None, original
 
     def get_data(self, symbol, period='10d', interval='1h'):
+        def _download(ticker, period, interval):
+            return yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                progress=False,
+                threads=False
+            )
+
+        def _has_enough_data(df, minimum_rows):
+            if df is None or df.empty:
+                return False
+            close_series = df.get("Close")
+            if close_series is None:
+                return False
+            if isinstance(close_series, pd.DataFrame):
+                close_series = close_series.iloc[:, 0]
+            return len(close_series.dropna()) >= minimum_rows
+
         try:
-            ticker = f"{symbol}.NS"
-            data = yf.download(ticker, period=period, interval=interval, progress=False)
-            if data.empty or len(data) < 14:
-                # Fallback: try daily data with longer period
-                data = yf.download(ticker, period='1mo', interval='1d', progress=False)
-                if data.empty:
-                    return None
-            return data
+            base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
+            tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
+            attempts = [
+                (period, interval, 14),
+                ("1mo", "1d", 10),
+                ("3mo", "1d", 10),
+                ("6mo", "1d", 10),
+                ("1y", "1d", 10),
+            ]
+            for ticker in tickers:
+                for try_period, try_interval, min_rows in attempts:
+                    data = _download(ticker, try_period, try_interval)
+                    if _has_enough_data(data, min_rows):
+                        return data
+                try:
+                    history = yf.Ticker(ticker).history(period="1y", interval="1d")
+                    if _has_enough_data(history, 10):
+                        return history
+                except Exception:
+                    continue
+            return None
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
             return None
 
     def calc_indicators(self, data):
-        if data is None or len(data) < 14:
+        if data is None or len(data) < 5:
             return None
         try:
             close = data['Close'].dropna()
@@ -553,18 +590,21 @@ class Analyzer:
                 high = high.iloc[:, 0]
             if isinstance(low, pd.DataFrame):
                 low = low.iloc[:, 0]
-            if len(close) < 14:
+            if len(close) < 5:
                 return None
+            rsi_window = min(14, len(close))
+            sma9_window = min(9, len(close))
+            sma5_window = min(5, len(close))
             curr = float(close.iloc[-1])
-            sma9 = float(close.rolling(9).mean().iloc[-1])
-            sma5 = float(close.rolling(5).mean().iloc[-1])
+            sma9 = float(close.rolling(sma9_window).mean().iloc[-1])
+            sma5 = float(close.rolling(sma5_window).mean().iloc[-1])
             open_price = float(close.iloc[-18] if len(close) > 18 else close.iloc[0])
             prev_hour = float(close.iloc[-2] if len(close) > 1 else curr)
             daily_ret = ((curr - open_price) / open_price) * 100 if open_price > 0 else 0
             hourly_ret = ((curr - prev_hour) / prev_hour) * 100 if prev_hour > 0 else 0
             delta = close.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            gain = (delta.where(delta > 0, 0)).rolling(rsi_window).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(rsi_window).mean()
             rs = gain / loss
             rsi_series = 100 - (100 / (1 + rs))
             rsi = float(rsi_series.iloc[-1])
@@ -1387,14 +1427,19 @@ def index():
                 const input = document.getElementById(inputId);
                 if(!input) return;
                 input.addEventListener('input', (e) => {
-                    const q = e.target.value.toUpperCase();
+                    const raw = e.target.value.trim();
+                    const q = raw.toUpperCase();
                     const sug = document.getElementById(suggestionId);
                     if (q.length === 0) { sug.innerHTML = ''; return; }
                     const all = [...new Set(Object.values(stocks).flat())];
-                    const filtered = all.filter(s => s.includes(q)).slice(0, 12);
+                    const filtered = all.filter(s => {
+                        const name = getStockName(s).toUpperCase();
+                        return s.includes(q) || name.includes(q);
+                    }).slice(0, 12);
                     sug.innerHTML = filtered.map(s => {
-                        if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${s}</button>`;
-                        else return `<button onclick="analyze('${s}')">${s}</button>`;
+                        const label = `${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span>`;
+                        if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${label}</button>`;
+                        else return `<button onclick="analyze('${s}')">${label}</button>`;
                     }).join('');
                 });
             }
@@ -1410,10 +1455,14 @@ def index():
             if (!input) return;
             const sug = document.getElementById('dividend-suggestions');
             input.addEventListener('input', () => {
-                const q = input.value.toUpperCase();
+                const raw = input.value.trim();
+                const q = raw.toUpperCase();
                 if (q.length === 0) { sug.innerHTML = ''; return; }
                 const all = [...new Set(Object.values(stocks).flat())];
-                const filtered = all.filter(s => s.includes(q)).slice(0, 12);
+                const filtered = all.filter(s => {
+                    const name = getStockName(s).toUpperCase();
+                    return s.includes(q) || name.includes(q);
+                }).slice(0, 12);
                 sug.innerHTML = filtered.map(s =>
                     `<button onclick="scanStockSector('${s}')">${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span></button>`
                 ).join('');
