@@ -43,6 +43,10 @@ DIVIDEND_MAX_RESULTS = 300
 DIVIDEND_BATCH_SIZE = 50
 DIVIDEND_MAX_WORKERS = 4
 
+YAHOO_TICKER_ALIASES = {
+    "ZOMATO": ["ETERNAL"],
+}
+
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX, but includes 500+ stocks
 
@@ -428,7 +432,7 @@ COMPANY_TO_TICKER = {
     # Others
     'ZOMATO': 'ZOMATO', 'PAYTM': 'PAYTM', 'NYKAA': 'NYKAA', 'POLICYBAZAAR': 'POLICYBZR',
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
-    'AARTI': 'AARTIIND', 'AARTI INDUSTRIES': 'AARTIIND',
+    'AARTI': 'AARTIIND', 'AARTI INDUSTRIES': 'AARTIIND', 'ETERNAL': 'ZOMATO',
 }
 
 # Build reverse mapping: ticker -> best company name (longest/most descriptive)
@@ -548,7 +552,8 @@ class Analyzer:
             return len(close_series.dropna()) >= minimum_rows
 
         try:
-            tickers = [f"{symbol}.NS", f"{symbol}.BO"]
+            base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
+            tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
             attempts = [
                 (period, interval, 14),
                 ("1mo", "1d", 10),
