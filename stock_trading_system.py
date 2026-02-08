@@ -548,30 +548,32 @@ class Analyzer:
             return len(close_series.dropna()) >= minimum_rows
 
         try:
-            ticker = f"{symbol}.NS"
+            tickers = [f"{symbol}.NS", f"{symbol}.BO"]
             attempts = [
                 (period, interval, 14),
                 ("1mo", "1d", 10),
                 ("3mo", "1d", 10),
                 ("6mo", "1d", 10),
+                ("1y", "1d", 10),
             ]
-            for try_period, try_interval, min_rows in attempts:
-                data = _download(ticker, try_period, try_interval)
-                if _has_enough_data(data, min_rows):
-                    return data
-            try:
-                history = yf.Ticker(ticker).history(period="6mo", interval="1d")
-                if _has_enough_data(history, 10):
-                    return history
-            except Exception:
-                pass
+            for ticker in tickers:
+                for try_period, try_interval, min_rows in attempts:
+                    data = _download(ticker, try_period, try_interval)
+                    if _has_enough_data(data, min_rows):
+                        return data
+                try:
+                    history = yf.Ticker(ticker).history(period="1y", interval="1d")
+                    if _has_enough_data(history, 10):
+                        return history
+                except Exception:
+                    continue
             return None
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
             return None
 
     def calc_indicators(self, data):
-        if data is None or len(data) < 14:
+        if data is None or len(data) < 5:
             return None
         try:
             close = data['Close'].dropna()
@@ -583,18 +585,21 @@ class Analyzer:
                 high = high.iloc[:, 0]
             if isinstance(low, pd.DataFrame):
                 low = low.iloc[:, 0]
-            if len(close) < 14:
+            if len(close) < 5:
                 return None
+            rsi_window = min(14, len(close))
+            sma9_window = min(9, len(close))
+            sma5_window = min(5, len(close))
             curr = float(close.iloc[-1])
-            sma9 = float(close.rolling(9).mean().iloc[-1])
-            sma5 = float(close.rolling(5).mean().iloc[-1])
+            sma9 = float(close.rolling(sma9_window).mean().iloc[-1])
+            sma5 = float(close.rolling(sma5_window).mean().iloc[-1])
             open_price = float(close.iloc[-18] if len(close) > 18 else close.iloc[0])
             prev_hour = float(close.iloc[-2] if len(close) > 1 else curr)
             daily_ret = ((curr - open_price) / open_price) * 100 if open_price > 0 else 0
             hourly_ret = ((curr - prev_hour) / prev_hour) * 100 if prev_hour > 0 else 0
             delta = close.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            gain = (delta.where(delta > 0, 0)).rolling(rsi_window).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(rsi_window).mean()
             rs = gain / loss
             rsi_series = 100 - (100 / (1 + rs))
             rsi = float(rsi_series.iloc[-1])
