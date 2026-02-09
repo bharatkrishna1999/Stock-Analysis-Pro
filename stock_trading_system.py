@@ -28,10 +28,6 @@ import logging
 import gc
 from scipy.optimize import minimize as scipy_minimize
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import sqlite3
-import pickle
-import threading
-import time as _time
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
@@ -160,16 +156,6 @@ UNIVERSE_SOURCE = "Static list"
 # survives process restarts (on Render this persists within a single deploy).
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 UNIVERSE_CACHE_FILE = os.path.join(_SCRIPT_DIR, ".nse_universe_cache.json")
-
-# ===== MARKET DATA CACHE CONFIGURATION =====
-CACHE_DB_PATH = os.path.join(_SCRIPT_DIR, ".market_data_cache.db")
-OHLC_CACHE_TTL = timedelta(hours=4)           # Intraday OHLC (technical analysis)
-DAILY_OHLC_CACHE_TTL = timedelta(hours=6)     # Daily OHLC (regression / dividends)
-REGRESSION_CACHE_TTL = timedelta(hours=12)    # Full HSIC regression results
-DIVIDEND_SYMBOL_CACHE_TTL = timedelta(hours=12)  # Per-symbol dividend data
-BG_COLLECTOR_INTERVAL = 12 * 3600             # Seconds between full collection cycles
-BG_COLLECTOR_INITIAL_DELAY = 30               # Seconds after startup before first run
-BG_FETCH_DELAY = 1.5                          # Seconds between individual Yahoo fetches
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -547,405 +533,6 @@ print(
     f"(duplicates removed). Universe source: {UNIVERSE_SOURCE}"
 )
 
-# ===== MARKET DATA CACHE (SQLite) =====
-
-class DataCache:
-    """Lightweight SQLite cache for OHLC, dividend, and regression data.
-
-    Uses WAL journal mode for safe concurrent reads from request threads
-    while the background collector writes.  All public methods silently
-    swallow errors so a cache miss never crashes a request.
-    """
-
-    def __init__(self, db_path=CACHE_DB_PATH):
-        self.db_path = db_path
-        self._local = threading.local()
-        self._init_db()
-
-    # -- connection management (one per thread) ---------------------------
-
-    def _conn(self):
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path, timeout=10)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            self._local.conn = conn
-        return conn
-
-    def _init_db(self):
-        with self._conn() as conn:
-            conn.execute("""CREATE TABLE IF NOT EXISTS ohlc_cache (
-                cache_key TEXT PRIMARY KEY,
-                data       BLOB NOT NULL,
-                fetched_at TEXT NOT NULL
-            )""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS dividend_cache (
-                symbol     TEXT PRIMARY KEY,
-                data       TEXT NOT NULL,
-                fetched_at TEXT NOT NULL
-            )""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS regression_cache (
-                symbol     TEXT PRIMARY KEY,
-                data       TEXT NOT NULL,
-                fetched_at TEXT NOT NULL
-            )""")
-
-    # -- OHLC data (pickled DataFrames) -----------------------------------
-
-    def get_ohlc(self, symbol, period, interval, ttl=None):
-        """Return cached DataFrame or None if missing / stale."""
-        if ttl is None:
-            ttl = DAILY_OHLC_CACHE_TTL if interval == "1d" else OHLC_CACHE_TTL
-        key = f"{symbol}|{period}|{interval}"
-        try:
-            row = self._conn().execute(
-                "SELECT data, fetched_at FROM ohlc_cache WHERE cache_key = ?", (key,)
-            ).fetchone()
-            if row:
-                fetched_at = datetime.fromisoformat(row[1])
-                if datetime.utcnow() - fetched_at <= ttl:
-                    return pickle.loads(row[0])
-        except Exception:
-            pass
-        return None
-
-    def set_ohlc(self, symbol, period, interval, dataframe):
-        key = f"{symbol}|{period}|{interval}"
-        try:
-            blob = pickle.dumps(dataframe, protocol=pickle.HIGHEST_PROTOCOL)
-            with self._conn() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO ohlc_cache (cache_key, data, fetched_at) VALUES (?, ?, ?)",
-                    (key, blob, datetime.utcnow().isoformat()),
-                )
-        except Exception:
-            pass
-
-    # -- Per-symbol dividend results (JSON) --------------------------------
-
-    def get_dividend(self, symbol, ttl=None):
-        """Return cached dividend dict or None."""
-        if ttl is None:
-            ttl = DIVIDEND_SYMBOL_CACHE_TTL
-        try:
-            row = self._conn().execute(
-                "SELECT data, fetched_at FROM dividend_cache WHERE symbol = ?", (symbol,)
-            ).fetchone()
-            if row:
-                fetched_at = datetime.fromisoformat(row[1])
-                if datetime.utcnow() - fetched_at <= ttl:
-                    return json.loads(row[0])
-        except Exception:
-            pass
-        return None
-
-    def set_dividend(self, symbol, entry_dict):
-        try:
-            with self._conn() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO dividend_cache (symbol, data, fetched_at) VALUES (?, ?, ?)",
-                    (symbol, json.dumps(entry_dict), datetime.utcnow().isoformat()),
-                )
-        except Exception:
-            pass
-
-    def get_dividends_bulk(self, symbols, ttl=None):
-        """Return {symbol: entry_dict} for all fresh cached symbols."""
-        if ttl is None:
-            ttl = DIVIDEND_SYMBOL_CACHE_TTL
-        cutoff = (datetime.utcnow() - ttl).isoformat()
-        result = {}
-        try:
-            placeholders = ",".join("?" for _ in symbols)
-            rows = self._conn().execute(
-                f"SELECT symbol, data, fetched_at FROM dividend_cache "
-                f"WHERE symbol IN ({placeholders}) AND fetched_at > ?",
-                (*symbols, cutoff),
-            ).fetchall()
-            for sym, data_json, _ in rows:
-                result[sym] = json.loads(data_json)
-        except Exception:
-            pass
-        return result
-
-    # -- Full regression results (JSON) ------------------------------------
-
-    def get_regression(self, symbol, ttl=None):
-        if ttl is None:
-            ttl = REGRESSION_CACHE_TTL
-        try:
-            row = self._conn().execute(
-                "SELECT data, fetched_at FROM regression_cache WHERE symbol = ?", (symbol,)
-            ).fetchone()
-            if row:
-                fetched_at = datetime.fromisoformat(row[1])
-                if datetime.utcnow() - fetched_at <= ttl:
-                    return json.loads(row[0])
-        except Exception:
-            pass
-        return None
-
-    def set_regression(self, symbol, result_dict):
-        try:
-            with self._conn() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO regression_cache (symbol, data, fetched_at) VALUES (?, ?, ?)",
-                    (symbol, json.dumps(result_dict), datetime.utcnow().isoformat()),
-                )
-        except Exception:
-            pass
-
-    # -- Housekeeping ------------------------------------------------------
-
-    def stats(self):
-        """Return cache size counts for the /cache-status endpoint."""
-        try:
-            conn = self._conn()
-            ohlc_count = conn.execute("SELECT COUNT(*) FROM ohlc_cache").fetchone()[0]
-            div_count = conn.execute("SELECT COUNT(*) FROM dividend_cache").fetchone()[0]
-            reg_count = conn.execute("SELECT COUNT(*) FROM regression_cache").fetchone()[0]
-
-            now = datetime.utcnow()
-            ohlc_fresh = conn.execute(
-                "SELECT COUNT(*) FROM ohlc_cache WHERE fetched_at > ?",
-                ((now - DAILY_OHLC_CACHE_TTL).isoformat(),),
-            ).fetchone()[0]
-            div_fresh = conn.execute(
-                "SELECT COUNT(*) FROM dividend_cache WHERE fetched_at > ?",
-                ((now - DIVIDEND_SYMBOL_CACHE_TTL).isoformat(),),
-            ).fetchone()[0]
-            reg_fresh = conn.execute(
-                "SELECT COUNT(*) FROM regression_cache WHERE fetched_at > ?",
-                ((now - REGRESSION_CACHE_TTL).isoformat(),),
-            ).fetchone()[0]
-
-            return {
-                "ohlc": {"total": ohlc_count, "fresh": ohlc_fresh},
-                "dividend": {"total": div_count, "fresh": div_fresh},
-                "regression": {"total": reg_count, "fresh": reg_fresh},
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
-    def evict_stale(self):
-        """Delete entries older than 2x their TTL to keep the DB small."""
-        try:
-            now = datetime.utcnow()
-            with self._conn() as conn:
-                conn.execute("DELETE FROM ohlc_cache WHERE fetched_at < ?",
-                             ((now - DAILY_OHLC_CACHE_TTL * 2).isoformat(),))
-                conn.execute("DELETE FROM dividend_cache WHERE fetched_at < ?",
-                             ((now - DIVIDEND_SYMBOL_CACHE_TTL * 2).isoformat(),))
-                conn.execute("DELETE FROM regression_cache WHERE fetched_at < ?",
-                             ((now - REGRESSION_CACHE_TTL * 2).isoformat(),))
-        except Exception:
-            pass
-
-
-# Module-level cache instance (used by Analyzer + routes + background worker)
-data_cache = DataCache()
-
-
-class BackgroundCollector(threading.Thread):
-    """Daemon thread that pre-fetches OHLC and dividend data on a schedule.
-
-    Priority order:
-    1. Nifty 50 intraday OHLC  (most-queried stocks)
-    2. Nifty 50 daily OHLC      (used by /regression)
-    3. Nifty index daily OHLC    (common to all regressions)
-    4. All-stock daily OHLC      (broad coverage)
-    5. Dividend data in bulk batches
-    6. Evict stale rows
-    """
-
-    def __init__(self):
-        super().__init__(daemon=True, name="bg-collector")
-        self._stop = threading.Event()
-        self._last_cycle_at = None
-        self._symbols_collected = 0
-        self._running = False
-
-    # -- public status (exposed by /cache-status) --------------------------
-
-    @property
-    def status(self):
-        return {
-            "alive": self.is_alive(),
-            "running_cycle": self._running,
-            "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
-            "symbols_collected_last_cycle": self._symbols_collected,
-        }
-
-    # -- main loop ---------------------------------------------------------
-
-    def run(self):
-        _time.sleep(BG_COLLECTOR_INITIAL_DELAY)
-        while not self._stop.is_set():
-            self._running = True
-            try:
-                self._collect_cycle()
-            except Exception as e:
-                print(f"[bg-collector] cycle error: {e}")
-            self._running = False
-            self._last_cycle_at = datetime.utcnow()
-            self._stop.wait(BG_COLLECTOR_INTERVAL)
-
-    def request_stop(self):
-        self._stop.set()
-
-    # -- collection cycle --------------------------------------------------
-
-    def _collect_cycle(self):
-        count = 0
-        print("[bg-collector] starting collection cycle")
-
-        # 1. Nifty index daily data (needed by every regression call)
-        for idx_ticker in ["^NSEI", "NIFTYBEES.NS"]:
-            try:
-                df = yf.download(idx_ticker, period="1y", interval="1d",
-                                 progress=False, threads=False)
-                if df is not None and not df.empty:
-                    data_cache.set_ohlc(idx_ticker, "1y", "1d", df)
-                    count += 1
-                    break  # only need one successful index source
-            except Exception:
-                continue
-            _time.sleep(BG_FETCH_DELAY)
-
-        # 2. Nifty 50 intraday + daily OHLC
-        for symbol in NIFTY_50_STOCKS:
-            if self._stop.is_set():
-                break
-            self._fetch_ohlc(symbol)
-            count += 1
-            _time.sleep(BG_FETCH_DELAY)
-
-        # 3. Remaining stocks daily OHLC
-        remaining = [s for s in ALL_VALID_TICKERS if s not in set(NIFTY_50_STOCKS)]
-        for symbol in remaining:
-            if self._stop.is_set():
-                break
-            self._fetch_daily_ohlc(symbol)
-            count += 1
-            _time.sleep(BG_FETCH_DELAY)
-
-        # 4. Dividend data (batch fetch)
-        self._fetch_dividends_bulk(list(ALL_VALID_TICKERS))
-
-        # 5. Evict stale entries
-        data_cache.evict_stale()
-
-        self._symbols_collected = count
-        print(f"[bg-collector] cycle complete: {count} symbols processed")
-
-    # -- individual fetchers -----------------------------------------------
-
-    def _fetch_ohlc(self, symbol):
-        """Fetch both intraday and daily OHLC for a symbol."""
-        for period, interval in [("10d", "1h"), ("1y", "1d")]:
-            try:
-                ticker = f"{symbol}.NS"
-                df = yf.download(ticker, period=period, interval=interval,
-                                 progress=False, threads=False)
-                if df is not None and not df.empty and len(df) >= 10:
-                    data_cache.set_ohlc(symbol, period, interval, df)
-            except Exception:
-                pass
-
-    def _fetch_daily_ohlc(self, symbol):
-        """Fetch only daily OHLC for a symbol (lighter than full fetch)."""
-        try:
-            ticker = f"{symbol}.NS"
-            df = yf.download(ticker, period="1y", interval="1d",
-                             progress=False, threads=False)
-            if df is not None and not df.empty and len(df) >= 10:
-                data_cache.set_ohlc(symbol, "1y", "1d", df)
-        except Exception:
-            pass
-
-    def _fetch_dividends_bulk(self, symbols):
-        """Batch-fetch dividend data and store per-symbol results."""
-        for i in range(0, len(symbols), 75):
-            if self._stop.is_set():
-                return
-            batch = symbols[i:i + 75]
-            tickers = [f"{s}.NS" for s in batch]
-            try:
-                data = yf.download(
-                    tickers=tickers, period="1y", interval="1d",
-                    group_by="column", actions=True, auto_adjust=False,
-                    progress=False, threads=True,
-                )
-            except Exception:
-                data = None
-
-            for symbol in batch:
-                try:
-                    if data is None or data.empty:
-                        continue
-                    ticker_symbol = f"{symbol}.NS"
-                    if isinstance(data.columns, pd.MultiIndex):
-                        close_series = data["Close"][ticker_symbol].dropna()
-                        dividends = (
-                            data["Dividends"][ticker_symbol].dropna()
-                            if "Dividends" in data.columns.get_level_values(0)
-                            else pd.Series(dtype=float)
-                        )
-                        if "Stock Splits" in data.columns.get_level_values(0):
-                            splits = data["Stock Splits"][ticker_symbol].dropna()
-                        elif "Splits" in data.columns.get_level_values(0):
-                            splits = data["Splits"][ticker_symbol].dropna()
-                        else:
-                            splits = pd.Series(dtype=float)
-                    else:
-                        close_series = data["Close"].dropna()
-                        dividends = (
-                            data["Dividends"].dropna()
-                            if "Dividends" in data.columns
-                            else pd.Series(dtype=float)
-                        )
-                        if "Stock Splits" in data.columns:
-                            splits = data["Stock Splits"].dropna()
-                        elif "Splits" in data.columns:
-                            splits = data["Splits"].dropna()
-                        else:
-                            splits = pd.Series(dtype=float)
-
-                    if close_series.empty or len(close_series) < 10:
-                        continue
-                    current_price = float(close_series.iloc[-1])
-                    if current_price <= 0:
-                        continue
-                    annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
-                    if annual_dividend <= 0:
-                        continue
-                    dividend_yield = (annual_dividend / current_price) * 100
-                    returns = close_series.pct_change().dropna()
-                    volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
-
-                    entry = {
-                        "symbol": symbol,
-                        "price": round(current_price, 2),
-                        "annual_dividend": round(annual_dividend, 2),
-                        "dividend_yield": round(dividend_yield, 2),
-                        "volatility": round(volatility, 2),
-                    }
-                    data_cache.set_dividend(symbol, entry)
-                except Exception:
-                    continue
-
-            del data
-            gc.collect()
-            _time.sleep(BG_FETCH_DELAY)
-
-        print(f"[bg-collector] dividend bulk fetch done for {len(symbols)} symbols")
-
-
-# Will be started after analyzer is initialized (see below)
-bg_collector = BackgroundCollector()
-
-
 # ===== REST OF CODE REMAINS IDENTICAL =====
 
 class Analyzer:
@@ -970,7 +557,7 @@ class Analyzer:
                 return ticker, original
         return None, original
 
-    def get_data(self, symbol, period='10d', interval='1h', bypass_cache=False):
+    def get_data(self, symbol, period='10d', interval='1h'):
         def _download(ticker, period, interval):
             return yf.download(
                 ticker,
@@ -990,12 +577,6 @@ class Analyzer:
                 close_series = close_series.iloc[:, 0]
             return len(close_series.dropna()) >= minimum_rows
 
-        # --- cache-first read ---
-        if not bypass_cache:
-            cached = data_cache.get_ohlc(symbol, period, interval)
-            if cached is not None and _has_enough_data(cached, 10):
-                return cached
-
         try:
             base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
             tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
@@ -1010,12 +591,10 @@ class Analyzer:
                 for try_period, try_interval, min_rows in attempts:
                     data = _download(ticker, try_period, try_interval)
                     if _has_enough_data(data, min_rows):
-                        data_cache.set_ohlc(symbol, try_period, try_interval, data)
                         return data
                 try:
                     history = yf.Ticker(ticker).history(period="1y", interval="1d")
                     if _has_enough_data(history, 10):
-                        data_cache.set_ohlc(symbol, "1y", "1d", history)
                         return history
                 except Exception:
                     continue
@@ -1309,7 +888,7 @@ class Analyzer:
             return None
         return self.signal(ind)
 
-    def regression_analysis(self, stock_symbol, bypass_cache=False):
+    def regression_analysis(self, stock_symbol):
         """Perform HSIC (Hilbert-Schmidt Independence Criterion) non-linear dependency analysis of stock vs Nifty 50.
 
         Uses an RBF kernel with median-heuristic bandwidth to detect arbitrary
@@ -1317,12 +896,6 @@ class Analyzer:
         Capped to the last 90 trading days and computed in float32 to stay
         within the 512 MB Free-Tier RAM limit.
         """
-        # --- cache-first: return stored result if fresh ---
-        if not bypass_cache:
-            cached = data_cache.get_regression(stock_symbol)
-            if cached is not None:
-                return cached
-
         def _clean_close(px_df):
             c = px_df.get("Close", None)
             if c is None: return pd.Series(dtype=float)
@@ -1403,25 +976,15 @@ class Analyzer:
             stock_data, nifty_data = None, None
             nifty_source = None
 
-            def _cached_download(ticker, period):
-                """Try cache first, fall back to yf.download, store on success."""
-                cached = data_cache.get_ohlc(ticker, period, "1d")
-                if cached is not None and not cached.empty:
-                    return cached
-                df = yf.download(ticker, period=period, interval='1d', progress=False, threads=False)
-                if df is not None and not df.empty:
-                    data_cache.set_ohlc(ticker, period, "1d", df)
-                return df
-
             for period in periods_to_try:
                 try:
-                    stock_data = _cached_download(f"{stock_symbol}.NS", period)
+                    stock_data = yf.download(f"{stock_symbol}.NS", period=period, interval='1d', progress=False, threads=False)
                     if stock_data is None or stock_data.empty: continue
-                    nifty_data = _cached_download("^NSEI", period)
+                    nifty_data = yf.download("^NSEI", period=period, interval='1d', progress=False, threads=False)
                     if nifty_data is None or nifty_data.empty:
-                        nifty_data = _cached_download("NIFTYBEES.NS", period)
+                        nifty_data = yf.download("NIFTYBEES.NS", period=period, interval='1d', progress=False, threads=False)
                         if nifty_data is None or nifty_data.empty:
-                            nifty_data = _cached_download("RELIANCE.NS", period)
+                            nifty_data = yf.download("RELIANCE.NS", period=period, interval='1d', progress=False, threads=False)
                             nifty_source = "RELIANCE (proxy)"
                         else: nifty_source = "NIFTYBEES ETF"
                     else: nifty_source = "Nifty 50 Index"
@@ -1642,7 +1205,7 @@ class Analyzer:
             plot_url = base64.b64encode(img_buf.getvalue()).decode()
             plt.close(fig)
 
-            result = {
+            return {
                 'dependency_score': round(dep_score, 4),
                 'composite_score': composite,
                 'dependency_label': dep_label,
@@ -1664,8 +1227,6 @@ class Analyzer:
                 'trading_insight': trading_insight,
                 'plot_url': plot_url
             }
-            data_cache.set_regression(stock_symbol, result)
-            return result
 
         except Exception as e:
             print(f"\n[FATAL ERROR] HSIC analysis failed for {stock_symbol}: {e}")
@@ -1674,35 +1235,18 @@ class Analyzer:
             return None
 
     def fetch_dividend_data(self, symbols, limit_results=True):
-        """Fetch dividend yield, current price, and annualized volatility for given symbols.
-
-        Checks the SQLite cache first; only symbols with stale or missing
-        entries are fetched from Yahoo Finance.  New results are written back
-        to the cache for future requests and the background collector.
-        """
+        """Fetch dividend yield, current price, and annualized volatility for given symbols."""
         results = []
         dividend_found = 0
 
         if not symbols:
             return results, dividend_found
 
-        # --- serve cached entries first ---
-        cached_map = data_cache.get_dividends_bulk(symbols)
-        symbols_to_fetch = []
-        for symbol in symbols:
-            entry = cached_map.get(symbol)
-            if entry:
-                results.append(entry)
-                dividend_found += 1
-            else:
-                symbols_to_fetch.append(symbol)
-
-        # --- fetch remaining from Yahoo Finance ---
         def _batched(iterable, size):
             for idx in range(0, len(iterable), size):
                 yield iterable[idx:idx + size]
 
-        for batch in _batched(symbols_to_fetch, 75):
+        for batch in _batched(symbols, 75):
             tickers = [f"{symbol}.NS" for symbol in batch]
             try:
                 data = yf.download(
@@ -1755,15 +1299,13 @@ class Analyzer:
 
                     dividend_found += 1
 
-                    entry = {
+                    results.append({
                         'symbol': symbol,
                         'price': round(current_price, 2),
                         'annual_dividend': round(annual_dividend, 2),
                         'dividend_yield': round(dividend_yield, 2),
                         'volatility': round(volatility, 2)
-                    }
-                    results.append(entry)
-                    data_cache.set_dividend(symbol, entry)
+                    })
                 except Exception:
                     continue
 
@@ -1887,10 +1429,6 @@ class Analyzer:
         }
 
 analyzer = Analyzer()
-
-# Start background data collector (daemon thread, auto-stops on exit)
-bg_collector.start()
-print("[bg-collector] background data collection thread started")
 
 # ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
 # [Keeping your exact HTML - no changes needed]
@@ -2950,12 +2488,12 @@ def dividend_optimize_stream_route():
             last_portfolio_update = 0
             yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
 
-            # Serve cached entries first (SQLite data_cache)
-            cached_map = data_cache.get_dividends_bulk(symbols)
+            # Serve cached entries first
             cached_symbols = set()
             for symbol in symbols:
-                entry = cached_map.get(symbol)
-                if entry:
+                cached = DIVIDEND_CACHE.get(symbol)
+                if cached and (now - cached['timestamp']) <= DIVIDEND_CACHE_TTL:
+                    entry = cached['data']
                     results.append(entry)
                     if len(results) > max_results:
                         results = sorted(results, key=lambda x: x['dividend_yield'], reverse=True)[:max_results]
@@ -3076,7 +2614,10 @@ def dividend_optimize_stream_route():
                         if len(results) > max_results:
                             results = sorted(results, key=lambda x: x['dividend_yield'], reverse=True)[:max_results]
                             truncated = True
-                        data_cache.set_dividend(symbol, entry)
+                        DIVIDEND_CACHE[symbol] = {
+                            'timestamp': now,
+                            'data': entry
+                        }
                         payload = {
                             'type': 'stock',
                             'entry': entry,
@@ -3134,21 +2675,6 @@ def dividend_optimize_stream_route():
             yield f"data: {json.dumps(payload)}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
-
-@app.route('/cache-status')
-def cache_status_route():
-    """Show cache statistics and background collector status."""
-    return jsonify({
-        'cache': data_cache.stats(),
-        'collector': bg_collector.status,
-        'ttl_config': {
-            'ohlc_hours': OHLC_CACHE_TTL.total_seconds() / 3600,
-            'daily_ohlc_hours': DAILY_OHLC_CACHE_TTL.total_seconds() / 3600,
-            'regression_hours': REGRESSION_CACHE_TTL.total_seconds() / 3600,
-            'dividend_hours': DIVIDEND_SYMBOL_CACHE_TTL.total_seconds() / 3600,
-            'collector_interval_hours': BG_COLLECTOR_INTERVAL / 3600,
-        },
-    })
 
 @app.route('/duplicates')
 def duplicates_route():
