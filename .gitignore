@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 .nse_universe_cache.json
+.market_data_cache.db
+.market_data_cache.db-wal
+.market_data_cache.db-shm
