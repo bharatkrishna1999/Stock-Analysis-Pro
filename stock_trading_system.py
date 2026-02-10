@@ -624,10 +624,9 @@ class Analyzer:
             curr = float(close.iloc[-1])
             sma9 = float(close.rolling(sma9_window).mean().iloc[-1])
             sma5 = float(close.rolling(sma5_window).mean().iloc[-1])
-            open_price = float(close.iloc[-18] if len(close) > 18 else close.iloc[0])
-            prev_hour = float(close.iloc[-2] if len(close) > 1 else curr)
-            daily_ret = ((curr - open_price) / open_price) * 100 if open_price > 0 else 0
-            hourly_ret = ((curr - prev_hour) / prev_hour) * 100 if prev_hour > 0 else 0
+            prev_close = float(close.iloc[-2] if len(close) > 1 else curr)
+            daily_ret = ((curr - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+            hourly_ret = ((curr - prev_close) / prev_close) * 100 if prev_close > 0 else 0
             delta = close.diff()
             gain = (delta.where(delta > 0, 0)).rolling(rsi_window).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(rsi_window).mean()
@@ -873,10 +872,10 @@ class Analyzer:
         risk_reasons = []
         if risk_reward >= 2:
             rec_risk_pct += 0.5
-            risk_reasons.append(f"Risk-reward ratio is strong ({risk_reward}:1), so the algorithm added +0.5% to the base risk.")
+            risk_reasons.append(f"R-multiple is strong ({risk_reward}x), so the algorithm added +0.5% to the base risk.")
         elif risk_reward < 1:
             rec_risk_pct -= 0.25
-            risk_reasons.append(f"Risk-reward ratio is below 1:1 ({risk_reward}:1), so the algorithm reduced risk by 0.25%.")
+            risk_reasons.append(f"R-multiple is below 1.0x ({risk_reward}x), meaning risk exceeds reward, so the algorithm reduced risk by 0.25%.")
         if confidence >= 70:
             rec_risk_pct += 0.5
             risk_reasons.append(f"Confidence is high ({confidence}%), indicating most indicators agree, so +0.5% was added.")
@@ -892,7 +891,7 @@ class Analyzer:
         rec_risk_pct = round(max(0.25, min(rec_risk_pct, 3.0)), 2)
         if not risk_reasons:
             risk_reasons.append("All factors are near baseline levels, so the standard 1% risk-per-trade is used.")
-        risk_reason_text = f"Recommended risk: {rec_risk_pct}% of capital. Starting from a 1% base: " + " ".join(risk_reasons) + f" Final value clamped to [{0.25}%-{3.0}%]. To increase this, a higher confidence score (currently {confidence}%), a better risk-reward ratio (currently {risk_reward}:1), or lower volatility (currently {i['volatility']:.1f}%) would be needed."
+        risk_reason_text = f"Recommended risk: {rec_risk_pct}% of capital. Starting from a 1% base: " + " ".join(risk_reasons) + f" Final value clamped to [{0.25}%-{3.0}%]. To increase this, a higher confidence score (currently {confidence}%), a better R-multiple (currently {risk_reward}x), or lower volatility (currently {i['volatility']:.1f}%) would be needed."
         # ── Formula tooltip texts (used verbatim in the frontend) ──
         expected_move_tooltip = (
             f"Definition: The percentage distance from the current price to the target exit price. "
@@ -934,11 +933,11 @@ class Analyzer:
             f"The stop is placed 2% below a key support/average level."
         )
         risk_reward_tooltip = (
-            f"Definition: How many units of potential gain you get for every unit of risk taken. "
+            f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
             f"Inputs: Expected Move ({expected_move_pct:.1f}%), Max Risk ({max_risk_pct:.1f}%). "
-            f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}. "
-            f"Displayed as 1:{risk_reward}. A ratio above 1.5 is considered favourable - "
-            f"you stand to gain more than you risk. Below 1.0 means the potential loss exceeds the potential gain."
+            f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
+            f"A value above 1.5x is considered favourable - you stand to gain 1.5 times what you risk. "
+            f"Below 1.0x means the potential loss exceeds the potential gain, making the trade less attractive."
         )
         # Determine setup duration label
         if days_to_target <= 7:
@@ -2100,7 +2099,7 @@ def index():
                             </div>
                             <div class="tsc-rr-item tsc-tip">
                                 <div class="tsc-rr-label">Risk-Reward <span class="tsc-tip-icon">?</span></div>
-                                <div class="tsc-rr-value neutral">1 : ${rrRatio}</div>
+                                <div class="tsc-rr-value ${rrRatio >= 1.5 ? 'green' : rrRatio >= 1 ? 'neutral' : 'red'}">${rrRatio}x</div>
                                 <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${Math.min(rrRatio/(rrRatio+1)*100,95)}%;background:linear-gradient(90deg,var(--accent-green),var(--accent-cyan));"></div></div>
                                 <div class="tsc-tip-text">${s.risk_reward_tooltip || ''}</div>
                             </div>
