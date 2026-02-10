@@ -861,6 +861,85 @@ class Analyzer:
             max_risk_pct = abs((i['price'] - stop_price) / i['price']) * 100
         risk_reward = round(expected_move_pct / max_risk_pct, 2) if max_risk_pct > 0 else 0
         risk_per_share = abs(i['price'] - stop_price)
+        # ── Auto-compute recommended risk % ──
+        # Base risk: 1% of capital (standard retail default)
+        # Adjustments:
+        #   +0.5 if RR >= 2 (favourable payoff skew)
+        #   +0.5 if confidence >= 70 (high-conviction setup)
+        #   -0.5 if volatility > 3% daily (wider expected swings)
+        #   -0.5 if confidence < 50 (low-conviction)
+        #   Clamped to [0.25, 3.0]
+        rec_risk_pct = 1.0
+        risk_reasons = []
+        if risk_reward >= 2:
+            rec_risk_pct += 0.5
+            risk_reasons.append(f"Risk-reward ratio is strong ({risk_reward}:1), so the algorithm added +0.5% to the base risk.")
+        elif risk_reward < 1:
+            rec_risk_pct -= 0.25
+            risk_reasons.append(f"Risk-reward ratio is below 1:1 ({risk_reward}:1), so the algorithm reduced risk by 0.25%.")
+        if confidence >= 70:
+            rec_risk_pct += 0.5
+            risk_reasons.append(f"Confidence is high ({confidence}%), indicating most indicators agree, so +0.5% was added.")
+        elif confidence < 50:
+            rec_risk_pct -= 0.5
+            risk_reasons.append(f"Confidence is low ({confidence}%), meaning indicators disagree, so the algorithm cut risk by 0.5%.")
+        if i['volatility'] > 3:
+            rec_risk_pct -= 0.5
+            risk_reasons.append(f"Daily volatility is elevated ({i['volatility']:.1f}%), meaning bigger daily swings, so risk was reduced by 0.5% to keep losses manageable.")
+        elif i['volatility'] < 1.5:
+            rec_risk_pct += 0.25
+            risk_reasons.append(f"Volatility is low ({i['volatility']:.1f}%), making the stop loss tighter, so +0.25% was added.")
+        rec_risk_pct = round(max(0.25, min(rec_risk_pct, 3.0)), 2)
+        if not risk_reasons:
+            risk_reasons.append("All factors are near baseline levels, so the standard 1% risk-per-trade is used.")
+        risk_reason_text = f"Recommended risk: {rec_risk_pct}% of capital. Starting from a 1% base: " + " ".join(risk_reasons) + f" Final value clamped to [{0.25}%-{3.0}%]. To increase this, a higher confidence score (currently {confidence}%), a better risk-reward ratio (currently {risk_reward}:1), or lower volatility (currently {i['volatility']:.1f}%) would be needed."
+        # ── Formula tooltip texts (used verbatim in the frontend) ──
+        expected_move_tooltip = (
+            f"Definition: The percentage distance from the current price to the target exit price. "
+            f"Inputs: Current price ({i['price']:.2f}), Target price ({target_price:.2f}). "
+            f"Formula: ((Target - Current) / Current) x 100 = "
+            f"(({target_price:.2f} - {i['price']:.2f}) / {i['price']:.2f}) x 100 = {expected_move_pct:+.1f}%. "
+            f"The target is set at the 18-day high + 3% for BUY setups (recent resistance breakout), "
+            f"or the lower of the 20-day mean and the 18-day low - 3% for SELL setups."
+        ) if sig == "BUY" else (
+            f"Definition: The percentage distance from the current price to the target exit price. "
+            f"Inputs: Current price ({i['price']:.2f}), Target price ({target_price:.2f}). "
+            f"Formula: ((Current - Target) / Current) x 100 = "
+            f"(({i['price']:.2f} - {target_price:.2f}) / {i['price']:.2f}) x 100 = {expected_move_pct:+.1f}%. "
+            f"The target is set at the lower of the 20-day mean price and the 18-day low - 3% for SELL setups."
+        ) if sig == "SELL" else (
+            f"Definition: The percentage distance from the current price to the target exit price. "
+            f"Inputs: Current price ({i['price']:.2f}), Target price ({target_price:.2f}). "
+            f"Formula: |Target - Current| / Current x 100 = {expected_move_pct:.1f}%. "
+            f"For HOLD setups the target is the 18-day high + 2% (breakout level)."
+        )
+        max_risk_tooltip = (
+            f"Definition: The percentage you could lose if the trade hits your stop loss - the invalidation level "
+            f"below which the trade thesis no longer holds. "
+            f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
+            f"Formula: ((Current - Stop) / Current) x 100 = "
+            f"(({i['price']:.2f} - {stop_price:.2f}) / {i['price']:.2f}) x 100 = {max_risk_pct:.1f}%. "
+            f"The stop loss is placed 2% below the 18-day low (recent support - buffer), acting as the "
+            f"invalidation level. If price breaks this, the original setup is no longer valid."
+        ) if sig == "BUY" else (
+            f"Definition: The percentage you could lose if the trade hits your stop loss. "
+            f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
+            f"Formula: ((Stop - Current) / Current) x 100 = "
+            f"(({stop_price:.2f} - {i['price']:.2f}) / {i['price']:.2f}) x 100 = {max_risk_pct:.1f}%. "
+            f"The stop loss is placed 2% above the 18-day high (resistance + buffer)."
+        ) if sig == "SELL" else (
+            f"Definition: The percentage you could lose if the trade hits your stop loss. "
+            f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
+            f"Formula: |Current - Stop| / Current x 100 = {max_risk_pct:.1f}%. "
+            f"The stop is placed 2% below a key support/average level."
+        )
+        risk_reward_tooltip = (
+            f"Definition: How many units of potential gain you get for every unit of risk taken. "
+            f"Inputs: Expected Move ({expected_move_pct:.1f}%), Max Risk ({max_risk_pct:.1f}%). "
+            f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}. "
+            f"Displayed as 1:{risk_reward}. A ratio above 1.5 is considered favourable - "
+            f"you stand to gain more than you risk. Below 1.0 means the potential loss exceeds the potential gain."
+        )
         # Determine setup duration label
         if days_to_target <= 7:
             setup_duration = "Short Term Setup"
@@ -919,6 +998,11 @@ class Analyzer:
                 'max_risk_pct': round(max_risk_pct, 1),
                 'risk_reward': risk_reward,
                 'risk_per_share': round(risk_per_share, 2),
+                'rec_risk_pct': rec_risk_pct,
+                'risk_reason_text': risk_reason_text,
+                'expected_move_tooltip': expected_move_tooltip,
+                'max_risk_tooltip': max_risk_tooltip,
+                'risk_reward_tooltip': risk_reward_tooltip,
                 'setup_duration': setup_duration,
                 'why_makes_sense': why_makes_sense,
                 'confidence_oneliner': confidence_oneliner,
@@ -1629,9 +1713,10 @@ def index():
         .tsc-confidence-pct { font-family: 'Space Grotesk', sans-serif; font-size: 1.1em; font-weight: 600; }
         .tsc-confidence-pct span { color: var(--text-secondary); font-weight: 400; font-size: 0.85em; }
         .tsc-confidence-hint { color: var(--text-muted); font-size: 0.85em; margin-top: 2px; }
-        .tsc-rr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin-bottom: 20px; background: var(--bg-card-hover); border-radius: 12px; border: 1px solid var(--border-color); overflow: hidden; }
+        .tsc-rr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin-bottom: 20px; background: var(--bg-card-hover); border-radius: 12px; border: 1px solid var(--border-color); overflow: visible; }
         .tsc-rr-item { padding: 18px 16px; text-align: left; border-right: 1px solid var(--border-color); }
-        .tsc-rr-item:last-child { border-right: none; }
+        .tsc-rr-item:first-child { border-radius: 12px 0 0 12px; }
+        .tsc-rr-item:last-child { border-right: none; border-radius: 0 12px 12px 0; }
         .tsc-rr-label { font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 6px; }
         .tsc-rr-value { font-size: 1.5em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
         .tsc-rr-value.green { color: var(--accent-green); }
@@ -1646,8 +1731,6 @@ def index():
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
         .tsc-calc-check { width: 20px; height: 20px; background: var(--accent-green); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7em; font-weight: 700; }
         .tsc-calc-title { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1em; }
-        .tsc-calc-risk { color: var(--text-secondary); font-size: 0.9em; margin-bottom: 16px; }
-        .tsc-calc-risk strong { color: var(--text-primary); }
         .tsc-calc-row { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
         .tsc-calc-input-wrap { flex: 1; position: relative; }
         .tsc-calc-input { width: 100%; padding: 14px 14px 14px 8px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-dark); color: var(--text-primary); font-size: 1em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; transition: all 0.2s; }
@@ -1677,20 +1760,30 @@ def index():
         .tsc-tech-item-explain { color: var(--text-secondary); font-size: 0.85em; line-height: 1.7; margin-top: 6px; }
         .tsc-tech-item-example { color: var(--text-muted); font-size: 0.8em; line-height: 1.6; margin-top: 8px; padding: 10px 12px; background: var(--bg-dark); border-radius: 6px; border-left: 3px solid var(--accent-purple); }
         .tsc-capital-display { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.5em; color: var(--text-primary); text-align: right; min-width: 120px; }
-        .tsc-slider-wrap { margin-bottom: 16px; }
-        .tsc-slider-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .tsc-slider-label span { font-size: 0.85em; color: var(--text-muted); }
-        .tsc-slider-label strong { color: var(--accent-green); font-family: 'Space Grotesk', sans-serif; }
-        input[type="range"].tsc-slider { -webkit-appearance: none; width: 100%; height: 6px; border-radius: 3px; background: var(--bg-dark); outline: none; }
-        input[type="range"].tsc-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%; background: var(--accent-green); cursor: pointer; border: 2px solid var(--bg-card); }
-        input[type="range"].tsc-slider::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--accent-green); cursor: pointer; border: 2px solid var(--bg-card); }
+        .tsc-tip { position: relative; cursor: help; }
+        .tsc-tip .tsc-tip-text { visibility: hidden; opacity: 0; position: absolute; z-index: 20; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); width: 340px; background: #1a1f2e; color: var(--text-secondary); padding: 16px; border-radius: 10px; font-size: 0.82em; line-height: 1.65; border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.55); transition: opacity 0.2s, visibility 0.2s; font-weight: 400; text-transform: none; letter-spacing: normal; pointer-events: none; }
+        .tsc-tip .tsc-tip-text::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -7px; border-width: 7px; border-style: solid; border-color: #1a1f2e transparent transparent transparent; }
+        .tsc-tip:hover .tsc-tip-text { visibility: visible; opacity: 1; pointer-events: auto; }
+        .tsc-tip .tsc-tip-text strong { color: var(--text-primary); }
+        .tsc-tip .tsc-tip-formula { display: block; margin-top: 8px; padding: 8px 10px; background: var(--bg-dark); border-radius: 6px; font-family: 'Space Grotesk', monospace; font-size: 0.95em; color: var(--accent-cyan); word-break: break-word; }
+        .tsc-rr-item .tsc-rr-label { display: inline-flex; align-items: center; gap: 5px; }
+        .tsc-rr-item .tsc-rr-label .tsc-tip-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--text-muted); font-size: 0.65em; color: var(--text-muted); flex-shrink: 0; transition: border-color 0.2s, color 0.2s; }
+        .tsc-tip:hover .tsc-tip-icon { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+        .tsc-auto-risk { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 10px; margin-bottom: 16px; }
+        .tsc-auto-risk-badge { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.5em; color: var(--accent-green); min-width: 60px; }
+        .tsc-auto-risk-label { font-size: 0.85em; color: var(--text-secondary); line-height: 1.5; }
+        .tsc-auto-risk-label strong { color: var(--text-primary); }
+        @media (max-width: 600px) {
+            .tsc-tip .tsc-tip-text { width: 260px; font-size: 0.78em; padding: 12px; left: 0; transform: translateX(-20%); }
+        }
         @media (max-width: 768px) {
             .tsc-header { padding: 16px 18px 12px; }
             .tsc-body { padding: 0 18px 18px; }
             .tsc-ticker { font-size: 1.4em; }
             .tsc-rr-grid { grid-template-columns: 1fr; }
-            .tsc-rr-item { border-right: none; border-bottom: 1px solid var(--border-color); }
-            .tsc-rr-item:last-child { border-bottom: none; }
+            .tsc-rr-item { border-right: none; border-bottom: 1px solid var(--border-color); border-radius: 0; }
+            .tsc-rr-item:first-child { border-radius: 12px 12px 0 0; }
+            .tsc-rr-item:last-child { border-bottom: none; border-radius: 0 0 12px 12px; }
             .tsc-calc-details { grid-template-columns: 1fr; }
             .tsc-confidence-top { flex-wrap: wrap; }
             .tsc-calc-row { flex-direction: column; }
@@ -1993,20 +2086,23 @@ def index():
 
                         <!-- RISK-REWARD GRID -->
                         <div class="tsc-rr-grid">
-                            <div class="tsc-rr-item">
-                                <div class="tsc-rr-label">Expected Move</div>
+                            <div class="tsc-rr-item tsc-tip">
+                                <div class="tsc-rr-label">Expected Move <span class="tsc-tip-icon">?</span></div>
                                 <div class="tsc-rr-value green">+${expectedPct}%</div>
                                 <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${rrGreenWidth}%;background:var(--accent-green);"></div></div>
+                                <div class="tsc-tip-text">${s.expected_move_tooltip || ''}</div>
                             </div>
-                            <div class="tsc-rr-item">
-                                <div class="tsc-rr-label">Max Risk</div>
+                            <div class="tsc-rr-item tsc-tip">
+                                <div class="tsc-rr-label">Max Risk <span class="tsc-tip-icon">?</span></div>
                                 <div class="tsc-rr-value red">-${maxRiskPct}%</div>
                                 <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${100-rrGreenWidth}%;background:var(--danger);"></div></div>
+                                <div class="tsc-tip-text">${s.max_risk_tooltip || ''}</div>
                             </div>
-                            <div class="tsc-rr-item">
-                                <div class="tsc-rr-label">Risk-Reward</div>
+                            <div class="tsc-rr-item tsc-tip">
+                                <div class="tsc-rr-label">Risk-Reward <span class="tsc-tip-icon">?</span></div>
                                 <div class="tsc-rr-value neutral">1 : ${rrRatio}</div>
                                 <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${Math.min(rrRatio/(rrRatio+1)*100,95)}%;background:linear-gradient(90deg,var(--accent-green),var(--accent-cyan));"></div></div>
+                                <div class="tsc-tip-text">${s.risk_reward_tooltip || ''}</div>
                             </div>
                         </div>
 
@@ -2023,12 +2119,13 @@ def index():
                                 <div class="tsc-calc-title">Capital Calculator</div>
                             </div>
 
-                            <div class="tsc-slider-wrap">
-                                <div class="tsc-slider-label">
-                                    <span>Risk per trade</span>
-                                    <strong id="tsc-risk-pct-label">1%</strong>
+                            <div class="tsc-auto-risk tsc-tip">
+                                <div class="tsc-auto-risk-badge" id="tsc-risk-pct-label">${s.rec_risk_pct || 1}%</div>
+                                <div class="tsc-auto-risk-label">
+                                    <strong>Recommended risk per trade</strong><br>
+                                    <span style="font-size:0.9em;">Computed from confidence, risk-reward &amp; volatility. Hover for details.</span>
                                 </div>
-                                <input type="range" class="tsc-slider" id="tsc-risk-slider" min="0.5" max="5" step="0.5" value="1" oninput="updateCapitalCalc()">
+                                <div class="tsc-tip-text">${s.risk_reason_text || 'Standard 1% risk per trade.'}</div>
                             </div>
 
                             <div class="tsc-calc-row">
@@ -2170,7 +2267,7 @@ def index():
             `;
             document.getElementById('result').innerHTML = html;
             // Store signal data for capital calculator
-            window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0 };
+            window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0, recRiskPct: s.rec_risk_pct || 1 };
         }
         function toggleTscAccordion(btn) {
             const content = btn.nextElementSibling;
@@ -2191,11 +2288,8 @@ def index():
             const inp = document.getElementById('tsc-capital-input');
             const display = document.getElementById('tsc-capital-display');
             const qtyEl = document.getElementById('tsc-qty-result');
-            const riskSlider = document.getElementById('tsc-risk-slider');
-            const riskLabel = document.getElementById('tsc-risk-pct-label');
             if (!inp || !qtyEl) return;
-            const riskPct = parseFloat(riskSlider.value) || 1;
-            riskLabel.textContent = riskPct + '%';
+            const riskPct = window._tscSignalData ? (window._tscSignalData.recRiskPct || 1) : 1;
             const raw = inp.value.replace(/,/g, '');
             const capital = parseFloat(raw);
             if (!capital || capital <= 0 || !window._tscSignalData) {
@@ -2203,7 +2297,7 @@ def index():
                 qtyEl.textContent = '-- shares';
                 return;
             }
-            // Format display
+            // Format display in Indian numbering
             let formatted = Math.round(capital).toString();
             let lastThree = formatted.substring(formatted.length - 3);
             let otherNumbers = formatted.substring(0, formatted.length - 3);
