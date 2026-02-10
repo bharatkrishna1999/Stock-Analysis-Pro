@@ -13,6 +13,8 @@ Features:
 from flask import Flask, jsonify, request, Response, stream_with_context
 import json
 import os
+import pickle
+import time
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -27,7 +29,8 @@ import requests
 import logging
 import gc
 from scipy.optimize import minimize as scipy_minimize
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
@@ -42,6 +45,14 @@ DIVIDEND_CACHE = {}
 DIVIDEND_MAX_RESULTS = 150
 DIVIDEND_BATCH_SIZE = 50
 DIVIDEND_MAX_WORKERS = 4
+
+DEFAULT_ANALYSIS_PERIOD = '6mo'
+DEFAULT_ANALYSIS_INTERVAL = '1d'
+MAX_HISTORY_POINTS = 160
+REGRESSION_WAIT_TIMEOUT_SECONDS = 2.0
+REGRESSION_CACHE_TTL = timedelta(hours=8)
+ANALYZE_CACHE_TTL = timedelta(minutes=20)
+PRICE_HISTORY_CACHE_TTL = timedelta(minutes=30)
 
 YAHOO_TICKER_ALIASES = {
     "ETERNAL": ["ZOMATO"],
@@ -156,6 +167,84 @@ UNIVERSE_SOURCE = "Static list"
 # survives process restarts (on Render this persists within a single deploy).
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 UNIVERSE_CACHE_FILE = os.path.join(_SCRIPT_DIR, ".nse_universe_cache.json")
+CACHE_DIR = os.path.join(_SCRIPT_DIR, '.cache')
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+class HybridTTLCache:
+    def __init__(self, name, ttl, max_entries=96):
+        self.name = name
+        self.ttl = ttl
+        self.max_entries = max_entries
+        self.memory = {}
+        self.lock = Lock()
+        self.disk_file = os.path.join(CACHE_DIR, f"{name}.pkl")
+        self._load_disk()
+
+    def _load_disk(self):
+        if not os.path.exists(self.disk_file):
+            return
+        try:
+            with open(self.disk_file, 'rb') as f:
+                self.memory = pickle.load(f)
+        except Exception:
+            self.memory = {}
+
+    def _persist_disk(self):
+        try:
+            with open(self.disk_file, 'wb') as f:
+                pickle.dump(self.memory, f, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception:
+            pass
+
+    def _prune(self):
+        now = datetime.utcnow()
+        keys = [k for k, v in self.memory.items() if (now - v['timestamp']) > self.ttl]
+        for k in keys:
+            self.memory.pop(k, None)
+        if len(self.memory) > self.max_entries:
+            drop = sorted(self.memory.items(), key=lambda kv: kv[1]['timestamp'])[:len(self.memory)-self.max_entries]
+            for k, _ in drop:
+                self.memory.pop(k, None)
+
+    def get(self, key):
+        with self.lock:
+            item = self.memory.get(key)
+            if not item:
+                return None
+            if (datetime.utcnow() - item['timestamp']) > self.ttl:
+                self.memory.pop(key, None)
+                return None
+            return item['value']
+
+    def set(self, key, value):
+        with self.lock:
+            self.memory[key] = {'timestamp': datetime.utcnow(), 'value': value}
+            self._prune()
+            self._persist_disk()
+
+
+PRICE_HISTORY_CACHE = HybridTTLCache('price_history', PRICE_HISTORY_CACHE_TTL, max_entries=180)
+ANALYSIS_CACHE = HybridTTLCache('analysis', ANALYZE_CACHE_TTL, max_entries=180)
+REGRESSION_CACHE = HybridTTLCache('regression', REGRESSION_CACHE_TTL, max_entries=96)
+REGRESSION_JOB_CACHE = {}
+REGRESSION_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+@app.before_request
+def _begin_request_metrics():
+    request._start_time = time.perf_counter()
+
+
+@app.after_request
+def _end_request_metrics(response):
+    start = getattr(request, '_start_time', None)
+    if start is not None:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        response.headers['X-Endpoint-Time-Ms'] = f"{elapsed_ms:.1f}"
+        app.logger.info("endpoint=%s method=%s status=%s ttfb_ms=%.1f", request.path, request.method, response.status_code, elapsed_ms)
+    return response
+
 
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -557,15 +646,14 @@ class Analyzer:
                 return ticker, original
         return None, original
 
-    def get_data(self, symbol, period='10d', interval='1h'):
+    def get_data(self, symbol, period=DEFAULT_ANALYSIS_PERIOD, interval=DEFAULT_ANALYSIS_INTERVAL):
+        cache_key = f"{symbol}:{period}:{interval}"
+        cached = PRICE_HISTORY_CACHE.get(cache_key)
+        if cached is not None and not cached.empty:
+            return cached.copy(deep=False)
+
         def _download(ticker, period, interval):
-            return yf.download(
-                ticker,
-                period=period,
-                interval=interval,
-                progress=False,
-                threads=False
-            )
+            return yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
 
         def _has_enough_data(df, minimum_rows):
             if df is None or df.empty:
@@ -581,27 +669,24 @@ class Analyzer:
             base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
             tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
             attempts = [
-                (period, interval, 14),
+                (period, interval, 30),
+                ("3mo", "1d", 30),
                 ("1mo", "1d", 10),
-                ("3mo", "1d", 10),
-                ("6mo", "1d", 10),
-                ("1y", "1d", 10),
             ]
             for ticker in tickers:
                 for try_period, try_interval, min_rows in attempts:
                     data = _download(ticker, try_period, try_interval)
                     if _has_enough_data(data, min_rows):
-                        return data
-                try:
-                    history = yf.Ticker(ticker).history(period="1y", interval="1d")
-                    if _has_enough_data(history, 10):
-                        return history
-                except Exception:
-                    continue
+                        if len(data) > MAX_HISTORY_POINTS:
+                            step = max(1, len(data) // MAX_HISTORY_POINTS)
+                            data = data.iloc[::step].tail(MAX_HISTORY_POINTS)
+                        PRICE_HISTORY_CACHE.set(cache_key, data)
+                        return data.copy(deep=False)
             return None
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
             return None
+
 
     def calc_indicators(self, data):
         if data is None or len(data) < 5:
@@ -663,7 +748,7 @@ class Analyzer:
             sma50_window = min(50, len(close))
             sma20 = float(close.rolling(sma20_window).mean().iloc[-1])
             sma50 = float(close.rolling(sma50_window).mean().iloc[-1])
-            return {
+            result = {
                 'price': curr, 'sma9': sma9, 'sma5': sma5, 'sma20': sma20, 'sma50': sma50,
                 'daily': daily_ret, 'hourly': hourly_ret,
                 'rsi': rsi, 'macd_bullish': bool(macd_bullish), 'high': h, 'low': l,
@@ -1160,6 +1245,9 @@ class Analyzer:
 
     def analyze(self, symbol):
         """Main analysis method"""
+        cached = ANALYSIS_CACHE.get(symbol)
+        if cached:
+            return cached
         data = self.get_data(symbol)
         if data is None:
             return None
@@ -1169,11 +1257,19 @@ class Analyzer:
         result = self.signal(ind)
         if result:
             try:
-                chart_b64 = self.generate_projection_chart(data, result)
+                chart_key = f"projection:{symbol}"
+                chart_b64 = ANALYSIS_CACHE.get(chart_key)
+                if not chart_b64:
+                    chart_b64 = self.generate_projection_chart(data, result)
+                    if chart_b64:
+                        ANALYSIS_CACHE.set(chart_key, chart_b64)
                 if chart_b64:
                     result['projection_chart'] = chart_b64
             except Exception:
                 pass
+            ANALYSIS_CACHE.set(symbol, result)
+        del data
+        gc.collect()
         return result
 
     def regression_analysis(self, stock_symbol):
@@ -1184,6 +1280,9 @@ class Analyzer:
         Capped to the last 90 trading days and computed in float32 to stay
         within the 512 MB Free-Tier RAM limit.
         """
+        cached = REGRESSION_CACHE.get(stock_symbol)
+        if cached:
+            return cached
         def _clean_close(px_df):
             c = px_df.get("Close", None)
             if c is None: return pd.Series(dtype=float)
@@ -1493,7 +1592,7 @@ class Analyzer:
             plot_url = base64.b64encode(img_buf.getvalue()).decode()
             plt.close(fig)
 
-            return {
+            result = {
                 'dependency_score': round(dep_score, 4),
                 'composite_score': composite,
                 'dependency_label': dep_label,
@@ -1515,6 +1614,10 @@ class Analyzer:
                 'trading_insight': trading_insight,
                 'plot_url': plot_url
             }
+            REGRESSION_CACHE.set(stock_symbol, result)
+            del stock_data, nifty_data, rets
+            gc.collect()
+            return result
 
         except Exception as e:
             print(f"\n[FATAL ERROR] HSIC analysis failed for {stock_symbol}: {e}")
@@ -1545,7 +1648,7 @@ class Analyzer:
                     actions=True,
                     auto_adjust=False,
                     progress=False,
-                    threads=True
+                    threads=False
                 )
             except Exception:
                 data = None
@@ -2095,48 +2198,59 @@ def index():
             }
             return "";
         }
+        const allTickers = [...new Set(Object.values(stocks).flat())];
         let currentTab = 'analysis';
+        let loadedTabs = new Set();
+        function ensureTabLoaded(tab) {
+            if (loadedTabs.has(tab)) return;
+            if (tab === 'analysis') {
+                const cat = document.getElementById('categories');
+                Object.entries(stocks).forEach(([name, list]) => {
+                    let html = `<div class="category"><h4>${name} (${list.length})</h4><div class="stocks">`;
+                    list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
+                    html += '</div></div>';
+                    cat.innerHTML += html;
+                });
+                setupAutocomplete('search', 'suggestions', 'analyze');
+            } else if (tab === 'regression') {
+                setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
+                document.getElementById('regression-search').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') analyzeRegression();
+                });
+            } else if (tab === 'dividend') {
+                setupDividendSearch();
+            }
+            loadedTabs.add(tab);
+        }
         function switchTab(tab, event) {
             currentTab = tab;
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             event.target.classList.add('active');
             document.getElementById(tab + '-tab').classList.add('active');
+            ensureTabLoaded(tab);
+        }
+        function setupAutocomplete(inputId, suggestionId, callbackName) {
+            const input = document.getElementById(inputId);
+            if(!input) return;
+            input.addEventListener('input', (e) => {
+                const raw = e.target.value.trim();
+                const q = raw.toUpperCase();
+                const sug = document.getElementById(suggestionId);
+                if (q.length === 0) { sug.innerHTML = ''; return; }
+                const filtered = allTickers.filter(s => {
+                    const name = getStockName(s).toUpperCase();
+                    return s.includes(q) || name.includes(q);
+                }).slice(0, 12);
+                sug.innerHTML = filtered.map(s => {
+                    const label = `${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span>`;
+                    if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${label}</button>`;
+                    else return `<button onclick="analyze('${s}')">${label}</button>`;
+                }).join('');
+            });
         }
         function init() {
-            const cat = document.getElementById('categories');
-            Object.entries(stocks).forEach(([name, list]) => {
-                let html = `<div class="category"><h4>${name} (${list.length})</h4><div class="stocks">`;
-                list.forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
-                html += '</div></div>';
-                cat.innerHTML += html;
-            });
-            function setupAutocomplete(inputId, suggestionId, callbackName) {
-                const input = document.getElementById(inputId);
-                if(!input) return;
-                input.addEventListener('input', (e) => {
-                    const raw = e.target.value.trim();
-                    const q = raw.toUpperCase();
-                    const sug = document.getElementById(suggestionId);
-                    if (q.length === 0) { sug.innerHTML = ''; return; }
-                    const all = [...new Set(Object.values(stocks).flat())];
-                    const filtered = all.filter(s => {
-                        const name = getStockName(s).toUpperCase();
-                        return s.includes(q) || name.includes(q);
-                    }).slice(0, 12);
-                    sug.innerHTML = filtered.map(s => {
-                        const label = `${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span>`;
-                        if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${label}</button>`;
-                        else return `<button onclick="analyze('${s}')">${label}</button>`;
-                    }).join('');
-                });
-            }
-            setupAutocomplete('search', 'suggestions', 'analyze');
-            setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
-            setupDividendSearch();
-            document.getElementById('regression-search').addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') analyzeRegression();
-            });
+            ensureTabLoaded('analysis');
         }
         function setupDividendSearch() {
             const input = document.getElementById('dividend-search');
@@ -2471,14 +2585,22 @@ def index():
         function analyzeRegression() {
             const symbol = document.getElementById('regression-search').value.toUpperCase().trim();
             if (!symbol) { alert('Please enter a stock symbol'); return; }
-            document.getElementById('regression-result').innerHTML = '<div class="loading">⏳ Analysing market connection for ' + symbol + '...<br><small style="font-size: 0.8em; color: var(--text-secondary);">This may take 10-30 seconds</small></div>';
-            fetch(`/regression?symbol=${symbol}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.error) document.getElementById('regression-result').innerHTML = `<div class="error">❌ ${data.error}</div>`;
+            const target = document.getElementById('regression-result');
+            target.innerHTML = '<div class="loading">⏳ Analysing market connection for ' + symbol + '...<br><small style="font-size: 0.8em; color: var(--text-secondary);">Heavy calculations run async on free-tier. Showing result when ready.</small></div>';
+
+            const poll = () => fetch(`/regression?symbol=${symbol}`)
+                .then(async r => ({status: r.status, data: await r.json()}))
+                .then(({status, data}) => {
+                    if (status === 202 || data.status === 'computing') {
+                        target.innerHTML = '<div class="loading">⏳ Still computing ' + symbol + ' market connection...<br><small style="font-size: 0.8em; color: var(--text-secondary);">Returning partial UI to keep response fast.</small></div>';
+                        setTimeout(poll, 1500);
+                        return;
+                    }
+                    if (data.error) target.innerHTML = `<div class="error">❌ ${data.error}</div>`;
                     else showRegressionResult(data, symbol);
                 })
-                .catch(e => document.getElementById('regression-result').innerHTML = `<div class="error">❌ ${e.message}</div>`);
+                .catch(e => target.innerHTML = `<div class="error">❌ ${e.message}</div>`);
+            poll();
         }
         function showRegressionResult(data, symbol) {
             const marketInfo = data.market_source ? `<div style="background: rgba(0, 217, 255, 0.1); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-cyan);"><strong>📊 Market Benchmark:</strong> ${data.market_source} ${data.market_source !== 'Nifty 50 Index' ? '<br><small style="color: var(--text-muted);">Note: Using alternative benchmark due to Nifty 50 data availability.</small>' : ''}</div>` : '';
@@ -3010,10 +3132,21 @@ def analyze_route():
         print(f"Error analyzing {normalized_symbol}: {e}")
         return jsonify({'error': f'Analysis failed: {str(e)}'})
 
+
+def _submit_regression_job(symbol):
+    existing = REGRESSION_JOB_CACHE.get(symbol)
+    if existing and not existing.done():
+        return existing
+    fut = REGRESSION_EXECUTOR.submit(analyzer.regression_analysis, symbol)
+    REGRESSION_JOB_CACHE[symbol] = fut
+    return fut
+
+
 @app.route('/regression')
 def regression_route():
     symbol = request.args.get('symbol', '').strip()
     if not symbol: return jsonify({'error': 'No symbol provided'})
+    wait = request.args.get('wait', '0') == '1'
     normalized_symbol, original = Analyzer.normalize_symbol(symbol)
     if not normalized_symbol:
         suggestions = []
@@ -3025,13 +3158,34 @@ def regression_route():
         if suggestions: return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
         else: return jsonify({'error': f'Invalid symbol "{original}".'})
     try:
-        result = analyzer.regression_analysis(normalized_symbol)
-        if not result: return jsonify({'error': f'Unable to perform HSIC dependency analysis for {normalized_symbol}.'})
-        return jsonify(result)
+        cached = REGRESSION_CACHE.get(normalized_symbol)
+        if cached:
+            cached['cached'] = True
+            return jsonify(cached)
+
+        job = _submit_regression_job(normalized_symbol)
+        if wait:
+            try:
+                result = job.result(timeout=REGRESSION_WAIT_TIMEOUT_SECONDS)
+                if not result:
+                    return jsonify({'error': f'Unable to perform HSIC dependency analysis for {normalized_symbol}.'})
+                return jsonify(result)
+            except Exception:
+                pass
+
+        if job.done():
+            result = job.result()
+            if not result:
+                return jsonify({'error': f'Unable to perform HSIC dependency analysis for {normalized_symbol}.'})
+            return jsonify(result)
+
+        return jsonify({
+            'status': 'computing',
+            'symbol': normalized_symbol,
+            'message': 'Still computing. Please retry shortly.'
+        }), 202
     except Exception as e:
         print(f"Error in HSIC analysis for {normalized_symbol}: {e}")
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': f'HSIC dependency analysis failed for {normalized_symbol}: {str(e)}'})
 
 @app.route('/dividend-scan')
@@ -3193,9 +3347,8 @@ def dividend_optimize_stream_route():
                     yield iterable[idx:idx + size]
 
             # Sequential batch processing -- one yf.download at a time.
-            # yfinance already parallelises internally (threads=True), so
-            # stacking concurrent downloads overwhelms Yahoo and most
-            # batches silently return empty DataFrames.
+            # Render free tier: keep downloads strictly sequential to avoid
+            # CPU spikes and memory pressure.
             for batch in _batched(symbols_to_fetch, 75):
                 tickers = [f"{s}.NS" for s in batch]
                 try:
@@ -3207,7 +3360,7 @@ def dividend_optimize_stream_route():
                         actions=True,
                         auto_adjust=False,
                         progress=False,
-                        threads=True
+                        threads=False
                     )
                 except Exception:
                     data = None
