@@ -693,10 +693,12 @@ class Analyzer:
             base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
             tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
             attempts = [
-                (period, interval, 20),
-                ("6mo", "1d", 20),
-                ("3mo", "1d", 15),
-                ("1mo", "1d", 10),
+                (period, interval, 8),
+                ("1y", "1d", 8),
+                ("6mo", "1d", 6),
+                ("3mo", "1d", 5),
+                ("1mo", "1d", 5),
+                ("5d", "1h", 5),
             ]
             for ticker in tickers:
                 for try_period, try_interval, min_rows in attempts:
@@ -706,7 +708,7 @@ class Analyzer:
                         PRICE_HISTORY_CACHE.set(cache_key, data)
                         return data.copy(deep=False)
                 fallback = _history_fallback(ticker)
-                if _has_enough_data(fallback, 20):
+                if _has_enough_data(fallback, 5):
                     fallback = _downsample(fallback)
                     PRICE_HISTORY_CACHE.set(cache_key, fallback)
                     return fallback.copy(deep=False)
