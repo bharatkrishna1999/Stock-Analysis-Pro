@@ -624,10 +624,9 @@ class Analyzer:
             curr = float(close.iloc[-1])
             sma9 = float(close.rolling(sma9_window).mean().iloc[-1])
             sma5 = float(close.rolling(sma5_window).mean().iloc[-1])
-            open_price = float(close.iloc[-18] if len(close) > 18 else close.iloc[0])
-            prev_hour = float(close.iloc[-2] if len(close) > 1 else curr)
-            daily_ret = ((curr - open_price) / open_price) * 100 if open_price > 0 else 0
-            hourly_ret = ((curr - prev_hour) / prev_hour) * 100 if prev_hour > 0 else 0
+            prev_close = float(close.iloc[-2] if len(close) > 1 else curr)
+            daily_ret = ((curr - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+            hourly_ret = ((curr - prev_close) / prev_close) * 100 if prev_close > 0 else 0
             delta = close.diff()
             gain = (delta.where(delta > 0, 0)).rolling(rsi_window).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(rsi_window).mean()
@@ -660,8 +659,13 @@ class Analyzer:
             bb_position = ((curr - bb_lower) / (bb_upper - bb_lower)) * 100 if (bb_upper - bb_lower) > 0 else 50
             returns = close.pct_change().dropna()
             volatility = float(returns.std() * 100)
+            sma20_window = min(20, len(close))
+            sma50_window = min(50, len(close))
+            sma20 = float(close.rolling(sma20_window).mean().iloc[-1])
+            sma50 = float(close.rolling(sma50_window).mean().iloc[-1])
             return {
-                'price': curr, 'sma9': sma9, 'sma5': sma5, 'daily': daily_ret, 'hourly': hourly_ret,
+                'price': curr, 'sma9': sma9, 'sma5': sma5, 'sma20': sma20, 'sma50': sma50,
+                'daily': daily_ret, 'hourly': hourly_ret,
                 'rsi': rsi, 'macd_bullish': bool(macd_bullish), 'high': h, 'low': l,
                 'pct_from_low': pct_from_low, 'zscore': zscore, 'pct_deviation': pct_deviation,
                 'mean_price': mean_price, 'std_price': std_price, 'bb_upper': bb_upper,
@@ -844,15 +848,154 @@ class Analyzer:
             rec = "Stock consolidating. Wait for breakout direction."
         confidence = self.calculate_confidence(i)
         days_to_target = self.estimate_days_to_target(i['price'], target_price, i)
+        # Calculate risk-reward metrics
+        # expected_move_pct: always positive magnitude (used for R-multiple math)
+        # expected_move_signed: signed for display (negative for SELL = price expected to drop)
+        if sig == "BUY":
+            expected_move_pct = ((target_price - i['price']) / i['price']) * 100
+            max_risk_pct = ((i['price'] - stop_price) / i['price']) * 100
+            expected_move_signed = expected_move_pct
+        elif sig == "SELL":
+            expected_move_pct = ((i['price'] - target_price) / i['price']) * 100
+            max_risk_pct = ((stop_price - i['price']) / i['price']) * 100
+            expected_move_signed = -expected_move_pct  # negative: price expected to fall
+        else:
+            expected_move_pct = abs((target_price - i['price']) / i['price']) * 100
+            max_risk_pct = abs((i['price'] - stop_price) / i['price']) * 100
+            expected_move_signed = expected_move_pct if target_price > i['price'] else -expected_move_pct
+        risk_reward = round(expected_move_pct / max_risk_pct, 2) if max_risk_pct > 0 else 0
+        risk_per_share = abs(i['price'] - stop_price)
+        # ── Auto-compute recommended risk % ──
+        # Base risk: 1% of capital (standard retail default)
+        # Adjustments:
+        #   +0.5 if RR >= 2 (favourable payoff skew)
+        #   +0.5 if confidence >= 70 (high-conviction setup)
+        #   -0.5 if volatility > 3% daily (wider expected swings)
+        #   -0.5 if confidence < 50 (low-conviction)
+        #   Clamped to [0.25, 3.0]
+        rec_risk_pct = 1.0
+        risk_reasons = []
+        if risk_reward >= 2:
+            rec_risk_pct += 0.5
+            risk_reasons.append(f"R-multiple is strong ({risk_reward}x), so the algorithm added +0.5% to the base risk.")
+        elif risk_reward < 1:
+            rec_risk_pct -= 0.25
+            risk_reasons.append(f"R-multiple is below 1.0x ({risk_reward}x), meaning risk exceeds reward, so the algorithm reduced risk by 0.25%.")
+        if confidence >= 70:
+            rec_risk_pct += 0.5
+            risk_reasons.append(f"Confidence is high ({confidence}%), indicating most indicators agree, so +0.5% was added.")
+        elif confidence < 50:
+            rec_risk_pct -= 0.5
+            risk_reasons.append(f"Confidence is low ({confidence}%), meaning indicators disagree, so the algorithm cut risk by 0.5%.")
+        if i['volatility'] > 3:
+            rec_risk_pct -= 0.5
+            risk_reasons.append(f"Daily volatility is elevated ({i['volatility']:.1f}%), meaning bigger daily swings, so risk was reduced by 0.5% to keep losses manageable.")
+        elif i['volatility'] < 1.5:
+            rec_risk_pct += 0.25
+            risk_reasons.append(f"Volatility is low ({i['volatility']:.1f}%), making the stop loss tighter, so +0.25% was added.")
+        rec_risk_pct = round(max(0.25, min(rec_risk_pct, 3.0)), 2)
+        if not risk_reasons:
+            risk_reasons.append("All factors are near baseline levels, so the standard 1% risk-per-trade is used.")
+        risk_reason_text = f"Recommended risk: {rec_risk_pct}% of capital. Starting from a 1% base: " + " ".join(risk_reasons) + f" Final value clamped to [{0.25}%-{3.0}%]. To increase this, a higher confidence score (currently {confidence}%), a better R-multiple (currently {risk_reward}x), or lower volatility (currently {i['volatility']:.1f}%) would be needed."
+        # ── Formula tooltip texts (used verbatim in the frontend) ──
+        expected_move_tooltip = (
+            f"Definition: The percentage distance from the current price to the target exit price. "
+            f"Inputs: Current price ({i['price']:.2f}), Target price ({target_price:.2f}). "
+            f"Formula: ((Target - Current) / Current) x 100 = "
+            f"(({target_price:.2f} - {i['price']:.2f}) / {i['price']:.2f}) x 100 = {expected_move_pct:+.1f}%. "
+            f"The target is set at the 18-day high + 3% for BUY setups (recent resistance breakout), "
+            f"or the lower of the 20-day mean and the 18-day low - 3% for SELL setups."
+        ) if sig == "BUY" else (
+            f"Definition: The percentage distance from the current price to the target exit price. "
+            f"Inputs: Current price ({i['price']:.2f}), Target price ({target_price:.2f}). "
+            f"Formula: ((Current - Target) / Current) x 100 = "
+            f"(({i['price']:.2f} - {target_price:.2f}) / {i['price']:.2f}) x 100 = {expected_move_pct:+.1f}%. "
+            f"The target is set at the lower of the 20-day mean price and the 18-day low - 3% for SELL setups."
+        ) if sig == "SELL" else (
+            f"Definition: The percentage distance from the current price to the target exit price. "
+            f"Inputs: Current price ({i['price']:.2f}), Target price ({target_price:.2f}). "
+            f"Formula: |Target - Current| / Current x 100 = {expected_move_pct:.1f}%. "
+            f"For HOLD setups the target is the 18-day high + 2% (breakout level)."
+        )
+        max_risk_tooltip = (
+            f"Definition: The percentage you could lose if the trade hits your stop loss - the invalidation level "
+            f"below which the trade thesis no longer holds. "
+            f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
+            f"Formula: ((Current - Stop) / Current) x 100 = "
+            f"(({i['price']:.2f} - {stop_price:.2f}) / {i['price']:.2f}) x 100 = {max_risk_pct:.1f}%. "
+            f"The stop loss is placed 2% below the 18-day low (recent support - buffer), acting as the "
+            f"invalidation level. If price breaks this, the original setup is no longer valid."
+        ) if sig == "BUY" else (
+            f"Definition: The percentage you could lose if the trade hits your stop loss. "
+            f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
+            f"Formula: ((Stop - Current) / Current) x 100 = "
+            f"(({stop_price:.2f} - {i['price']:.2f}) / {i['price']:.2f}) x 100 = {max_risk_pct:.1f}%. "
+            f"The stop loss is placed 2% above the 18-day high (resistance + buffer)."
+        ) if sig == "SELL" else (
+            f"Definition: The percentage you could lose if the trade hits your stop loss. "
+            f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
+            f"Formula: |Current - Stop| / Current x 100 = {max_risk_pct:.1f}%. "
+            f"The stop is placed 2% below a key support/average level."
+        )
+        if sig == "SELL":
+            risk_reward_tooltip = (
+                f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
+                f"For a SHORT/SELL setup, 'gain' means the price dropping to your target. "
+                f"Inputs: Expected downward move ({expected_move_pct:.1f}%), Max Risk if price rises ({max_risk_pct:.1f}%). "
+                f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
+                f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f} if the price falls to target. "
+                f"Above 1.5x is favourable. Below 1.0x means the potential loss (price rising to stop) exceeds the potential gain."
+            )
+        else:
+            risk_reward_tooltip = (
+                f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
+                f"Inputs: Expected Move ({expected_move_pct:.1f}%), Max Risk ({max_risk_pct:.1f}%). "
+                f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
+                f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f}. "
+                f"Above 1.5x is favourable. Below 1.0x means the potential loss exceeds the potential gain."
+            )
+        # Determine setup duration label
+        if days_to_target <= 7:
+            setup_duration = "Short Term Setup"
+        elif days_to_target <= 15:
+            setup_duration = "Medium Term Setup"
+        else:
+            setup_duration = "Swing Trade Setup"
+        # Build "Why This Makes Sense" plain-English summary
+        trend_word = "strong uptrend" if uptrend and i['macd_bullish'] else "uptrend" if uptrend else "downtrend" if not uptrend and not i['macd_bullish'] else "sideways"
+        buyer_seller = "buyers remain dominant" if uptrend else "sellers are in control" if not uptrend and not i['macd_bullish'] else "neither buyers nor sellers have clear control"
+        momentum_word = "Momentum supports continuation despite extended conditions." if (uptrend and i['rsi'] > 60) or (not uptrend and i['rsi'] < 40) else "Momentum is building in favor of the current direction." if abs(i['daily']) > 1 else "Momentum is neutral, suggesting a potential shift ahead."
+        why_makes_sense = f"Price is in a {trend_word} and {buyer_seller}. {momentum_word}"
+        # Confidence one-liner
+        if confidence >= 70:
+            confidence_oneliner = "Past similar setups moved in this direction most of the time."
+        elif confidence >= 55:
+            confidence_oneliner = "Past similar setups moved upward more often than not." if sig == "BUY" else "Past similar setups moved downward more often than not." if sig == "SELL" else "Mixed signals - waiting for clearer direction is advisable."
+        else:
+            confidence_oneliner = "Setup shows potential but has mixed signals. Use tighter risk controls."
+        # SMA status for technical details
+        above_sma20 = i['price'] > i.get('sma20', i['sma9'])
+        above_sma50 = i['price'] > i.get('sma50', i['sma9'])
+        # BB position label
+        if i['bb_position'] > 90:
+            bb_label = "Near Upper Bollinger"
+        elif i['bb_position'] < 10:
+            bb_label = "Near Lower Bollinger"
+        elif i['bb_position'] > 60:
+            bb_label = "Upper Half Bollinger"
+        elif i['bb_position'] < 40:
+            bb_label = "Lower Half Bollinger"
+        else:
+            bb_label = "Middle Bollinger"
         if sig == "BUY":
             entry_explain = f"Enter when price dips to ₹{entry_price:.2f}. This is a good entry because it's near the average price and provides a better risk-reward ratio."
-            exit_explain = f"Exit (sell) at ₹{target_price:.2f}. This target is {((target_price - i['price']) / i['price'] * 100):.1f}% above current price."
+            exit_explain = f"Exit (sell) at ₹{target_price:.2f}. This target is {expected_move_pct:.1f}% above current price."
             confidence_explain = f"{confidence}% confidence based on: trend strength, RSI level, mean reversion signal, and market volatility. Higher confidence = more reliable setup."
             time_explain = f"Expected to reach target in approximately {days_to_target} trading days based on historical price movement patterns and current momentum."
         elif sig == "SELL":
             entry_explain = f"Exit long positions or enter short at ₹{entry_price:.2f}. Price is likely to fall towards mean."
-            exit_explain = f"Cover shorts or re-enter longs at ₹{target_price:.2f}. This is {((i['price'] - target_price) / i['price'] * 100):.1f}% below current price."
-            confidence_explain = f"{confidence}% confidence based on: downtrend confirmation, overbought conditions, and mean reversion probability. The algorithm checked 5 different technical indicators and found that all of them strongly agree the stock will go DOWN."
+            exit_explain = f"Cover shorts or re-enter longs at ₹{target_price:.2f}. This is {expected_move_pct:.1f}% below current price."
+            confidence_explain = f"{confidence}% confidence based on: downtrend confirmation, overbought conditions, and mean reversion probability."
             time_explain = f"Expected downward move in approximately {days_to_target} trading days."
         else:
             entry_explain = f"Wait for clearer signals. Consider entry only if price moves decisively above ₹{entry_price:.2f}."
@@ -863,20 +1006,157 @@ class Analyzer:
             'signal': {
                 'signal': sig, 'action': action, 'rec': rec,
                 'entry': f"₹{entry_price:.2f}", 'stop': f"₹{stop_price:.2f}", 'target': f"₹{target_price:.2f}",
+                'entry_raw': round(entry_price, 2), 'stop_raw': round(stop_price, 2), 'target_raw': round(target_price, 2),
                 'confidence': confidence, 'days_to_target': days_to_target,
+                'expected_move_pct': round(expected_move_pct, 1),
+                'expected_move_signed': round(expected_move_signed, 1),
+                'max_risk_pct': round(max_risk_pct, 1),
+                'risk_reward': risk_reward,
+                'risk_per_share': round(risk_per_share, 2),
+                'rec_risk_pct': rec_risk_pct,
+                'risk_reason_text': risk_reason_text,
+                'expected_move_tooltip': expected_move_tooltip,
+                'max_risk_tooltip': max_risk_tooltip,
+                'risk_reward_tooltip': risk_reward_tooltip,
+                'setup_duration': setup_duration,
+                'why_makes_sense': why_makes_sense,
+                'confidence_oneliner': confidence_oneliner,
                 'entry_explain': entry_explain, 'exit_explain': exit_explain, 'confidence_explain': confidence_explain,
                 'time_explain': time_explain, 'trend_explain': trend_explain, 'momentum_explain': momentum_explain,
                 'rsi_explain': rsi_explain, 'position_explain': position_explain, 'zscore_explain': zscore_explain,
                 'bb_explain': bb_explain, 'macd_text': "BULLISH - momentum favors buyers" if i['macd_bullish'] else "BEARISH - momentum favors sellers"
             },
             'details': {
-                'price': f"₹{i['price']:.2f}", 'daily': f"{i['daily']:+.2f}%", 'hourly': f"{i['hourly']:+.2f}%",
-                'rsi': f"{i['rsi']:.1f}", 'zscore': f"{i['zscore']:.2f}", 'pct_deviation': f"{i['pct_deviation']:+.2f}%",
-                'mean': f"₹{i['mean_price']:.2f}", 'sma9': f"₹{i['sma9']:.2f}", 'high': f"₹{i['high']:.2f}",
-                'low': f"₹{i['low']:.2f}", 'bb_upper': f"₹{i['bb_upper']:.2f}", 'bb_lower': f"₹{i['bb_lower']:.2f}",
-                'volatility': f"{i['volatility']:.2f}%", 'macd': "BULLISH" if i['macd_bullish'] else "BEARISH"
+                'price': f"₹{i['price']:.2f}", 'price_raw': round(i['price'], 2),
+                'daily': f"{i['daily']:+.2f}%", 'daily_raw': round(i['daily'], 2),
+                'hourly': f"{i['hourly']:+.2f}%",
+                'rsi': f"{i['rsi']:.1f}", 'rsi_raw': round(i['rsi'], 1),
+                'zscore': f"{i['zscore']:.2f}", 'zscore_raw': round(i['zscore'], 2),
+                'pct_deviation': f"{i['pct_deviation']:+.2f}%",
+                'mean': f"₹{i['mean_price']:.2f}", 'sma9': f"₹{i['sma9']:.2f}",
+                'sma20': f"₹{i.get('sma20', i['sma9']):.2f}", 'sma50': f"₹{i.get('sma50', i['sma9']):.2f}",
+                'above_sma20': above_sma20, 'above_sma50': above_sma50,
+                'high': f"₹{i['high']:.2f}", 'low': f"₹{i['low']:.2f}",
+                'bb_upper': f"₹{i['bb_upper']:.2f}", 'bb_lower': f"₹{i['bb_lower']:.2f}",
+                'bb_position': round(i['bb_position'], 0), 'bb_label': bb_label,
+                'volatility': f"{i['volatility']:.2f}%", 'macd': "BULLISH" if i['macd_bullish'] else "BEARISH",
+                'macd_bullish': i['macd_bullish']
             }
         }
+
+    def generate_projection_chart(self, data, signal_result):
+        """Generate a price projection chart with historical data and forecast zone."""
+        try:
+            s = signal_result.get('signal', {})
+            sig = s.get('signal', 'HOLD')
+            target_raw = s.get('target_raw', 0)
+            stop_raw = s.get('stop_raw', 0)
+            days_to_target = s.get('days_to_target', 7)
+            price_raw = signal_result.get('details', {}).get('price_raw', 0)
+            if not price_raw or not target_raw or not stop_raw:
+                return None
+
+            close = data['Close'].dropna()
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+
+            # Take last 60 data points for history
+            hist_len = min(60, len(close))
+            hist_prices = close.iloc[-hist_len:].values.astype(float)
+            hist_x = list(range(hist_len))
+
+            # Forecast zone
+            forecast_days = max(days_to_target, 3)
+            forecast_x = list(range(hist_len - 1, hist_len + forecast_days))
+
+            # Central projected path: linear interpolation from current price to target
+            current = hist_prices[-1]
+            central_path = np.linspace(current, target_raw, len(forecast_x))
+
+            # Probability band: expands with time, bounded by stop and target
+            daily_vol = float(close.pct_change().dropna().std()) if len(close) > 2 else 0.02
+            band_widths = [daily_vol * current * np.sqrt(i + 1) * 1.5 for i in range(len(forecast_x))]
+            upper_band = [central_path[i] + band_widths[i] for i in range(len(forecast_x))]
+            lower_band = [central_path[i] - band_widths[i] for i in range(len(forecast_x))]
+
+            # Colour scheme based on signal
+            if sig == "BUY":
+                action_color = '#10b981'
+                action_color_light = '#10b98133'
+            elif sig == "SELL":
+                action_color = '#ef4444'
+                action_color_light = '#ef444433'
+            else:
+                action_color = '#f59e0b'
+                action_color_light = '#f59e0b33'
+
+            fig, ax = plt.subplots(figsize=(8, 3.5), dpi=100)
+            fig.patch.set_facecolor('#131824')
+            ax.set_facecolor('#0a0e1a')
+
+            # Historical price line
+            ax.plot(hist_x, hist_prices, color='#a0aec0', linewidth=1.5, label='Historical', zorder=3)
+
+            # Forecast zone
+            ax.fill_between(forecast_x, lower_band, upper_band,
+                            color=action_color_light, zorder=1, label='Probability band')
+            ax.plot(forecast_x, central_path, color=action_color,
+                    linewidth=2, linestyle='--', zorder=4, label='Projected path')
+
+            # Current price marker
+            ax.scatter([hist_len - 1], [current], color='#ffffff', s=50, zorder=6, edgecolors=action_color, linewidths=2)
+            ax.annotate(f'CMP ₹{current:.2f}', xy=(hist_len - 1, current),
+                        xytext=(hist_len - 1 - 8, current + (max(hist_prices) - min(hist_prices)) * 0.12),
+                        color='#ffffff', fontsize=8, fontweight='bold',
+                        arrowprops=dict(arrowstyle='->', color='#ffffff', lw=0.8),
+                        zorder=7)
+
+            # Horizontal target line
+            total_x = hist_len + forecast_days
+            ax.axhline(y=target_raw, color=action_color, linewidth=1, linestyle=':',
+                        alpha=0.7, zorder=2)
+            ax.text(total_x - 1, target_raw, f' Target ₹{target_raw:.2f}',
+                    color=action_color, fontsize=7.5, va='bottom' if target_raw > current else 'top',
+                    fontweight='bold', zorder=7)
+
+            # Horizontal stop loss line
+            stop_color = '#ef4444' if sig == "BUY" else '#10b981'
+            ax.axhline(y=stop_raw, color=stop_color, linewidth=1, linestyle=':',
+                        alpha=0.7, zorder=2)
+            ax.text(total_x - 1, stop_raw, f' Stop ₹{stop_raw:.2f}',
+                    color=stop_color, fontsize=7.5, va='top' if stop_raw < current else 'bottom',
+                    fontweight='bold', zorder=7)
+
+            # Vertical line separating history from forecast
+            ax.axvline(x=hist_len - 1, color='#2d3748', linewidth=1, linestyle='-', alpha=0.5, zorder=1)
+            mid_y = (max(hist_prices) + min(hist_prices)) / 2
+            ax.text(hist_len + 1, ax.get_ylim()[1] * 0.99, 'FORECAST',
+                    color='#718096', fontsize=7, fontstyle='italic', va='top', zorder=7)
+
+            # Styling
+            ax.tick_params(colors='#718096', labelsize=7)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_color('#2d3748')
+            ax.spines['left'].set_color('#2d3748')
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+            ax.set_xticks([])
+            # Rupee labels on y-axis
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x:,.0f}'))
+
+            plt.tight_layout(pad=0.5)
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', facecolor=fig.get_facecolor(), bbox_inches='tight', pad_inches=0.15)
+            plt.close(fig)
+            buf.seek(0)
+            chart_b64 = base64.b64encode(buf.read()).decode('utf-8')
+            buf.close()
+            gc.collect()
+            return chart_b64
+        except Exception as e:
+            print(f"Error generating projection chart: {e}")
+            return None
 
     def analyze(self, symbol):
         """Main analysis method"""
@@ -886,7 +1166,15 @@ class Analyzer:
         ind = self.calc_indicators(data)
         if not ind:
             return None
-        return self.signal(ind)
+        result = self.signal(ind)
+        if result:
+            try:
+                chart_b64 = self.generate_projection_chart(data, result)
+                if chart_b64:
+                    result['projection_chart'] = chart_b64
+            except Exception:
+                pass
+        return result
 
     def regression_analysis(self, stock_symbol):
         """Perform HSIC (Hilbert-Schmidt Independence Criterion) non-linear dependency analysis of stock vs Nifty 50.
@@ -1534,6 +1822,111 @@ def index():
         .tech-detail-value { font-size: 1.4em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; color: var(--text-primary); }
         .tech-detail-note { font-size: 0.8em; color: var(--text-muted); margin-top: 4px; }
 
+        /* ===== TRADING SIGNAL CARD STYLES ===== */
+        .tsc { background: var(--bg-card); border-radius: 16px; padding: 0; border: 1px solid var(--border-color); overflow: hidden; animation: slideIn 0.5s ease; }
+        .tsc-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 24px 28px 16px; }
+        .tsc-ticker { font-family: 'Space Grotesk', sans-serif; font-size: 1.8em; font-weight: 700; color: var(--text-primary); letter-spacing: -0.5px; }
+        .tsc-price-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+        .tsc-price { font-size: 1.05em; color: var(--text-secondary); font-weight: 500; }
+        .tsc-change { font-size: 0.9em; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
+        .tsc-change.up { color: var(--accent-green); background: rgba(6, 255, 165, 0.1); }
+        .tsc-change.down { color: var(--danger); background: rgba(239, 68, 68, 0.1); }
+        .tsc-header-right { display: flex; align-items: center; gap: 10px; }
+        .tsc-badge { font-size: 0.85em; font-weight: 700; padding: 8px 20px; border-radius: 8px; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
+        .tsc-badge-BUY { background: #10b981; color: white; }
+        .tsc-badge-SELL { background: #ef4444; color: white; }
+        .tsc-badge-HOLD { background: #f59e0b; color: white; }
+        .tsc-menu-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 12px; color: var(--text-muted); cursor: pointer; font-size: 1.1em; transition: all 0.2s; }
+        .tsc-menu-btn:hover { background: rgba(255,255,255,0.1); color: var(--text-primary); }
+        .tsc-body { padding: 0 28px 28px; }
+        .tsc-setup-banner { background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(157, 78, 221, 0.15)); border: 1px solid rgba(0, 217, 255, 0.25); color: var(--text-primary); padding: 12px 20px; border-radius: 10px; text-align: center; font-weight: 600; font-size: 0.95em; font-family: 'Space Grotesk', sans-serif; margin-bottom: 20px; }
+        .tsc-confidence-card { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
+        .tsc-confidence-top { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
+        .tsc-signal-label { font-size: 1.1em; font-weight: 700; padding: 8px 20px; border-radius: 6px; font-family: 'Space Grotesk', sans-serif; }
+        .tsc-signal-label-BUY { background: #10b981; color: white; }
+        .tsc-signal-label-SELL { background: #ef4444; color: white; }
+        .tsc-signal-label-HOLD { background: #f59e0b; color: white; }
+        .tsc-confidence-info { flex: 1; }
+        .tsc-confidence-pct { font-family: 'Space Grotesk', sans-serif; font-size: 1.1em; font-weight: 600; }
+        .tsc-confidence-pct span { color: var(--text-secondary); font-weight: 400; font-size: 0.85em; }
+        .tsc-confidence-hint { color: var(--text-muted); font-size: 0.85em; margin-top: 2px; }
+        .tsc-rr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin-bottom: 20px; background: var(--bg-card-hover); border-radius: 12px; border: 1px solid var(--border-color); overflow: visible; }
+        .tsc-rr-item { padding: 18px 16px; text-align: left; border-right: 1px solid var(--border-color); }
+        .tsc-rr-item:first-child { border-radius: 12px 0 0 12px; }
+        .tsc-rr-item:last-child { border-right: none; border-radius: 0 12px 12px 0; }
+        .tsc-rr-label { font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .tsc-rr-value { font-size: 1.5em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
+        .tsc-rr-value.green { color: var(--accent-green); }
+        .tsc-rr-value.red { color: var(--danger); }
+        .tsc-rr-value.neutral { color: var(--text-primary); }
+        .tsc-rr-bar { height: 4px; border-radius: 2px; margin-top: 10px; display: flex; overflow: hidden; background: var(--bg-dark); }
+        .tsc-rr-bar-fill { height: 100%; border-radius: 2px; }
+        .tsc-why { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
+        .tsc-why h4 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
+        .tsc-why p { color: var(--text-secondary); line-height: 1.7; font-size: 0.95em; }
+        .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
+        .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+        .tsc-calc-check { width: 20px; height: 20px; background: var(--accent-green); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7em; font-weight: 700; }
+        .tsc-calc-title { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1em; }
+        .tsc-calc-row { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
+        .tsc-calc-input-wrap { flex: 1; position: relative; }
+        .tsc-calc-input { width: 100%; padding: 14px 14px 14px 8px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-dark); color: var(--text-primary); font-size: 1em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; transition: all 0.2s; }
+        .tsc-calc-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(6, 255, 165, 0.1); }
+        .tsc-calc-info-box { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; }
+        .tsc-calc-info-label { color: var(--text-muted); font-size: 0.85em; }
+        .tsc-calc-info-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.1em; }
+        .tsc-calc-result { background: linear-gradient(135deg, rgba(6, 255, 165, 0.1), rgba(6, 255, 165, 0.05)); border: 1px solid rgba(6, 255, 165, 0.25); border-radius: 10px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+        .tsc-calc-result-label { color: var(--text-secondary); font-size: 0.9em; font-weight: 500; }
+        .tsc-calc-result-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.3em; color: var(--accent-green); }
+        .tsc-calc-details { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 14px; }
+        .tsc-calc-detail-item { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; }
+        .tsc-calc-detail-label { font-size: 0.72em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .tsc-calc-detail-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1em; color: var(--text-primary); }
+        .tsc-accordion { margin-bottom: 16px; }
+        .tsc-accordion-toggle { background: var(--bg-card-hover); border: 1px solid var(--border-color); color: var(--text-secondary); padding: 14px 20px; border-radius: 10px; cursor: pointer; font-size: 0.9em; font-weight: 600; transition: all 0.2s; width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; font-family: 'Space Grotesk', sans-serif; }
+        .tsc-accordion-toggle:hover { border-color: var(--accent-cyan); color: var(--text-primary); background: var(--bg-card-hover); }
+        .tsc-accordion-toggle .tsc-arrow { transition: transform 0.3s; font-size: 0.8em; }
+        .tsc-accordion-toggle.open .tsc-arrow { transform: rotate(180deg); }
+        .tsc-accordion-content { max-height: 0; overflow: hidden; transition: max-height 0.4s ease-out; }
+        .tsc-accordion-content.open { max-height: 2000px; }
+        .tsc-accordion-inner { padding: 16px 0 0; }
+        .tsc-tech-item { background: var(--bg-card-hover); border: 1px solid var(--border-color); border-radius: 10px; padding: 18px 20px; margin-bottom: 12px; }
+        .tsc-tech-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .tsc-tech-item-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 0.95em; color: var(--text-primary); }
+        .tsc-tech-item-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.1em; }
+        .tsc-tech-item-explain { color: var(--text-secondary); font-size: 0.85em; line-height: 1.7; margin-top: 6px; }
+        .tsc-tech-item-example { color: var(--text-muted); font-size: 0.8em; line-height: 1.6; margin-top: 8px; padding: 10px 12px; background: var(--bg-dark); border-radius: 6px; border-left: 3px solid var(--accent-purple); }
+        .tsc-capital-display { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.5em; color: var(--text-primary); text-align: right; min-width: 120px; }
+        .tsc-tip { position: relative; cursor: help; }
+        .tsc-tip .tsc-tip-text { visibility: hidden; opacity: 0; position: absolute; z-index: 20; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); width: 340px; background: #1a1f2e; color: var(--text-secondary); padding: 16px; border-radius: 10px; font-size: 0.82em; line-height: 1.65; border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.55); transition: opacity 0.2s, visibility 0.2s; font-weight: 400; text-transform: none; letter-spacing: normal; pointer-events: none; }
+        .tsc-tip .tsc-tip-text::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -7px; border-width: 7px; border-style: solid; border-color: #1a1f2e transparent transparent transparent; }
+        .tsc-tip:hover .tsc-tip-text { visibility: visible; opacity: 1; pointer-events: auto; }
+        .tsc-tip .tsc-tip-text strong { color: var(--text-primary); }
+        .tsc-tip .tsc-tip-formula { display: block; margin-top: 8px; padding: 8px 10px; background: var(--bg-dark); border-radius: 6px; font-family: 'Space Grotesk', monospace; font-size: 0.95em; color: var(--accent-cyan); word-break: break-word; }
+        .tsc-rr-item .tsc-rr-label { display: inline-flex; align-items: center; gap: 5px; }
+        .tsc-rr-item .tsc-rr-label .tsc-tip-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--text-muted); font-size: 0.65em; color: var(--text-muted); flex-shrink: 0; transition: border-color 0.2s, color 0.2s; }
+        .tsc-tip:hover .tsc-tip-icon { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+        .tsc-auto-risk { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 10px; margin-bottom: 16px; }
+        .tsc-auto-risk-badge { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.5em; color: var(--accent-green); min-width: 60px; }
+        .tsc-auto-risk-label { font-size: 0.85em; color: var(--text-secondary); line-height: 1.5; }
+        .tsc-auto-risk-label strong { color: var(--text-primary); }
+        @media (max-width: 600px) {
+            .tsc-tip .tsc-tip-text { width: 260px; font-size: 0.78em; padding: 12px; left: 0; transform: translateX(-20%); }
+        }
+        @media (max-width: 768px) {
+            .tsc-header { padding: 16px 18px 12px; }
+            .tsc-body { padding: 0 18px 18px; }
+            .tsc-ticker { font-size: 1.4em; }
+            .tsc-rr-grid { grid-template-columns: 1fr; }
+            .tsc-rr-item { border-right: none; border-bottom: 1px solid var(--border-color); border-radius: 0; }
+            .tsc-rr-item:first-child { border-radius: 12px 12px 0 0; }
+            .tsc-rr-item:last-child { border-bottom: none; border-radius: 0 0 12px 12px; }
+            .tsc-calc-details { grid-template-columns: 1fr; }
+            .tsc-confidence-top { flex-wrap: wrap; }
+            .tsc-calc-row { flex-direction: column; }
+            .tsc-capital-display { text-align: left; }
+        }
+
         .scope-btn, .risk-btn { padding: 10px 18px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.9em; font-weight: 500; transition: all 0.2s; }
         .scope-btn.active, .risk-btn.active { background: var(--accent-cyan); color: var(--bg-dark); border-color: var(--accent-cyan); }
         .scope-btn:hover, .risk-btn:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
@@ -1782,42 +2175,298 @@ def index():
                 .catch(e => document.getElementById('result').innerHTML = `<div class="error">❌ ${e.message}</div>`);
         }
         function showResult(data, symbol) {
-            if (!data || !data.signal) { document.getElementById('result').innerHTML = '<div class="error">❌ Invalid response data</div>'; return; }
+            if (!data || !data.signal) { document.getElementById('result').innerHTML = '<div class="error">Invalid response data</div>'; return; }
             const s = data.signal || {};
             const d = data.details || {};
-            const confidenceColor = s.confidence > 70 ? '#10b981' : s.confidence > 50 ? '#f59e0b' : '#ef4444';
+            const dailyRaw = d.daily_raw || parseFloat(d.daily) || 0;
+            const dailyClass = dailyRaw >= 0 ? 'up' : 'down';
+            const dailySign = dailyRaw >= 0 ? '+' : '';
+            const riskPer = s.risk_per_share || Math.abs((d.price_raw || 0) - (s.stop_raw || 0));
+            const expectedPct = s.expected_move_pct || 0;  // always positive magnitude
+            const expectedSigned = s.expected_move_signed != null ? s.expected_move_signed : expectedPct;
+            const expectedColor = expectedSigned >= 0 ? 'green' : 'red';
+            const expectedSign = expectedSigned >= 0 ? '+' : '';
+            const maxRiskPct = s.max_risk_pct || 0;
+            const rrRatio = s.risk_reward || 0;
+            const rrGreenWidth = rrRatio > 0 ? Math.min((expectedPct / (expectedPct + maxRiskPct)) * 100, 95) : 50;
+            // SMA status text
+            const smaAbove = [];
+            if (d.above_sma20) smaAbove.push('20');
+            if (d.above_sma50) smaAbove.push('50');
+            const smaStatus = smaAbove.length === 2 ? 'Above 20 & 50 SMA' : smaAbove.length === 1 ? 'Above ' + smaAbove[0] + ' SMA' : 'Below 20 & 50 SMA';
             const html = `
-                <div class="result-card">
-                    <div class="header"><h2>${symbol}</h2><div class="signal-badge signal-${s.signal}">${s.signal}</div></div>
-                    <div style="margin: -20px 0 20px; font-size: 1.1em; color: var(--text-secondary);">${getStockName(symbol)} <span style="background: var(--bg-card-hover); padding: 3px 10px; border-radius: 4px; font-size: 0.8em; color: var(--accent-cyan); border: 1px solid var(--border-color);">${getStockSector(symbol)}</span></div>
-                    <div class="action-banner">${s.action}</div>
-                    <div class="rec-box"><strong>💡 Recommendation:</strong> ${s.rec}</div>
-                    <div class="confidence-meter"><div class="confidence-label">Confidence Level</div><div class="confidence-bar-container"><div class="confidence-bar" style="width: ${s.confidence}%; background: linear-gradient(90deg, ${confidenceColor}, ${confidenceColor}dd);">${s.confidence}%</div></div><div class="confidence-text">${s.confidence_explain}</div></div>
-                    <div class="metrics">
-                        <div class="metric"><div class="metric-label">Current Price</div><div class="metric-value">${d.price}</div></div>
-                        <div class="metric"><div class="metric-label">Daily Change</div><div class="metric-value" style="color: ${parseFloat(d.daily) >= 0 ? 'var(--success)' : 'var(--danger)'}">${d.daily}</div></div>
-                        <div class="metric"><div class="metric-label">RSI</div><div class="metric-value">${d.rsi}</div></div>
-                        <div class="metric"><div class="metric-label">Z-Score</div><div class="metric-value">${d.zscore}</div></div>
-                        <div class="metric"><div class="metric-label">% from Mean</div><div class="metric-value" style="color: ${parseFloat(d.pct_deviation) >= 0 ? 'var(--accent-cyan)' : 'var(--accent-purple)'}">${d.pct_deviation}</div></div>
-                        <div class="metric"><div class="metric-label">Volatility</div><div class="metric-value">${d.volatility}</div></div>
+                <div class="tsc">
+                    <!-- HEADER -->
+                    <div class="tsc-header">
+                        <div>
+                            <div class="tsc-ticker">${symbol}</div>
+                            <div class="tsc-price-row">
+                                <span class="tsc-price"><span style="font-size:0.75em;color:var(--text-muted);font-weight:400;">CMP</span> ${d.price}</span>
+                                <span class="tsc-change ${dailyClass} tsc-tip">${dailySign}${dailyRaw.toFixed(2)}%<span class="tsc-tip-text" style="width:220px;bottom:calc(100% + 8px);">Change from previous trading day's closing price.</span></span>
+                            </div>
+                        </div>
+                        <div class="tsc-header-right">
+                            <div class="tsc-badge tsc-badge-${s.signal}">${s.signal}</div>
+                        </div>
                     </div>
-                    <div class="trading-plan">
-                        <h3>💼 TRADING PLAN (For Beginners)</h3>
-                        <div class="plan-item"><span class="plan-label">📍 ENTRY PRICE</span><span class="plan-value">${s.entry}<br><small style="color: var(--text-muted)">${s.entry_explain}</small></span></div>
-                        <div class="plan-item"><span class="plan-label">🎯 EXIT PRICE</span><span class="plan-value">${s.target}<br><small style="color: var(--text-muted)">${s.exit_explain}</small></span></div>
-                        <div class="plan-item"><span class="plan-label">🛡️ STOP LOSS</span><span class="plan-value">${s.stop}<br><small style="color: var(--text-muted)">If price falls to this level, sell immediately to limit losses.</small></span></div>
-                        <div class="plan-item"><span class="plan-label">⏱️ TIME FRAME</span><span class="plan-value">${s.days_to_target} trading days<br><small style="color: var(--text-muted)">${s.time_explain}</small></span></div>
+                    <div class="tsc-body">
+                        <!-- SETUP BANNER -->
+                        <div class="tsc-setup-banner">${s.setup_duration || 'Short Term Setup'} &bull; ${s.days_to_target} Days</div>
+
+                        <!-- CONFIDENCE CARD -->
+                        <div class="tsc-confidence-card">
+                            <div class="tsc-confidence-top">
+                                <div class="tsc-signal-label tsc-signal-label-${s.signal}">${s.signal}</div>
+                                <div class="tsc-confidence-info">
+                                    <div class="tsc-confidence-pct">Confidence <strong>${s.confidence}%</strong></div>
+                                    <div class="tsc-confidence-hint">${s.confidence_oneliner || ''}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- RISK-REWARD GRID -->
+                        <div class="tsc-rr-grid">
+                            <div class="tsc-rr-item tsc-tip">
+                                <div class="tsc-rr-label">Expected Move <span class="tsc-tip-icon">?</span></div>
+                                <div class="tsc-rr-value ${expectedColor}">${expectedSign}${expectedSigned}%</div>
+                                <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${rrGreenWidth}%;background:${expectedSigned >= 0 ? 'var(--accent-green)' : 'var(--danger)'};"></div></div>
+                                <div class="tsc-tip-text">${s.expected_move_tooltip || ''}</div>
+                            </div>
+                            <div class="tsc-rr-item tsc-tip">
+                                <div class="tsc-rr-label">Max Risk <span class="tsc-tip-icon">?</span></div>
+                                <div class="tsc-rr-value red">-${maxRiskPct}%</div>
+                                <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${100-rrGreenWidth}%;background:var(--danger);"></div></div>
+                                <div class="tsc-tip-text">${s.max_risk_tooltip || ''}</div>
+                            </div>
+                            <div class="tsc-rr-item tsc-tip">
+                                <div class="tsc-rr-label">Risk-Reward <span class="tsc-tip-icon">?</span></div>
+                                <div class="tsc-rr-value ${rrRatio >= 1.5 ? 'green' : rrRatio >= 1 ? 'neutral' : 'red'}">${rrRatio}x</div>
+                                <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${Math.min(rrRatio/(rrRatio+1)*100,95)}%;background:linear-gradient(90deg,var(--accent-green),var(--accent-cyan));"></div></div>
+                                <div class="tsc-tip-text">${s.risk_reward_tooltip || ''}</div>
+                            </div>
+                        </div>
+
+                        <!-- WHY THIS MAKES SENSE -->
+                        <div class="tsc-why">
+                            <h4>Why This Makes Sense</h4>
+                            <p>${s.why_makes_sense || s.rec}</p>
+                        </div>
+
+                        <!-- TRADE LEVELS (moved up for visibility) -->
+                        <div class="tsc-calc-details" style="margin-bottom:20px;">
+                            <div class="tsc-calc-detail-item">
+                                <div class="tsc-calc-detail-label">Exit Price</div>
+                                <div class="tsc-calc-detail-value" style="color:var(--accent-green);">${s.target}</div>
+                            </div>
+                            <div class="tsc-calc-detail-item">
+                                <div class="tsc-calc-detail-label">Stop Loss</div>
+                                <div class="tsc-calc-detail-value" style="color:var(--danger);">${s.stop}</div>
+                            </div>
+                            <div class="tsc-calc-detail-item">
+                                <div class="tsc-calc-detail-label">Time Frame</div>
+                                <div class="tsc-calc-detail-value">${s.days_to_target} days</div>
+                            </div>
+                        </div>
+
+                        <!-- PRICE PROJECTION CHART -->
+                        <div id="tsc-projection-chart" style="display:none;"></div>
+
+                        <!-- CAPITAL CALCULATOR -->
+                        <div class="tsc-calc">
+                            <div class="tsc-calc-header">
+                                <div class="tsc-calc-check">&#10003;</div>
+                                <div class="tsc-calc-title">Capital Calculator</div>
+                            </div>
+
+                            <div class="tsc-auto-risk tsc-tip">
+                                <div class="tsc-auto-risk-badge" id="tsc-risk-pct-label">${s.rec_risk_pct || 1}%</div>
+                                <div class="tsc-auto-risk-label">
+                                    <strong>Recommended risk per trade</strong><br>
+                                    <span style="font-size:0.9em;">Computed from confidence, risk-reward &amp; volatility. Hover for details.</span>
+                                </div>
+                                <div class="tsc-tip-text">${s.risk_reason_text || 'Standard 1% risk per trade.'}</div>
+                            </div>
+
+                            <div class="tsc-calc-row">
+                                <div class="tsc-calc-input-wrap">
+                                    <input type="text" class="tsc-calc-input" id="tsc-capital-input" placeholder="Enter total capital (e.g. 5,00,000)" oninput="formatTscCapital(this); updateCapitalCalc()">
+                                </div>
+                                <div class="tsc-capital-display" id="tsc-capital-display"></div>
+                            </div>
+
+                            <div class="tsc-calc-info-box" style="margin-bottom:10px;">
+                                <span class="tsc-calc-info-label">Risk per share:</span>
+                                <span class="tsc-calc-info-value" style="color:var(--danger);" id="tsc-risk-per-share">&#8377;${riskPer.toFixed(2)}</span>
+                            </div>
+
+                            <div class="tsc-calc-result">
+                                <span class="tsc-calc-result-label">Suggested quantity:</span>
+                                <span class="tsc-calc-result-value" id="tsc-qty-result">-- shares</span>
+                            </div>
+                        </div>
+
+                        <!-- TECHNICAL DETAILS ACCORDION -->
+                        <div class="tsc-accordion">
+                            <button class="tsc-accordion-toggle" onclick="toggleTscAccordion(this)">
+                                Technical Details (click to expand) <span class="tsc-arrow">&#9660;</span>
+                            </button>
+                            <div class="tsc-accordion-content" id="tsc-tech-details">
+                                <div class="tsc-accordion-inner">
+                                    <!-- RSI -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">RSI (Relative Strength Index)</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.rsi_raw > 70 ? 'var(--danger)' : d.rsi_raw < 30 ? 'var(--accent-green)' : 'var(--text-primary)'};">${d.rsi}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.rsi_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is RSI?</strong> Think of RSI like a speedometer for a stock. It measures how fast the price has been going up or down on a scale of 0-100. Above 70 means the stock has been running too fast (overbought) and might need to rest. Below 30 means it's been beaten down too much (oversold) and might bounce back. Between 30-70 is normal cruising speed.
+                                        </div>
+                                    </div>
+                                    <!-- MACD -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">MACD (Moving Average Convergence Divergence)</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.macd_bullish ? 'var(--accent-green)' : 'var(--danger)'};">${d.macd}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.macd_text}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is MACD?</strong> Imagine two runners - one fast and one slow. MACD tracks the gap between them. When the fast runner pulls ahead (Bullish), it means momentum is building upward - like a car accelerating. When the slow runner catches up (Bearish), the stock is losing steam. It's one of the most reliable ways to spot when a trend is gaining or losing strength.
+                                        </div>
+                                    </div>
+                                    <!-- SMA Status -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">Moving Averages (SMA 20 & 50)</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.above_sma20 && d.above_sma50 ? 'var(--accent-green)' : !d.above_sma20 && !d.above_sma50 ? 'var(--danger)' : 'var(--warning)'};">${smaStatus}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.trend_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What are Moving Averages?</strong> A moving average smooths out daily price noise to show the real trend. The 20-day SMA shows the short-term trend (like last month's direction), while the 50-day SMA shows the bigger picture. When the price is above both, it's like a boat sailing with the current - the trend is your friend. Below both means you're swimming against the tide.
+                                        </div>
+                                    </div>
+                                    <!-- Z-Score -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">Z-Score (Mean Reversion)</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.zscore_raw > 2 ? 'var(--danger)' : d.zscore_raw < -2 ? 'var(--accent-green)' : 'var(--text-primary)'};">${d.zscore}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.zscore_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is Z-Score?</strong> Think of a rubber band stretched between your fingers. The further you pull it, the harder it snaps back. Z-Score measures how far a stock price has stretched from its average. A score above +2 means it's stretched too far up (likely to snap back down). Below -2 means it's pulled too far down (likely to bounce up). Near 0 means it's at its comfortable resting point.
+                                        </div>
+                                    </div>
+                                    <!-- Bollinger Bands -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">Bollinger Bands</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.bb_position > 80 ? 'var(--danger)' : d.bb_position < 20 ? 'var(--accent-green)' : 'var(--text-primary)'};">${d.bb_label || 'Middle'}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.bb_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What are Bollinger Bands?</strong> Picture a highway with lanes. The middle lane is the average price, and the outer lanes (upper and lower bands) represent where the price "usually" stays. When the price drives onto the shoulder (touches the upper band), it's probably going too fast and will merge back. When it drifts to the other shoulder (lower band), it's likely to bounce back toward the center. About 95% of price action stays within these bands.
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- SECOND ACCORDION: RAW DATA -->
+                        <div class="tsc-accordion">
+                            <button class="tsc-accordion-toggle" onclick="toggleTscAccordion(this)">
+                                Raw Data & Price Levels <span class="tsc-arrow">&#9660;</span>
+                            </button>
+                            <div class="tsc-accordion-content">
+                                <div class="tsc-accordion-inner">
+                                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px;">
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Current Price</div><div class="tsc-calc-detail-value">${d.price}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Daily Change</div><div class="tsc-calc-detail-value" style="color:${dailyRaw>=0?'var(--accent-green)':'var(--danger)'};">${d.daily}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">20-Day Mean</div><div class="tsc-calc-detail-value">${d.mean}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">SMA 9</div><div class="tsc-calc-detail-value">${d.sma9}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">SMA 20</div><div class="tsc-calc-detail-value">${d.sma20 || d.sma9}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">SMA 50</div><div class="tsc-calc-detail-value">${d.sma50 || d.sma9}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">18-Day High</div><div class="tsc-calc-detail-value">${d.high}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">18-Day Low</div><div class="tsc-calc-detail-value">${d.low}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">BB Upper</div><div class="tsc-calc-detail-value">${d.bb_upper}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">BB Lower</div><div class="tsc-calc-detail-value">${d.bb_lower}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">% from Mean</div><div class="tsc-calc-detail-value" style="color:${parseFloat(d.pct_deviation)>=0?'var(--accent-cyan)':'var(--accent-purple)'};">${d.pct_deviation}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Volatility</div><div class="tsc-calc-detail-value">${d.volatility}</div></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
-                    <div class="explanation-section"><h3>📊 TREND ANALYSIS</h3><div class="explanation">${s.trend_explain}</div></div>
-                    <div class="explanation-section"><h3>⚡ MOMENTUM</h3><div class="explanation">${s.momentum_explain}</div></div>
-                    <div class="explanation-section"><h3>📈 RSI INTERPRETATION</h3><div class="explanation">${s.rsi_explain}</div></div>
-                    <div class="explanation-section"><h3>🎯 MEAN REVERSION (Z-SCORE)</h3><div class="explanation">${s.zscore_explain}</div></div>
-                    <div class="explanation-section"><h3>📉 BOLLINGER BANDS</h3><div class="explanation">${s.bb_explain}</div></div>
-                    <div class="explanation-section"><h3>📍 PRICE POSITION</h3><div class="explanation">${s.position_explain}</div></div>
-                    <div class="explanation-section"><h3>🎯 MACD</h3><div class="explanation">${s.macd_text}</div></div>
                 </div>
             `;
             document.getElementById('result').innerHTML = html;
+            // Store signal data for capital calculator
+            window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0, recRiskPct: s.rec_risk_pct || 1 };
+            // Render projection chart if available
+            if (data.projection_chart) {
+                const chartDiv = document.getElementById('tsc-projection-chart');
+                if (chartDiv) {
+                    chartDiv.style.display = 'block';
+                    chartDiv.innerHTML = '<div style="background:var(--bg-card-hover);border-radius:12px;border:1px solid var(--border-color);padding:18px 20px;margin-bottom:20px;">'
+                        + '<img src="data:image/png;base64,' + data.projection_chart + '" style="width:100%;border-radius:8px;" alt="Price projection chart">'
+                        + '<p style="color:var(--text-muted);font-size:0.78em;margin:10px 0 0;line-height:1.5;font-style:italic;">Forecast assumes current trend conditions remain unchanged. The shaded band shows the probable price range based on recent volatility. This is not a guarantee of future movement.</p>'
+                        + '</div>';
+                }
+            }
+        }
+        function toggleTscAccordion(btn) {
+            const content = btn.nextElementSibling;
+            btn.classList.toggle('open');
+            content.classList.toggle('open');
+        }
+        function formatTscCapital(input) {
+            let raw = input.value.replace(/,/g, '').replace(/[^0-9]/g, '');
+            if (raw === '') { input.value = ''; return; }
+            // Indian number formatting
+            let num = raw;
+            let lastThree = num.substring(num.length - 3);
+            let otherNumbers = num.substring(0, num.length - 3);
+            if (otherNumbers !== '') lastThree = ',' + lastThree;
+            input.value = otherNumbers.replace(/\\B(?=(\\d{2})+(?!\\d))/g, ',') + lastThree;
+        }
+        function updateCapitalCalc() {
+            const inp = document.getElementById('tsc-capital-input');
+            const display = document.getElementById('tsc-capital-display');
+            const qtyEl = document.getElementById('tsc-qty-result');
+            if (!inp || !qtyEl) return;
+            const riskPct = window._tscSignalData ? (window._tscSignalData.recRiskPct || 1) : 1;
+            const raw = inp.value.replace(/,/g, '');
+            const capital = parseFloat(raw);
+            if (!capital || capital <= 0 || !window._tscSignalData) {
+                display.textContent = '';
+                qtyEl.textContent = '-- shares';
+                return;
+            }
+            // Format display in Indian numbering
+            let formatted = Math.round(capital).toString();
+            let lastThree = formatted.substring(formatted.length - 3);
+            let otherNumbers = formatted.substring(0, formatted.length - 3);
+            if (otherNumbers !== '') lastThree = ',' + lastThree;
+            const indianFormatted = otherNumbers.replace(/\\B(?=(\\d{2})+(?!\\d))/g, ',') + lastThree;
+            display.innerHTML = '&#8377;' + indianFormatted;
+            const riskPerShare = window._tscSignalData.riskPerShare;
+            if (riskPerShare > 0) {
+                const riskAmount = capital * (riskPct / 100);
+                const qty = Math.floor(riskAmount / riskPerShare);
+                qtyEl.textContent = qty.toLocaleString('en-IN') + ' shares';
+            } else {
+                qtyEl.textContent = '-- shares';
+            }
         }
         function analyzeRegression() {
             const symbol = document.getElementById('regression-search').value.toUpperCase().trim();
