@@ -786,6 +786,7 @@ class Analyzer:
                 'mean_price': mean_price, 'std_price': std_price, 'bb_upper': bb_upper,
                 'bb_lower': bb_lower, 'bb_position': bb_position, 'volatility': volatility
             }
+            return result
         except Exception as e:
             print(f"Error calculating indicators: {e}")
             return None
