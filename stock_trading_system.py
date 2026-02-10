@@ -652,8 +652,24 @@ class Analyzer:
         if cached is not None and not cached.empty:
             return cached.copy(deep=False)
 
-        def _download(ticker, period, interval):
-            return yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+        def _download(ticker_symbol, period_value, interval_value):
+            try:
+                return yf.download(
+                    ticker_symbol,
+                    period=period_value,
+                    interval=interval_value,
+                    progress=False,
+                    threads=False,
+                    timeout=8,
+                )
+            except Exception:
+                return None
+
+        def _history_fallback(ticker_symbol):
+            try:
+                return yf.Ticker(ticker_symbol).history(period="1y", interval="1d", timeout=8)
+            except Exception:
+                return None
 
         def _has_enough_data(df, minimum_rows):
             if df is None or df.empty:
@@ -665,23 +681,35 @@ class Analyzer:
                 close_series = close_series.iloc[:, 0]
             return len(close_series.dropna()) >= minimum_rows
 
+        def _downsample(df):
+            if df is None or df.empty:
+                return df
+            if len(df) <= MAX_HISTORY_POINTS:
+                return df
+            step = max(1, len(df) // MAX_HISTORY_POINTS)
+            return df.iloc[::step].tail(MAX_HISTORY_POINTS)
+
         try:
             base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
             tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
             attempts = [
-                (period, interval, 30),
-                ("3mo", "1d", 30),
+                (period, interval, 20),
+                ("6mo", "1d", 20),
+                ("3mo", "1d", 15),
                 ("1mo", "1d", 10),
             ]
             for ticker in tickers:
                 for try_period, try_interval, min_rows in attempts:
                     data = _download(ticker, try_period, try_interval)
                     if _has_enough_data(data, min_rows):
-                        if len(data) > MAX_HISTORY_POINTS:
-                            step = max(1, len(data) // MAX_HISTORY_POINTS)
-                            data = data.iloc[::step].tail(MAX_HISTORY_POINTS)
+                        data = _downsample(data)
                         PRICE_HISTORY_CACHE.set(cache_key, data)
                         return data.copy(deep=False)
+                fallback = _history_fallback(ticker)
+                if _has_enough_data(fallback, 20):
+                    fallback = _downsample(fallback)
+                    PRICE_HISTORY_CACHE.set(cache_key, fallback)
+                    return fallback.copy(deep=False)
             return None
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
