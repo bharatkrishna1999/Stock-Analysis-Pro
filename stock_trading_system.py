@@ -1452,8 +1452,8 @@ def index():
         header h1 { font-family: 'Space Grotesk', sans-serif; font-size: 3em; font-weight: 700; margin-bottom: 10px; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
         header p { color: var(--text-secondary); font-size: 1.1em; }
         .stock-count { background: rgba(0, 217, 255, 0.1); color: var(--accent-cyan); padding: 8px 16px; border-radius: 20px; display: inline-block; margin-top: 10px; font-size: 0.9em; font-weight: 600; }
-        .tabs { display: flex; gap: 10px; margin: 30px 0; border-bottom: 2px solid var(--border-color); }
-        .tab { padding: 15px 30px; background: transparent; border: none; color: var(--text-secondary); font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.3s; border-bottom: 3px solid transparent; font-family: 'Space Grotesk', sans-serif; }
+        .tabs { display: flex; gap: 0; margin: 30px 0; border-bottom: 2px solid var(--border-color); }
+        .tab { flex: 1; padding: 15px 10px; background: transparent; border: none; color: var(--text-secondary); font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.3s; border-bottom: 3px solid transparent; font-family: 'Space Grotesk', sans-serif; text-align: center; white-space: nowrap; }
         .tab:hover { color: var(--accent-cyan); }
         .tab.active { color: var(--text-primary); border-bottom-color: var(--accent-cyan); }
         .tab-content { display: none; }
@@ -1566,6 +1566,7 @@ def index():
             .container { padding: 12px; }
             .result-card { padding: 20px; }
             .plan-label { font-size: 0.85em; opacity: 0.9; }
+            .tab { font-size: 0.85em; padding: 12px 6px; }
         }
     </style>
 </head>
