@@ -1453,7 +1453,7 @@ def index():
         header p { color: var(--text-secondary); font-size: 1.1em; }
         .stock-count { background: rgba(0, 217, 255, 0.1); color: var(--accent-cyan); padding: 8px 16px; border-radius: 20px; display: inline-block; margin-top: 10px; font-size: 0.9em; font-weight: 600; }
         .tabs { display: flex; gap: 0; margin: 30px 0; border-bottom: 2px solid var(--border-color); }
-        .tab { flex: 1; padding: 15px 10px; background: transparent; border: none; color: var(--text-secondary); font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.3s; border-bottom: 3px solid transparent; font-family: 'Space Grotesk', sans-serif; text-align: center; white-space: nowrap; }
+        .tab { flex: 1; min-width: 0; padding: 15px 10px; background: transparent; border: none; color: var(--text-secondary); font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.3s; border-bottom: 3px solid transparent; font-family: 'Space Grotesk', sans-serif; text-align: center; }
         .tab:hover { color: var(--accent-cyan); }
         .tab.active { color: var(--text-primary); border-bottom-color: var(--accent-cyan); }
         .tab-content { display: none; }
@@ -1567,6 +1567,9 @@ def index():
             .result-card { padding: 20px; }
             .plan-label { font-size: 0.85em; opacity: 0.9; }
             .tab { font-size: 0.85em; padding: 12px 6px; }
+        }
+        @media (max-width: 400px) {
+            .tab { font-size: 0.78em; padding: 10px 4px; }
         }
     </style>
 </head>
