@@ -849,15 +849,20 @@ class Analyzer:
         confidence = self.calculate_confidence(i)
         days_to_target = self.estimate_days_to_target(i['price'], target_price, i)
         # Calculate risk-reward metrics
+        # expected_move_pct: always positive magnitude (used for R-multiple math)
+        # expected_move_signed: signed for display (negative for SELL = price expected to drop)
         if sig == "BUY":
             expected_move_pct = ((target_price - i['price']) / i['price']) * 100
             max_risk_pct = ((i['price'] - stop_price) / i['price']) * 100
+            expected_move_signed = expected_move_pct
         elif sig == "SELL":
             expected_move_pct = ((i['price'] - target_price) / i['price']) * 100
             max_risk_pct = ((stop_price - i['price']) / i['price']) * 100
+            expected_move_signed = -expected_move_pct  # negative: price expected to fall
         else:
             expected_move_pct = abs((target_price - i['price']) / i['price']) * 100
             max_risk_pct = abs((i['price'] - stop_price) / i['price']) * 100
+            expected_move_signed = expected_move_pct if target_price > i['price'] else -expected_move_pct
         risk_reward = round(expected_move_pct / max_risk_pct, 2) if max_risk_pct > 0 else 0
         risk_per_share = abs(i['price'] - stop_price)
         # ── Auto-compute recommended risk % ──
@@ -932,13 +937,23 @@ class Analyzer:
             f"Formula: |Current - Stop| / Current x 100 = {max_risk_pct:.1f}%. "
             f"The stop is placed 2% below a key support/average level."
         )
-        risk_reward_tooltip = (
-            f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
-            f"Inputs: Expected Move ({expected_move_pct:.1f}%), Max Risk ({max_risk_pct:.1f}%). "
-            f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
-            f"A value above 1.5x is considered favourable - you stand to gain 1.5 times what you risk. "
-            f"Below 1.0x means the potential loss exceeds the potential gain, making the trade less attractive."
-        )
+        if sig == "SELL":
+            risk_reward_tooltip = (
+                f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
+                f"For a SHORT/SELL setup, 'gain' means the price dropping to your target. "
+                f"Inputs: Expected downward move ({expected_move_pct:.1f}%), Max Risk if price rises ({max_risk_pct:.1f}%). "
+                f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
+                f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f} if the price falls to target. "
+                f"Above 1.5x is favourable. Below 1.0x means the potential loss (price rising to stop) exceeds the potential gain."
+            )
+        else:
+            risk_reward_tooltip = (
+                f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
+                f"Inputs: Expected Move ({expected_move_pct:.1f}%), Max Risk ({max_risk_pct:.1f}%). "
+                f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
+                f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f}. "
+                f"Above 1.5x is favourable. Below 1.0x means the potential loss exceeds the potential gain."
+            )
         # Determine setup duration label
         if days_to_target <= 7:
             setup_duration = "Short Term Setup"
@@ -994,6 +1009,7 @@ class Analyzer:
                 'entry_raw': round(entry_price, 2), 'stop_raw': round(stop_price, 2), 'target_raw': round(target_price, 2),
                 'confidence': confidence, 'days_to_target': days_to_target,
                 'expected_move_pct': round(expected_move_pct, 1),
+                'expected_move_signed': round(expected_move_signed, 1),
                 'max_risk_pct': round(max_risk_pct, 1),
                 'risk_reward': risk_reward,
                 'risk_per_share': round(risk_per_share, 2),
@@ -1028,6 +1044,120 @@ class Analyzer:
             }
         }
 
+    def generate_projection_chart(self, data, signal_result):
+        """Generate a price projection chart with historical data and forecast zone."""
+        try:
+            s = signal_result.get('signal', {})
+            sig = s.get('signal', 'HOLD')
+            target_raw = s.get('target_raw', 0)
+            stop_raw = s.get('stop_raw', 0)
+            days_to_target = s.get('days_to_target', 7)
+            price_raw = signal_result.get('details', {}).get('price_raw', 0)
+            if not price_raw or not target_raw or not stop_raw:
+                return None
+
+            close = data['Close'].dropna()
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+
+            # Take last 60 data points for history
+            hist_len = min(60, len(close))
+            hist_prices = close.iloc[-hist_len:].values.astype(float)
+            hist_x = list(range(hist_len))
+
+            # Forecast zone
+            forecast_days = max(days_to_target, 3)
+            forecast_x = list(range(hist_len - 1, hist_len + forecast_days))
+
+            # Central projected path: linear interpolation from current price to target
+            current = hist_prices[-1]
+            central_path = np.linspace(current, target_raw, len(forecast_x))
+
+            # Probability band: expands with time, bounded by stop and target
+            daily_vol = float(close.pct_change().dropna().std()) if len(close) > 2 else 0.02
+            band_widths = [daily_vol * current * np.sqrt(i + 1) * 1.5 for i in range(len(forecast_x))]
+            upper_band = [central_path[i] + band_widths[i] for i in range(len(forecast_x))]
+            lower_band = [central_path[i] - band_widths[i] for i in range(len(forecast_x))]
+
+            # Colour scheme based on signal
+            if sig == "BUY":
+                action_color = '#10b981'
+                action_color_light = '#10b98133'
+            elif sig == "SELL":
+                action_color = '#ef4444'
+                action_color_light = '#ef444433'
+            else:
+                action_color = '#f59e0b'
+                action_color_light = '#f59e0b33'
+
+            fig, ax = plt.subplots(figsize=(8, 3.5), dpi=100)
+            fig.patch.set_facecolor('#131824')
+            ax.set_facecolor('#0a0e1a')
+
+            # Historical price line
+            ax.plot(hist_x, hist_prices, color='#a0aec0', linewidth=1.5, label='Historical', zorder=3)
+
+            # Forecast zone
+            ax.fill_between(forecast_x, lower_band, upper_band,
+                            color=action_color_light, zorder=1, label='Probability band')
+            ax.plot(forecast_x, central_path, color=action_color,
+                    linewidth=2, linestyle='--', zorder=4, label='Projected path')
+
+            # Current price marker
+            ax.scatter([hist_len - 1], [current], color='#ffffff', s=50, zorder=6, edgecolors=action_color, linewidths=2)
+            ax.annotate(f'CMP ₹{current:.2f}', xy=(hist_len - 1, current),
+                        xytext=(hist_len - 1 - 8, current + (max(hist_prices) - min(hist_prices)) * 0.12),
+                        color='#ffffff', fontsize=8, fontweight='bold',
+                        arrowprops=dict(arrowstyle='->', color='#ffffff', lw=0.8),
+                        zorder=7)
+
+            # Horizontal target line
+            total_x = hist_len + forecast_days
+            ax.axhline(y=target_raw, color=action_color, linewidth=1, linestyle=':',
+                        alpha=0.7, zorder=2)
+            ax.text(total_x - 1, target_raw, f' Target ₹{target_raw:.2f}',
+                    color=action_color, fontsize=7.5, va='bottom' if target_raw > current else 'top',
+                    fontweight='bold', zorder=7)
+
+            # Horizontal stop loss line
+            stop_color = '#ef4444' if sig == "BUY" else '#10b981'
+            ax.axhline(y=stop_raw, color=stop_color, linewidth=1, linestyle=':',
+                        alpha=0.7, zorder=2)
+            ax.text(total_x - 1, stop_raw, f' Stop ₹{stop_raw:.2f}',
+                    color=stop_color, fontsize=7.5, va='top' if stop_raw < current else 'bottom',
+                    fontweight='bold', zorder=7)
+
+            # Vertical line separating history from forecast
+            ax.axvline(x=hist_len - 1, color='#2d3748', linewidth=1, linestyle='-', alpha=0.5, zorder=1)
+            mid_y = (max(hist_prices) + min(hist_prices)) / 2
+            ax.text(hist_len + 1, ax.get_ylim()[1] * 0.99, 'FORECAST',
+                    color='#718096', fontsize=7, fontstyle='italic', va='top', zorder=7)
+
+            # Styling
+            ax.tick_params(colors='#718096', labelsize=7)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['bottom'].set_color('#2d3748')
+            ax.spines['left'].set_color('#2d3748')
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+            ax.set_xticks([])
+            # Rupee labels on y-axis
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x:,.0f}'))
+
+            plt.tight_layout(pad=0.5)
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', facecolor=fig.get_facecolor(), bbox_inches='tight', pad_inches=0.15)
+            plt.close(fig)
+            buf.seek(0)
+            chart_b64 = base64.b64encode(buf.read()).decode('utf-8')
+            buf.close()
+            gc.collect()
+            return chart_b64
+        except Exception as e:
+            print(f"Error generating projection chart: {e}")
+            return None
+
     def analyze(self, symbol):
         """Main analysis method"""
         data = self.get_data(symbol)
@@ -1036,7 +1166,15 @@ class Analyzer:
         ind = self.calc_indicators(data)
         if not ind:
             return None
-        return self.signal(ind)
+        result = self.signal(ind)
+        if result:
+            try:
+                chart_b64 = self.generate_projection_chart(data, result)
+                if chart_b64:
+                    result['projection_chart'] = chart_b64
+            except Exception:
+                pass
+        return result
 
     def regression_analysis(self, stock_symbol):
         """Perform HSIC (Hilbert-Schmidt Independence Criterion) non-linear dependency analysis of stock vs Nifty 50.
@@ -2044,7 +2182,10 @@ def index():
             const dailyClass = dailyRaw >= 0 ? 'up' : 'down';
             const dailySign = dailyRaw >= 0 ? '+' : '';
             const riskPer = s.risk_per_share || Math.abs((d.price_raw || 0) - (s.stop_raw || 0));
-            const expectedPct = s.expected_move_pct || 0;
+            const expectedPct = s.expected_move_pct || 0;  // always positive magnitude
+            const expectedSigned = s.expected_move_signed != null ? s.expected_move_signed : expectedPct;
+            const expectedColor = expectedSigned >= 0 ? 'green' : 'red';
+            const expectedSign = expectedSigned >= 0 ? '+' : '';
             const maxRiskPct = s.max_risk_pct || 0;
             const rrRatio = s.risk_reward || 0;
             const rrGreenWidth = rrRatio > 0 ? Math.min((expectedPct / (expectedPct + maxRiskPct)) * 100, 95) : 50;
@@ -2060,7 +2201,7 @@ def index():
                         <div>
                             <div class="tsc-ticker">${symbol}</div>
                             <div class="tsc-price-row">
-                                <span class="tsc-price">${d.price}</span>
+                                <span class="tsc-price"><span style="font-size:0.75em;color:var(--text-muted);font-weight:400;">CMP</span> ${d.price}</span>
                                 <span class="tsc-change ${dailyClass} tsc-tip">${dailySign}${dailyRaw.toFixed(2)}%<span class="tsc-tip-text" style="width:220px;bottom:calc(100% + 8px);">Change from previous trading day's closing price.</span></span>
                             </div>
                         </div>
@@ -2087,8 +2228,8 @@ def index():
                         <div class="tsc-rr-grid">
                             <div class="tsc-rr-item tsc-tip">
                                 <div class="tsc-rr-label">Expected Move <span class="tsc-tip-icon">?</span></div>
-                                <div class="tsc-rr-value green">+${expectedPct}%</div>
-                                <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${rrGreenWidth}%;background:var(--accent-green);"></div></div>
+                                <div class="tsc-rr-value ${expectedColor}">${expectedSign}${expectedSigned}%</div>
+                                <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${rrGreenWidth}%;background:${expectedSigned >= 0 ? 'var(--accent-green)' : 'var(--danger)'};"></div></div>
                                 <div class="tsc-tip-text">${s.expected_move_tooltip || ''}</div>
                             </div>
                             <div class="tsc-rr-item tsc-tip">
@@ -2110,6 +2251,25 @@ def index():
                             <h4>Why This Makes Sense</h4>
                             <p>${s.why_makes_sense || s.rec}</p>
                         </div>
+
+                        <!-- TRADE LEVELS (moved up for visibility) -->
+                        <div class="tsc-calc-details" style="margin-bottom:20px;">
+                            <div class="tsc-calc-detail-item">
+                                <div class="tsc-calc-detail-label">Exit Price</div>
+                                <div class="tsc-calc-detail-value" style="color:var(--accent-green);">${s.target}</div>
+                            </div>
+                            <div class="tsc-calc-detail-item">
+                                <div class="tsc-calc-detail-label">Stop Loss</div>
+                                <div class="tsc-calc-detail-value" style="color:var(--danger);">${s.stop}</div>
+                            </div>
+                            <div class="tsc-calc-detail-item">
+                                <div class="tsc-calc-detail-label">Time Frame</div>
+                                <div class="tsc-calc-detail-value">${s.days_to_target} days</div>
+                            </div>
+                        </div>
+
+                        <!-- PRICE PROJECTION CHART -->
+                        <div id="tsc-projection-chart" style="display:none;"></div>
 
                         <!-- CAPITAL CALCULATOR -->
                         <div class="tsc-calc">
@@ -2136,27 +2296,12 @@ def index():
 
                             <div class="tsc-calc-info-box" style="margin-bottom:10px;">
                                 <span class="tsc-calc-info-label">Risk per share:</span>
-                                <span class="tsc-calc-info-value" style="color:var(--danger);" id="tsc-risk-per-share">&rupee;${riskPer.toFixed(2)}</span>
+                                <span class="tsc-calc-info-value" style="color:var(--danger);" id="tsc-risk-per-share">&#8377;${riskPer.toFixed(2)}</span>
                             </div>
 
                             <div class="tsc-calc-result">
                                 <span class="tsc-calc-result-label">Suggested quantity:</span>
                                 <span class="tsc-calc-result-value" id="tsc-qty-result">-- shares</span>
-                            </div>
-
-                            <div class="tsc-calc-details">
-                                <div class="tsc-calc-detail-item">
-                                    <div class="tsc-calc-detail-label">Exit Price</div>
-                                    <div class="tsc-calc-detail-value" style="color:var(--accent-green);">${s.target}</div>
-                                </div>
-                                <div class="tsc-calc-detail-item">
-                                    <div class="tsc-calc-detail-label">Stop Loss</div>
-                                    <div class="tsc-calc-detail-value" style="color:var(--danger);">${s.stop}</div>
-                                </div>
-                                <div class="tsc-calc-detail-item">
-                                    <div class="tsc-calc-detail-label">Time Frame</div>
-                                    <div class="tsc-calc-detail-value">${s.days_to_target} days</div>
-                                </div>
                             </div>
                         </div>
 
@@ -2267,6 +2412,17 @@ def index():
             document.getElementById('result').innerHTML = html;
             // Store signal data for capital calculator
             window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0, recRiskPct: s.rec_risk_pct || 1 };
+            // Render projection chart if available
+            if (data.projection_chart) {
+                const chartDiv = document.getElementById('tsc-projection-chart');
+                if (chartDiv) {
+                    chartDiv.style.display = 'block';
+                    chartDiv.innerHTML = '<div style="background:var(--bg-card-hover);border-radius:12px;border:1px solid var(--border-color);padding:18px 20px;margin-bottom:20px;">'
+                        + '<img src="data:image/png;base64,' + data.projection_chart + '" style="width:100%;border-radius:8px;" alt="Price projection chart">'
+                        + '<p style="color:var(--text-muted);font-size:0.78em;margin:10px 0 0;line-height:1.5;font-style:italic;">Forecast assumes current trend conditions remain unchanged. The shaded band shows the probable price range based on recent volatility. This is not a guarantee of future movement.</p>'
+                        + '</div>';
+                }
+            }
         }
         function toggleTscAccordion(btn) {
             const content = btn.nextElementSibling;
