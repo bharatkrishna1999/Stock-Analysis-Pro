@@ -2061,7 +2061,7 @@ def index():
                             <div class="tsc-ticker">${symbol}</div>
                             <div class="tsc-price-row">
                                 <span class="tsc-price">${d.price}</span>
-                                <span class="tsc-change ${dailyClass}">${dailySign}${dailyRaw.toFixed(2)}%</span>
+                                <span class="tsc-change ${dailyClass} tsc-tip">${dailySign}${dailyRaw.toFixed(2)}%<span class="tsc-tip-text" style="width:220px;bottom:calc(100% + 8px);">Change from previous trading day's closing price.</span></span>
                             </div>
                         </div>
                         <div class="tsc-header-right">
