@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: stock-dashboard
+    name: kite-trader-dashboard
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn stock_trading_system:app --timeout 300
+    startCommand: gunicorn app:app --timeout 300
     plan: free
     envVars:
       - key: PYTHON_VERSION

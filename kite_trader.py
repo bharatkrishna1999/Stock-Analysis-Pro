@@ -104,6 +104,7 @@ class KiteTrader:
         self.access_token = None
         self.last_scan_time = None
         self.last_error = None
+        self.on_decision = None         # callback: fn(symbol, analysis, action)
 
         # ── Restore persisted state ──
         self._restore_state()
@@ -431,6 +432,13 @@ class KiteTrader:
                 "signal": signal,
                 "has_position": has_position,
             }
+
+        # Notify decision callback (for dashboard logging)
+        if self.on_decision and action_taken:
+            try:
+                self.on_decision(symbol, analysis_result, action_taken)
+            except Exception:
+                pass
 
         return action_taken
 

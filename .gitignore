@@ -3,4 +3,5 @@ __pycache__/
 *.pyo
 .nse_universe_cache.json
 .kite_state.json
+.decisions.json
 .cache/
