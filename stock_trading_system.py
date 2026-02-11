@@ -1280,8 +1280,8 @@ class Analyzer:
             print(f"Error generating projection chart: {e}")
             return None
 
-    def analyze(self, symbol):
-        """Main analysis method"""
+    def analyze(self, symbol, skip_chart=False):
+        """Main analysis method. Set skip_chart=True to avoid matplotlib overhead (for trading scans)."""
         cached = ANALYSIS_CACHE.get(symbol)
         if cached:
             return cached
@@ -1293,17 +1293,18 @@ class Analyzer:
             return None
         result = self.signal(ind)
         if result:
-            try:
-                chart_key = f"projection:{symbol}"
-                chart_b64 = ANALYSIS_CACHE.get(chart_key)
-                if not chart_b64:
-                    chart_b64 = self.generate_projection_chart(data, result)
+            if not skip_chart:
+                try:
+                    chart_key = f"projection:{symbol}"
+                    chart_b64 = ANALYSIS_CACHE.get(chart_key)
+                    if not chart_b64:
+                        chart_b64 = self.generate_projection_chart(data, result)
+                        if chart_b64:
+                            ANALYSIS_CACHE.set(chart_key, chart_b64)
                     if chart_b64:
-                        ANALYSIS_CACHE.set(chart_key, chart_b64)
-                if chart_b64:
-                    result['projection_chart'] = chart_b64
-            except Exception:
-                pass
+                        result['projection_chart'] = chart_b64
+                except Exception:
+                    pass
             ANALYSIS_CACHE.set(symbol, result)
         del data
         gc.collect()

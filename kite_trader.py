@@ -456,7 +456,7 @@ class KiteTrader:
 
         for symbol in symbols_to_scan:
             try:
-                analysis = analyzer.analyze(symbol)
+                analysis = analyzer.analyze(symbol, skip_chart=True)
                 if not analysis:
                     logger.warning(f"No analysis data for {symbol}")
                     continue
@@ -549,7 +549,7 @@ class KiteTrader:
             return {"error": f"Already holding {symbol}"}
 
         if not quantity and analyzer:
-            analysis = analyzer.analyze(symbol)
+            analysis = analyzer.analyze(symbol, skip_chart=True)
             if analysis:
                 sig_data = analysis.get("signal", {})
                 price = analysis.get("details", {}).get("price_raw", 0)
