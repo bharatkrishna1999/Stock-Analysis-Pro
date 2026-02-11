@@ -32,6 +32,12 @@ from scipy.optimize import minimize as scipy_minimize
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
 
+try:
+    from kite_trader import KiteTrader
+    KITE_AVAILABLE = True
+except ImportError:
+    KITE_AVAILABLE = False
+
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
 warnings.filterwarnings('ignore')
@@ -1274,8 +1280,8 @@ class Analyzer:
             print(f"Error generating projection chart: {e}")
             return None
 
-    def analyze(self, symbol):
-        """Main analysis method"""
+    def analyze(self, symbol, skip_chart=False):
+        """Main analysis method. Set skip_chart=True to avoid matplotlib overhead (for trading scans)."""
         cached = ANALYSIS_CACHE.get(symbol)
         if cached:
             return cached
@@ -1287,17 +1293,18 @@ class Analyzer:
             return None
         result = self.signal(ind)
         if result:
-            try:
-                chart_key = f"projection:{symbol}"
-                chart_b64 = ANALYSIS_CACHE.get(chart_key)
-                if not chart_b64:
-                    chart_b64 = self.generate_projection_chart(data, result)
+            if not skip_chart:
+                try:
+                    chart_key = f"projection:{symbol}"
+                    chart_b64 = ANALYSIS_CACHE.get(chart_key)
+                    if not chart_b64:
+                        chart_b64 = self.generate_projection_chart(data, result)
+                        if chart_b64:
+                            ANALYSIS_CACHE.set(chart_key, chart_b64)
                     if chart_b64:
-                        ANALYSIS_CACHE.set(chart_key, chart_b64)
-                if chart_b64:
-                    result['projection_chart'] = chart_b64
-            except Exception:
-                pass
+                        result['projection_chart'] = chart_b64
+                except Exception:
+                    pass
             ANALYSIS_CACHE.set(symbol, result)
         del data
         gc.collect()
@@ -1851,6 +1858,13 @@ class Analyzer:
         }
 
 analyzer = Analyzer()
+
+# ===== KITE TRADER INSTANCE =====
+kite_trader = None
+if KITE_AVAILABLE:
+    _kite_api_key = os.environ.get("KITE_API_KEY", "")
+    if _kite_api_key:
+        kite_trader = KiteTrader(api_key=_kite_api_key)
 
 # ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
 # [Keeping your exact HTML - no changes needed]
@@ -3533,6 +3547,279 @@ def duplicates_route():
         'sectors': {name: len(stocks) for name, stocks in STOCKS.items()},
         'remaining_duplicates': dups,
     })
+
+# ═══════════════════════════════════════════════════════════════════════
+# KITE CONNECT AUTOMATED TRADING ROUTES
+# ═══════════════════════════════════════════════════════════════════════
+
+def _require_kite():
+    """Helper: return (trader, error_response). If error_response is not None, return it."""
+    global kite_trader
+    if not KITE_AVAILABLE:
+        return None, jsonify({"error": "kiteconnect package not installed"}), 500
+    if kite_trader is None:
+        return None, jsonify({"error": "Kite trader not initialized. Set KITE_API_KEY env var or call /kite/init"}), 400
+    return kite_trader, None, None
+
+
+@app.route('/kite/init', methods=['POST'])
+def kite_init():
+    """Initialize the Kite trader with an API key (if not set via env var)."""
+    global kite_trader
+    if not KITE_AVAILABLE:
+        return jsonify({"error": "kiteconnect package not installed. Run: pip install kiteconnect"}), 500
+    data = request.get_json(silent=True) or {}
+    api_key = data.get("api_key", os.environ.get("KITE_API_KEY", ""))
+    if not api_key:
+        return jsonify({"error": "api_key is required (POST body or KITE_API_KEY env var)"}), 400
+    kite_trader = KiteTrader(api_key=api_key)
+    if data.get("api_secret"):
+        kite_trader.api_secret = data["api_secret"]
+    login_url = kite_trader.get_login_url()
+    return jsonify({"status": "initialized", "login_url": login_url})
+
+
+@app.route('/kite/login-url')
+def kite_login_url():
+    """Get the Kite Connect login URL to authenticate."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    url = trader.get_login_url()
+    return jsonify({"login_url": url})
+
+
+@app.route('/kite/auth', methods=['POST'])
+def kite_auth():
+    """Exchange request_token for access_token after Kite login redirect."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    data = request.get_json(silent=True) or {}
+    request_token = data.get("request_token", "")
+    api_secret = data.get("api_secret", trader.api_secret)
+    if not request_token:
+        return jsonify({"error": "request_token is required"}), 400
+    if not api_secret:
+        return jsonify({"error": "api_secret is required"}), 400
+    try:
+        token = trader.set_access_token(request_token, api_secret)
+        return jsonify({"status": "authenticated", "access_token": token})
+    except Exception as e:
+        return jsonify({"error": f"Authentication failed: {str(e)}"}), 401
+
+
+@app.route('/kite/auth/token', methods=['POST'])
+def kite_auth_token():
+    """Set access token directly (if already obtained)."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    data = request.get_json(silent=True) or {}
+    token = data.get("access_token", "")
+    if not token:
+        return jsonify({"error": "access_token is required"}), 400
+    trader.set_access_token_direct(token)
+    return jsonify({"status": "token set"})
+
+
+@app.route('/kite/configure', methods=['POST'])
+def kite_configure():
+    """
+    Configure trading parameters.
+    JSON body fields (all optional):
+      capital, risk_per_trade_pct, max_open_positions,
+      min_confidence, min_risk_reward, scan_interval_sec, watchlist
+    """
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    data = request.get_json(silent=True) or {}
+    trader.configure(
+        capital=data.get("capital"),
+        risk_per_trade_pct=data.get("risk_per_trade_pct"),
+        max_open_positions=data.get("max_open_positions"),
+        min_confidence=data.get("min_confidence"),
+        min_risk_reward=data.get("min_risk_reward"),
+        scan_interval_sec=data.get("scan_interval_sec"),
+        watchlist=data.get("watchlist"),
+    )
+    return jsonify({"status": "configured", "config": trader.get_config()})
+
+
+@app.route('/kite/start', methods=['POST'])
+def kite_start():
+    """Start the automated trading loop."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    try:
+        started = trader.start(analyzer)
+        if started:
+            return jsonify({"status": "started", "watchlist": trader.watchlist})
+        else:
+            return jsonify({"status": "already_running"})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route('/kite/stop', methods=['POST'])
+def kite_stop():
+    """Stop the automated trading loop."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    stopped = trader.stop()
+    return jsonify({"status": "stopped" if stopped else "was_not_running"})
+
+
+@app.route('/kite/scan', methods=['POST'])
+def kite_scan_now():
+    """Trigger a single scan immediately (regardless of whether automation is running)."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    results = trader._scan_once(analyzer)
+    return jsonify({"scan_time": trader.last_scan_time, "results": results})
+
+
+@app.route('/kite/buy', methods=['POST'])
+def kite_manual_buy():
+    """Manually buy a stock. JSON: {symbol, quantity (optional)}"""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json(silent=True) or {}
+    symbol = data.get("symbol", "").strip().upper()
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    normalized, _ = Analyzer.normalize_symbol(symbol)
+    if not normalized:
+        return jsonify({"error": f"Invalid symbol: {symbol}"}), 400
+    quantity = data.get("quantity")
+    result = trader.manual_buy(normalized, quantity=quantity, analyzer=analyzer)
+    if result.get("error"):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/kite/sell', methods=['POST'])
+def kite_manual_sell():
+    """Manually sell a position. JSON: {symbol}"""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    data = request.get_json(silent=True) or {}
+    symbol = data.get("symbol", "").strip().upper()
+    if not symbol:
+        return jsonify({"error": "symbol is required"}), 400
+    result = trader.manual_sell(symbol)
+    if result.get("error"):
+        return jsonify(result), 400
+    return jsonify(result)
+
+
+@app.route('/kite/exit-all', methods=['POST'])
+def kite_exit_all():
+    """Emergency: sell all open positions at market price."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    results = trader.exit_all_positions()
+    return jsonify({"results": results})
+
+
+@app.route('/kite/positions')
+def kite_positions():
+    """Get tracked open positions."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    return jsonify({"positions": trader.get_positions()})
+
+
+@app.route('/kite/positions/live')
+def kite_positions_live():
+    """Get live positions from Kite account."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    positions = trader.get_kite_positions()
+    if positions is None:
+        return jsonify({"error": "Failed to fetch positions"}), 500
+    return jsonify(positions)
+
+
+@app.route('/kite/holdings')
+def kite_holdings():
+    """Get holdings (delivery stocks) from Kite account."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    holdings = trader.get_kite_holdings()
+    if holdings is None:
+        return jsonify({"error": "Failed to fetch holdings"}), 500
+    return jsonify({"holdings": holdings})
+
+
+@app.route('/kite/orders')
+def kite_orders():
+    """Get today's orders from Kite account."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    orders = trader.get_kite_orders()
+    if orders is None:
+        return jsonify({"error": "Failed to fetch orders"}), 500
+    return jsonify({"orders": orders})
+
+
+@app.route('/kite/margins')
+def kite_margins():
+    """Get account margins/funds."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    if not trader.access_token:
+        return jsonify({"error": "Not authenticated"}), 401
+    margins = trader.get_margins()
+    if margins is None:
+        return jsonify({"error": "Failed to fetch margins"}), 500
+    return jsonify(margins)
+
+
+@app.route('/kite/log')
+def kite_trade_log():
+    """Get recent trade log."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify({"trades": trader.get_order_log(limit)})
+
+
+@app.route('/kite/status')
+def kite_status():
+    """Get full trader status (config, positions, auth state, etc)."""
+    trader, err, code = _require_kite()
+    if err:
+        return err, code
+    return jsonify(trader.get_status())
+
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
