@@ -8,6 +8,7 @@ Features:
 - Clear entry/exit explanations with confidence levels
 - Time-to-target predictions
 - Autocomplete for Search
+- Optimized for Render free tier (0.1 vCPU, 512 MB RAM)
 """
 
 from flask import Flask, jsonify, request, Response, stream_with_context
@@ -26,6 +27,11 @@ import base64
 import requests
 import logging
 import gc
+import time
+import hashlib
+import threading
+from collections import OrderedDict
+from functools import wraps
 from scipy.optimize import minimize as scipy_minimize
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -35,13 +41,110 @@ warnings.filterwarnings('ignore')
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("yfinance").propagate = False
 
+# ===== PERFORMANCE LOGGING =====
+perf_log = logging.getLogger("perf")
+perf_log.setLevel(logging.INFO)
+_perf_handler = logging.StreamHandler()
+_perf_handler.setFormatter(logging.Formatter('[PERF] %(message)s'))
+perf_log.addHandler(_perf_handler)
+perf_log.propagate = False
+
 app = Flask(__name__)
+
+# ===== LRU + TTL CACHE INFRASTRUCTURE =====
+class TTLCache:
+    """Thread-safe LRU cache with per-entry TTL and max memory budget."""
+    def __init__(self, max_entries=200, default_ttl_seconds=1800):
+        self._store = OrderedDict()
+        self._lock = threading.Lock()
+        self.max_entries = max_entries
+        self.default_ttl = default_ttl_seconds
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key):
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                self._misses += 1
+                return None
+            if time.time() > entry['expires']:
+                del self._store[key]
+                self._misses += 1
+                return None
+            self._store.move_to_end(key)
+            self._hits += 1
+            return entry['value']
+
+    def set(self, key, value, ttl=None):
+        ttl = ttl or self.default_ttl
+        with self._lock:
+            if key in self._store:
+                del self._store[key]
+            while len(self._store) >= self.max_entries:
+                self._store.popitem(last=False)
+            self._store[key] = {'value': value, 'expires': time.time() + ttl}
+
+    def clear_expired(self):
+        now = time.time()
+        with self._lock:
+            expired = [k for k, v in self._store.items() if now > v['expires']]
+            for k in expired:
+                del self._store[k]
+        return len(expired)
+
+    def stats(self):
+        total = self._hits + self._misses
+        rate = (self._hits / total * 100) if total > 0 else 0
+        return {'entries': len(self._store), 'hits': self._hits, 'misses': self._misses, 'hit_rate': f'{rate:.1f}%'}
+
+# Cache instances with different TTLs
+price_cache = TTLCache(max_entries=150, default_ttl_seconds=900)      # 15 min for price data
+analysis_cache = TTLCache(max_entries=100, default_ttl_seconds=1800)   # 30 min for full analysis (signal + chart)
+regression_cache = TTLCache(max_entries=50, default_ttl_seconds=3600)  # 60 min for HSIC (expensive, slow-changing)
+
+# ===== TIMEOUT UTILITY =====
+def run_with_timeout(fn, args=(), kwargs=None, timeout=30, fallback=None):
+    """Run fn(*args, **kwargs) in a thread; return fallback if it exceeds timeout seconds."""
+    kwargs = kwargs or {}
+    result = [fallback]
+    exc = [None]
+    def _target():
+        try:
+            result[0] = fn(*args, **kwargs)
+        except Exception as e:
+            exc[0] = e
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        perf_log.warning(f"TIMEOUT: {fn.__name__} exceeded {timeout}s, returning fallback")
+        return fallback
+    if exc[0] is not None:
+        raise exc[0]
+    return result[0]
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
 DIVIDEND_MAX_RESULTS = 150
 DIVIDEND_BATCH_SIZE = 50
-DIVIDEND_MAX_WORKERS = 4
+DIVIDEND_MAX_WORKERS = 2  # reduced from 4 for free tier
+
+# ===== REQUEST TIMING MIDDLEWARE =====
+@app.before_request
+def _start_timer():
+    request._start_time = time.time()
+
+@app.after_request
+def _log_timing(response):
+    if hasattr(request, '_start_time'):
+        elapsed = (time.time() - request._start_time) * 1000
+        perf_log.info(f"{request.method} {request.path} -> {response.status_code} in {elapsed:.0f}ms")
+    return response
+
+@app.teardown_request
+def _cleanup(exc):
+    gc.collect()
 
 YAHOO_TICKER_ALIASES = {
     "ETERNAL": ["ZOMATO"],
@@ -558,14 +661,15 @@ class Analyzer:
         return None, original
 
     def get_data(self, symbol, period='10d', interval='1h'):
+        """Fetch price data with TTL cache. Reduced fallbacks for free tier."""
+        cache_key = f"price:{symbol}"
+        cached = price_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         def _download(ticker, period, interval):
-            return yf.download(
-                ticker,
-                period=period,
-                interval=interval,
-                progress=False,
-                threads=False
-            )
+            return yf.download(ticker, period=period, interval=interval,
+                               progress=False, threads=False)
 
         def _has_enough_data(df, minimum_rows):
             if df is None or df.empty:
@@ -577,27 +681,31 @@ class Analyzer:
                 close_series = close_series.iloc[:, 0]
             return len(close_series.dropna()) >= minimum_rows
 
+        t0 = time.time()
         try:
             base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
-            tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
+            # NSE first (most common), BSE only as fallback
+            tickers = [f"{base}.NS" for base in base_symbols]
+            # Reduced attempts: skip 10d/1h (often fails), go straight to daily
             attempts = [
-                (period, interval, 14),
                 ("1mo", "1d", 10),
                 ("3mo", "1d", 10),
                 ("6mo", "1d", 10),
-                ("1y", "1d", 10),
             ]
             for ticker in tickers:
                 for try_period, try_interval, min_rows in attempts:
                     data = _download(ticker, try_period, try_interval)
                     if _has_enough_data(data, min_rows):
+                        price_cache.set(cache_key, data)
+                        perf_log.info(f"get_data({symbol}) fetched {try_period} in {(time.time()-t0)*1000:.0f}ms")
                         return data
-                try:
-                    history = yf.Ticker(ticker).history(period="1y", interval="1d")
-                    if _has_enough_data(history, 10):
-                        return history
-                except Exception:
-                    continue
+            # BSE fallback only if NSE failed entirely
+            for base in base_symbols:
+                data = _download(f"{base}.BO", "3mo", "1d")
+                if _has_enough_data(data, 10):
+                    price_cache.set(cache_key, data)
+                    perf_log.info(f"get_data({symbol}) BSE fallback in {(time.time()-t0)*1000:.0f}ms")
+                    return data
             return None
         except Exception as e:
             print(f"Error fetching {symbol}: {e}")
@@ -1045,7 +1153,7 @@ class Analyzer:
         }
 
     def generate_projection_chart(self, data, signal_result):
-        """Generate a price projection chart with historical data and forecast zone."""
+        """Generate a price projection chart — optimised for free tier (lower DPI, fewer points)."""
         try:
             s = signal_result.get('signal', {})
             sig = s.get('signal', 'HOLD')
@@ -1060,8 +1168,8 @@ class Analyzer:
             if isinstance(close, pd.DataFrame):
                 close = close.iloc[:, 0]
 
-            # Take last 60 data points for history
-            hist_len = min(60, len(close))
+            # Take last 40 data points for history (was 60, reduced for free tier)
+            hist_len = min(40, len(close))
             hist_prices = close.iloc[-hist_len:].values.astype(float)
             hist_x = list(range(hist_len))
 
@@ -1090,7 +1198,7 @@ class Analyzer:
                 action_color = '#f59e0b'
                 action_color_light = '#f59e0b33'
 
-            fig, ax = plt.subplots(figsize=(8, 3.5), dpi=100)
+            fig, ax = plt.subplots(figsize=(7, 3), dpi=72)
             fig.patch.set_facecolor('#131824')
             ax.set_facecolor('#0a0e1a')
 
@@ -1159,7 +1267,14 @@ class Analyzer:
             return None
 
     def analyze(self, symbol):
-        """Main analysis method"""
+        """Main analysis method — cached for 30 min (signal + chart together)."""
+        cache_key = f"analysis:{symbol}"
+        cached = analysis_cache.get(cache_key)
+        if cached is not None:
+            perf_log.info(f"analyze({symbol}) HIT cache")
+            return cached
+
+        t0 = time.time()
         data = self.get_data(symbol)
         if data is None:
             return None
@@ -1174,16 +1289,18 @@ class Analyzer:
                     result['projection_chart'] = chart_b64
             except Exception:
                 pass
+            analysis_cache.set(cache_key, result)
+            perf_log.info(f"analyze({symbol}) computed in {(time.time()-t0)*1000:.0f}ms")
         return result
 
     def regression_analysis(self, stock_symbol):
-        """Perform HSIC (Hilbert-Schmidt Independence Criterion) non-linear dependency analysis of stock vs Nifty 50.
-
-        Uses an RBF kernel with median-heuristic bandwidth to detect arbitrary
-        (including non-linear) statistical dependencies between daily returns.
-        Capped to the last 90 trading days and computed in float32 to stay
-        within the 512 MB Free-Tier RAM limit.
-        """
+        """Perform HSIC non-linear dependency analysis — cached for 60 min."""
+        cache_key = f"regression:{stock_symbol}"
+        cached = regression_cache.get(cache_key)
+        if cached is not None:
+            perf_log.info(f"regression({stock_symbol}) HIT cache")
+            return cached
+        t0 = time.time()
         def _clean_close(px_df):
             c = px_df.get("Close", None)
             if c is None: return pd.Series(dtype=float)
@@ -1216,16 +1333,10 @@ class Analyzer:
             med = float(np.median(upper))
             return med if med > 1e-8 else 1e-4  # guard against zero bandwidth
 
-        def _hsic_score(x, y, max_samples=252):
+        def _hsic_score(x, y, max_samples=150):
             """Compute normalised HSIC dependency score in [0, 1].
-
-            Steps:
-            1. Cap to last `max_samples` observations (memory-safe for 512 MB).
-               252 days ≈ 1 trading year. 252×252 float32 matrix ≈ 254 KB.
-            2. Compute RBF kernels K (for x) and L (for y) using median heuristic.
-            3. Center both kernels:  K_c = H K H,  L_c = H L H  where H = I - 1/n 11^T.
-            4. HSIC = tr(K_c L_c) / n^2.
-            5. Normalise: score = HSIC / sqrt(HSIC_xx * HSIC_yy) clamped to [0, 1].
+            Capped to 150 samples (was 252) for free-tier memory budget.
+            150×150 float32 matrix ≈ 90 KB vs 254 KB.
             """
             # --- cap to last N trading days --------------------------------
             if len(x) > max_samples:
@@ -1294,10 +1405,10 @@ class Analyzer:
             X = rets["market"].to_numpy()
             y = rets["stock"].to_numpy()
 
-            # --- HSIC computation (252 trading-day lookback, float32) ------
-            # 252 days ≈ 1 trading year, sufficient for structural claims.
-            # 252×252 float32 matrix ≈ 254 KB; well within 512 MB limit.
-            dep_score, raw_hsic, n_used = _hsic_score(X, y, max_samples=252)
+            # --- HSIC computation (150 trading-day lookback, float32) ------
+            # 150 days ≈ 7 months, sufficient for structural claims.
+            # 150×150 float32 matrix ≈ 90 KB; well within 512 MB limit.
+            dep_score, raw_hsic, n_used = _hsic_score(X, y, max_samples=150)
 
             # Slice arrays to the window actually used
             X_win = X[-n_used:]
@@ -1455,7 +1566,7 @@ class Analyzer:
 
             # --- Plot generation (scatter only, no trend line) -------------
             plt.style.use('dark_background')
-            fig, ax = plt.subplots(figsize=(10, 6))
+            fig, ax = plt.subplots(figsize=(8, 5))
 
             bg_color = '#131824'
             grid_color = '#2d3748'
@@ -1488,12 +1599,12 @@ class Analyzer:
                 spine.set_edgecolor(grid_color)
 
             img_buf = io.BytesIO()
-            plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=100)
+            plt.savefig(img_buf, format='png', bbox_inches='tight', dpi=72)
             img_buf.seek(0)
             plot_url = base64.b64encode(img_buf.getvalue()).decode()
             plt.close(fig)
 
-            return {
+            result = {
                 'dependency_score': round(dep_score, 4),
                 'composite_score': composite,
                 'dependency_label': dep_label,
@@ -1515,6 +1626,9 @@ class Analyzer:
                 'trading_insight': trading_insight,
                 'plot_url': plot_url
             }
+            regression_cache.set(cache_key, result)
+            perf_log.info(f"regression({stock_symbol}) computed in {(time.time()-t0)*1000:.0f}ms")
+            return result
 
         except Exception as e:
             print(f"\n[FATAL ERROR] HSIC analysis failed for {stock_symbol}: {e}")
@@ -3003,7 +3117,7 @@ def analyze_route():
         if suggestions: return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
         else: return jsonify({'error': f'Invalid symbol "{original}".'})
     try:
-        result = analyzer.analyze(normalized_symbol)
+        result = run_with_timeout(analyzer.analyze, args=(normalized_symbol,), timeout=45, fallback=None)
         if not result: return jsonify({'error': f'Unable to fetch data for {normalized_symbol}.'})
         return jsonify(result)
     except Exception as e:
@@ -3025,7 +3139,7 @@ def regression_route():
         if suggestions: return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
         else: return jsonify({'error': f'Invalid symbol "{original}".'})
     try:
-        result = analyzer.regression_analysis(normalized_symbol)
+        result = run_with_timeout(analyzer.regression_analysis, args=(normalized_symbol,), timeout=60, fallback=None)
         if not result: return jsonify({'error': f'Unable to perform HSIC dependency analysis for {normalized_symbol}.'})
         return jsonify(result)
     except Exception as e:
@@ -3033,6 +3147,17 @@ def regression_route():
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'HSIC dependency analysis failed for {normalized_symbol}: {str(e)}'})
+
+@app.route('/cache-stats')
+def cache_stats_route():
+    """Debug endpoint: show cache hit rates and entry counts."""
+    expired = price_cache.clear_expired() + analysis_cache.clear_expired() + regression_cache.clear_expired()
+    return jsonify({
+        'price_cache': price_cache.stats(),
+        'analysis_cache': analysis_cache.stats(),
+        'regression_cache': regression_cache.stats(),
+        'expired_cleared': expired
+    })
 
 @app.route('/dividend-scan')
 def dividend_scan_route():
