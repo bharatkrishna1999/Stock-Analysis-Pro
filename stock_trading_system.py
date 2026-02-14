@@ -10,7 +10,8 @@ Features:
 - Autocomplete for Search
 """
 
-from flask import Flask, jsonify, request, Response, stream_with_context
+from flask import Flask, jsonify, request, Response, stream_with_context, make_response
+from flask_compress import Compress
 import json
 import os
 import pickle
@@ -39,6 +40,9 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("yfinance").propagate = False
 
 app = Flask(__name__)
+Compress(app)
+app.config['COMPRESS_MIMETYPES'] = ['text/html', 'text/css', 'application/javascript', 'application/json']
+app.config['COMPRESS_MIN_SIZE'] = 500
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
@@ -1855,6 +1859,16 @@ analyzer = Analyzer()
 # ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
 # [Keeping your exact HTML - no changes needed]
 
+# Pre-serialize ticker names JSON for the API endpoint (done once at startup)
+_TICKER_NAMES_JSON = json.dumps(TICKER_TO_NAME, separators=(',', ':'))
+
+@app.route('/api/ticker-names')
+def ticker_names_api():
+    resp = make_response(_TICKER_NAMES_JSON)
+    resp.headers['Content-Type'] = 'application/json'
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
+
 @app.route('/')
 def index():
     # Using your exact working HTML
@@ -1865,7 +1879,10 @@ def index():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
     <title>NSE Stock Analysis & Dividend Portfolio Optimizer | Stock Analysis Pro</title>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root { --bg-dark: #0a0e1a; --bg-card: #131824; --bg-card-hover: #1a1f2e; --accent-cyan: #00d9ff; --accent-purple: #9d4edd; --accent-green: #06ffa5; --text-primary: #ffffff; --text-secondary: #a0aec0; --text-muted: #718096; --border-color: #2d3748; --success: #10b981; --warning: #f59e0b; --danger: #ef4444; }
@@ -1895,6 +1912,10 @@ def index():
         button { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); font-size: 0.9em; }
         button:hover { background: var(--accent-cyan); color: var(--bg-dark); border-color: var(--accent-cyan); transform: translateY(-2px); }
         #result-view { display: none; }
+        .loading { text-align: center; color: var(--accent-cyan); font-size: 1.3em; padding: 40px; font-family: 'Space Grotesk', sans-serif; }
+        .error { background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 20px; border-radius: 8px; border-left: 4px solid var(--danger); }
+    </style>
+    <style media="not all" id="deferred-css">
         .result-card { background: var(--bg-card); border-radius: 12px; padding: 35px; border: 1px solid var(--border-color); }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; border-bottom: 2px solid var(--border-color); padding-bottom: 20px; }
         .header h2 { color: var(--text-primary); font-size: 2.5em; font-family: 'Space Grotesk', sans-serif; font-weight: 700; }
@@ -1925,8 +1946,6 @@ def index():
         .plan-value { color: var(--text-primary); font-weight: 500; }
         .back-btn { background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; padding: 12px 28px; margin-bottom: 20px; border: none; font-weight: 600; font-size: 1em; }
         .back-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0, 217, 255, 0.4); }
-        .loading { text-align: center; color: var(--accent-cyan); font-size: 1.3em; padding: 40px; font-family: 'Space Grotesk', sans-serif; }
-        .error { background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 20px; border-radius: 8px; border-left: 4px solid var(--danger); }
         .regression-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 25px 0; }
         .regression-metric { background: var(--bg-card-hover); padding: 20px; border-radius: 10px; border-left: 3px solid var(--accent-purple); }
         .regression-metric-label { font-size: 0.85em; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; font-weight: 600; letter-spacing: 0.5px; }
@@ -2218,9 +2237,10 @@ def index():
         </div>
     </main>
     <script>
-        const stocks = ''' + str(STOCKS).replace("'", '"') + ''';
-        const nifty50List = ''' + json.dumps(NIFTY_50_STOCKS) + ''';
-        const tickerNames = ''' + json.dumps(TICKER_TO_NAME) + ''';
+        const stocks = ''' + json.dumps(STOCKS, separators=(',', ':')) + ''';
+        const nifty50List = ''' + json.dumps(NIFTY_50_STOCKS, separators=(',', ':')) + ''';
+        let tickerNames = {};
+        fetch('/api/ticker-names').then(r=>r.json()).then(d=>{tickerNames=d;});
         function getStockName(symbol) {
             return tickerNames[symbol] || symbol;
         }
@@ -2239,12 +2259,14 @@ def index():
             if (loadedTabs.has(tab)) return;
             if (tab === 'analysis') {
                 const cat = document.getElementById('categories');
+                let allHtml = '';
                 Object.entries(stocks).forEach(([name, list]) => {
                     let html = `<div class="category"><h3>${name} (${list.length})</h3><div class="stocks">`;
                     list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
                     html += '</div></div>';
-                    cat.innerHTML += html;
+                    allHtml += html;
                 });
+                cat.innerHTML = allHtml;
                 setupAutocomplete('search', 'suggestions', 'analyze');
             } else if (tab === 'regression') {
                 setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
@@ -2294,8 +2316,7 @@ def index():
                 const raw = input.value.trim();
                 const q = raw.toUpperCase();
                 if (q.length === 0) { sug.innerHTML = ''; return; }
-                const all = [...new Set(Object.values(stocks).flat())];
-                const filtered = all.filter(s => {
+                const filtered = allTickers.filter(s => {
                     const name = getStockName(s).toUpperCase();
                     return s.includes(q) || name.includes(q);
                 }).slice(0, 12);
@@ -3138,11 +3159,13 @@ def index():
                 grid.appendChild(label);
             });
         }
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); initNifty50Checkboxes(); setupCapitalInput(); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); initNifty50Checkboxes(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
     </script>
 </body>
 </html>'''
-    return html
+    resp = make_response(html)
+    resp.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=600'
+    return resp
 
 @app.route('/analyze')
 def analyze_route():
