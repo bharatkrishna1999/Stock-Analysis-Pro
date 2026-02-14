@@ -1908,7 +1908,7 @@ def index():
         #dividend-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
         .suggestions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 15px; max-height: 300px; overflow-y: auto; }
         .category { margin-bottom: 20px; }
-        .category h4 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
+        .category-title { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
         .stocks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         button { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); font-size: 0.9em; }
         button:hover { background: var(--accent-cyan); color: var(--bg-dark); border-color: var(--accent-cyan); transform: translateY(-2px); }
@@ -2015,7 +2015,7 @@ def index():
         .tsc-rr-bar { height: 4px; border-radius: 2px; margin-top: 10px; display: flex; overflow: hidden; background: var(--bg-dark); }
         .tsc-rr-bar-fill { height: 100%; border-radius: 2px; }
         .tsc-why { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
-        .tsc-why h4 { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
+        .tsc-why h3 { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
         .tsc-why p { color: var(--text-secondary); line-height: 1.7; font-size: 0.95em; }
         .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
@@ -2160,7 +2160,7 @@ def index():
                 <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze Connection</button>
             </div>
             <div class="card" style="margin-top: 20px; border-left: 3px solid var(--accent-purple); padding: 20px 25px;">
-                <h3 style="color: var(--accent-purple); margin-bottom: 10px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;">How to read your results</h3>
+                <h3 style="color: var(--accent-purple); margin-bottom: 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;">How to read your results</h3>
                 <p style="color: var(--text-secondary); font-size: 0.92em; line-height: 1.8; margin: 0;">
                     This tool measures how connected a stock is to the Nifty 50 index. It goes beyond simple correlation by using a technique called <strong style="color: var(--text-primary);">HSIC</strong> (Hilbert-Schmidt Independence Criterion). Think of it as an X-ray that can detect both <em>obvious</em> and <em>hidden</em> links between a stock and the market.
                 </p>
@@ -2258,7 +2258,7 @@ def index():
             if (tab === 'analysis') {
                 const cat = document.getElementById('categories');
                 Object.entries(stocks).forEach(([name, list]) => {
-                    let html = `<div class="category"><h4>${name} (${list.length})</h4><div class="stocks">`;
+                    let html = `<div class="category"><h3 class="category-title">${name} (${list.length})</h3><div class="stocks">`;
                     list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
                     html += '</div></div>';
                     cat.innerHTML += html;
@@ -2365,7 +2365,7 @@ def index():
                     <!-- HEADER -->
                     <div class="tsc-header">
                         <div>
-                            <div class="tsc-ticker">${symbol}</div>
+                            <h2 class="tsc-ticker">${symbol}</h2>
                             <div class="tsc-price-row">
                                 <span class="tsc-price"><span style="font-size:0.75em;color:var(--text-muted);font-weight:400;">CMP</span> ${d.price}</span>
                                 <span class="tsc-change ${dailyClass} tsc-tip">${dailySign}${dailyRaw.toFixed(2)}%<span class="tsc-tip-text" style="width:220px;bottom:calc(100% + 8px);">Change from previous trading day's closing price.</span></span>
@@ -2414,7 +2414,7 @@ def index():
 
                         <!-- WHY THIS MAKES SENSE -->
                         <div class="tsc-why">
-                            <h4>Why This Makes Sense</h4>
+                            <h3>Why This Makes Sense</h3>
                             <p>${s.why_makes_sense || s.rec}</p>
                         </div>
 
@@ -2741,7 +2741,7 @@ def index():
                                     <span class="hsic-tooltip-text">Based on the composite score and downside beta. A stock with high market connection and high downside beta offers little crash protection. Genuinely uncorrelated stocks (where both HSIC and correlation are low) are the best diversifiers.</span>
                                 </span>
                             </div>
-                            <div style="font-weight: 700; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 1.3em; margin-bottom: 6px; color: ${protColor};">
+                            <div style="font-weight: 700; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; font-size: 1.3em; margin-bottom: 6px; color: ${protColor};">
                                 ${protLabel}
                             </div>
                             <div class="insight-card-body">${data.diversification_note}</div>
@@ -2940,7 +2940,7 @@ def index():
                     </div>
                     <div class="action-banner">Scanning <span id="live-scan-count">0</span> / <span id="live-scan-total">0</span> stocks | <span id="live-dividend-count">0</span> dividend payers found</div>
                     <div style="color: var(--text-secondary); font-size: 0.9em; margin-top: 8px;">New dividend yielders appear in the table below and move up if higher yield is found.</div>
-                    <h3 style="color: var(--accent-purple); margin: 20px 0 10px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">Top Dividend Payers (Live)</h3>
+                    <h3 style="color: var(--accent-purple); margin: 20px 0 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; font-weight: 700;">Top Dividend Payers (Live)</h3>
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
@@ -3069,7 +3069,7 @@ def index():
                         </div>
                     </div>
                     ${data.unallocated > 100 ? `<div style="margin: 15px 0; padding: 12px 15px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid var(--warning); border-radius: 8px; font-size: 0.9em;"><strong style="color: var(--warning);">Unallocated:</strong> <span style="color: var(--text-secondary);">INR ${fmt(data.unallocated)} (due to rounding to whole shares)</span></div>` : ''}
-                    <h3 style="color: var(--accent-cyan); margin: 30px 0 15px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">Optimized Allocation</h3>
+                    <h3 style="color: var(--accent-cyan); margin: 30px 0 15px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; font-weight: 700;">Optimized Allocation</h3>
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
@@ -3078,7 +3078,7 @@ def index():
                             <tbody>${allocRows}</tbody>
                         </table>
                     </div>
-                    <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
+                    <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
                     ${data.dividend_results_truncated ? `<div style="margin-bottom: 10px; color: var(--warning); font-size: 0.85em;">Showing top ${data.all_dividend_stocks.length} dividend payers to reduce memory usage. ${data.dividend_stocks_found} total dividend-paying stocks found.</div>` : ''}
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
@@ -3133,7 +3133,7 @@ def index():
                             <div class="summary-label">Capital Deployed (INR)</div>
                         </div>
                     </div>
-                    <h3 style="color: var(--accent-cyan); margin: 20px 0 10px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">Top Allocation (Live)</h3>
+                    <h3 style="color: var(--accent-cyan); margin: 20px 0 10px; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; font-weight: 700;">Top Allocation (Live)</h3>
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
