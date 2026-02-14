@@ -246,6 +246,25 @@ def _end_request_metrics(response):
     return response
 
 
+@app.after_request
+def _add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none';"
+    )
+    return response
+
+
 _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -1859,31 +1878,31 @@ analyzer = Analyzer()
 def index():
     # Using your exact working HTML
     html = '''<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="NSE stock dashboard with technical analysis, dividend insights, and market dependency metrics.">
     <title>Stock Analysis Pro - All NSE Stocks</title>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root { --bg-dark: #0a0e1a; --bg-card: #131824; --bg-card-hover: #1a1f2e; --accent-cyan: #00d9ff; --accent-purple: #9d4edd; --accent-green: #06ffa5; --text-primary: #ffffff; --text-secondary: #a0aec0; --text-muted: #718096; --border-color: #2d3748; --success: #10b981; --warning: #f59e0b; --danger: #ef4444; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg-dark); color: var(--text-primary); min-height: 100vh; line-height: 1.6; }
+        body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; background: var(--bg-dark); color: var(--text-primary); min-height: 100vh; line-height: 1.6; }
         .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
         header { text-align: center; padding: 40px 0; border-bottom: 1px solid var(--border-color); background: linear-gradient(135deg, rgba(0, 217, 255, 0.1), rgba(157, 78, 221, 0.1)); }
-        header h1 { font-family: 'Space Grotesk', sans-serif; font-size: 3em; font-weight: 700; margin-bottom: 10px; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+        header h1 { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 3em; font-weight: 700; margin-bottom: 10px; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
         header p { color: var(--text-secondary); font-size: 1.1em; }
         .stock-count { background: rgba(0, 217, 255, 0.1); color: var(--accent-cyan); padding: 8px 16px; border-radius: 20px; display: inline-block; margin-top: 10px; font-size: 0.9em; font-weight: 600; }
         .tabs { display: flex; gap: 0; margin: 30px 0; border-bottom: 2px solid var(--border-color); }
-        .tab { flex: 1; min-width: 0; padding: 15px 10px; background: transparent; border: none; color: var(--text-secondary); font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.3s; border-bottom: 3px solid transparent; font-family: 'Space Grotesk', sans-serif; text-align: center; }
+        .tab { flex: 1; min-width: 0; padding: 15px 10px; background: transparent; border: none; color: var(--text-secondary); font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.3s; border-bottom: 3px solid transparent; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; text-align: center; }
         .tab:hover { color: var(--accent-cyan); }
         .tab.active { color: var(--text-primary); border-bottom-color: var(--accent-cyan); }
         .tab-content { display: none; }
-        .tab-content.active { display: block; }
+        .tab-content.active { display: block; min-height: 70vh; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 40px; }
-        .card { background: var(--bg-card); border-radius: 12px; padding: 25px; border: 1px solid var(--border-color); transition: all 0.3s; }
+        .card { background: var(--bg-card); border-radius: 12px; padding: 25px; border: 1px solid var(--border-color); transition: all 0.3s; min-height: 220px; }
         .card:hover { background: var(--bg-card-hover); border-color: var(--accent-cyan); }
-        .card h3 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
+        .card h2, .card h3 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 600; }
         #search, #regression-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
         #search:focus, #regression-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
         #dividend-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
@@ -1896,12 +1915,12 @@ def index():
         #result-view { display: none; }
         .result-card { background: var(--bg-card); border-radius: 12px; padding: 35px; border: 1px solid var(--border-color); }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; border-bottom: 2px solid var(--border-color); padding-bottom: 20px; }
-        .header h2 { color: var(--text-primary); font-size: 2.5em; font-family: 'Space Grotesk', sans-serif; font-weight: 700; }
-        .signal-badge { font-size: 1.2em; font-weight: 700; padding: 12px 24px; border-radius: 8px; font-family: 'Space Grotesk', sans-serif; letter-spacing: 1px; }
+        .header h2 { color: var(--text-primary); font-size: 2.5em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; }
+        .signal-badge { font-size: 1.2em; font-weight: 700; padding: 12px 24px; border-radius: 8px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; letter-spacing: 1px; }
         .signal-BUY { background: linear-gradient(135deg, #10b981, #059669); color: white; }
         .signal-SELL { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
         .signal-HOLD { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; }
-        .action-banner { background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center; font-weight: 600; font-size: 1.2em; font-family: 'Space Grotesk', sans-serif; box-shadow: 0 4px 15px rgba(0, 217, 255, 0.3); }
+        .action-banner { background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center; font-weight: 600; font-size: 1.2em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; box-shadow: 0 4px 15px rgba(0, 217, 255, 0.3); }
         .rec-box { background: var(--bg-card-hover); border-left: 4px solid var(--accent-green); color: var(--text-primary); padding: 20px; border-radius: 8px; margin-bottom: 25px; font-size: 1.05em; }
         .confidence-meter { margin: 25px 0; padding: 20px; background: var(--bg-card-hover); border-radius: 10px; border: 1px solid var(--border-color); }
         .confidence-label { font-size: 0.9em; color: var(--text-secondary); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
@@ -1912,30 +1931,30 @@ def index():
         .metric { background: var(--bg-card-hover); padding: 18px; border-radius: 8px; border-left: 3px solid var(--accent-cyan); transition: all 0.3s; }
         .metric:hover { transform: translateY(-3px); border-left-color: var(--accent-green); }
         .metric-label { font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; margin-bottom: 5px; font-weight: 600; letter-spacing: 0.5px; }
-        .metric-value { font-size: 1.5em; font-weight: 700; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
+        .metric-value { font-size: 1.5em; font-weight: 700; color: var(--text-primary); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
         .explanation-section { margin: 25px 0; }
-        .explanation-section h3 { color: var(--accent-cyan); margin-bottom: 12px; font-size: 1em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
+        .explanation-section h3 { color: var(--accent-cyan); margin-bottom: 12px; font-size: 1em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
         .explanation { background: var(--bg-card-hover); padding: 16px; border-radius: 8px; line-height: 1.7; color: var(--text-secondary); border-left: 3px solid var(--accent-cyan); }
         .trading-plan { background: var(--bg-card-hover); padding: 25px; border-radius: 10px; margin-top: 30px; border: 2px solid var(--accent-purple); }
-        .trading-plan h3 { color: var(--accent-purple); margin-bottom: 20px; font-family: 'Space Grotesk', sans-serif; font-size: 1.3em; font-weight: 700; }
+        .trading-plan h3 { color: var(--accent-purple); margin-bottom: 20px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 1.3em; font-weight: 700; }
         .plan-item { display: grid; grid-template-columns: 140px 1fr; gap: 20px; margin-bottom: 15px; padding: 15px; background: var(--bg-dark); border-radius: 8px; transition: all 0.3s; }
         .plan-item:hover { background: var(--bg-card); transform: translateX(5px); }
-        .plan-label { font-weight: 700; color: var(--accent-cyan); font-family: 'Space Grotesk', sans-serif; font-size: 0.9em; }
+        .plan-label { font-weight: 700; color: var(--accent-cyan); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 0.9em; }
         .plan-value { color: var(--text-primary); font-weight: 500; }
         .back-btn { background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; padding: 12px 28px; margin-bottom: 20px; border: none; font-weight: 600; font-size: 1em; }
         .back-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0, 217, 255, 0.4); }
-        .loading { text-align: center; color: var(--accent-cyan); font-size: 1.3em; padding: 40px; font-family: 'Space Grotesk', sans-serif; }
+        .loading { text-align: center; color: var(--accent-cyan); font-size: 1.3em; padding: 40px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
         .error { background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 20px; border-radius: 8px; border-left: 4px solid var(--danger); }
         .regression-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 25px 0; }
         .regression-metric { background: var(--bg-card-hover); padding: 20px; border-radius: 10px; border-left: 3px solid var(--accent-purple); }
         .regression-metric-label { font-size: 0.85em; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; font-weight: 600; letter-spacing: 0.5px; }
-        .regression-metric-value { font-size: 2em; font-weight: 700; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; margin-bottom: 8px; }
+        .regression-metric-value { font-size: 2em; font-weight: 700; color: var(--text-primary); font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; margin-bottom: 8px; }
         .regression-metric-desc { font-size: 0.9em; color: var(--text-secondary); line-height: 1.5; }
         .plot-container { background: var(--bg-card-hover); padding: 20px; border-radius: 12px; margin-bottom: 30px; border: 1px solid var(--border-color); text-align: center; }
         .plot-img { max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
         .hsic-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: 700; font-size: 0.85em; letter-spacing: 0.5px; color: #fff; }
         .hsic-hero { text-align: center; padding: 30px 20px; background: var(--bg-card-hover); border-radius: 14px; margin-bottom: 25px; border: 1px solid var(--border-color); position: relative; }
-        .hsic-hero-score { font-size: 3.5em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; line-height: 1.1; }
+        .hsic-hero-score { font-size: 3.5em; font-weight: 700; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; line-height: 1.1; }
         .hsic-hero-label { font-size: 1.1em; margin-top: 6px; color: var(--text-secondary); }
         .hsic-hero-subtitle { font-size: 0.9em; margin-top: 12px; color: var(--text-muted); max-width: 600px; margin-left: auto; margin-right: auto; line-height: 1.6; }
         .hsic-tooltip { position: relative; cursor: help; border-bottom: 1px dashed var(--text-muted); }
@@ -1945,7 +1964,7 @@ def index():
         .insight-card { background: var(--bg-card-hover); border-radius: 12px; padding: 22px; margin-bottom: 15px; border-left: 4px solid var(--accent-purple); }
         .insight-card-title { font-size: 0.8em; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
         .insight-card-body { font-size: 0.95em; color: var(--text-secondary); line-height: 1.7; }
-        .mirror-verdict { font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 1.3em; margin-bottom: 6px; }
+        .mirror-verdict { font-weight: 700; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 1.3em; margin-bottom: 6px; }
         .tech-details-toggle { background: none; border: 1px solid var(--border-color); color: var(--text-muted); padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 0.85em; font-weight: 600; transition: all 0.2s; width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; margin-top: 20px; }
         .tech-details-toggle:hover { border-color: var(--accent-cyan); color: var(--text-secondary); }
         .tech-details-content { max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; }
@@ -1953,35 +1972,35 @@ def index():
         .tech-details-inner { padding: 20px 0 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; }
         .tech-detail-item { background: var(--bg-card); padding: 15px; border-radius: 8px; border: 1px solid var(--border-color); }
         .tech-detail-label { font-size: 0.75em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; margin-bottom: 4px; }
-        .tech-detail-value { font-size: 1.4em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; color: var(--text-primary); }
+        .tech-detail-value { font-size: 1.4em; font-weight: 700; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--text-primary); }
         .tech-detail-note { font-size: 0.8em; color: var(--text-muted); margin-top: 4px; }
 
         /* ===== TRADING SIGNAL CARD STYLES ===== */
         .tsc { background: var(--bg-card); border-radius: 16px; padding: 0; border: 1px solid var(--border-color); overflow: hidden; animation: slideIn 0.5s ease; }
         .tsc-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 24px 28px 16px; }
-        .tsc-ticker { font-family: 'Space Grotesk', sans-serif; font-size: 1.8em; font-weight: 700; color: var(--text-primary); letter-spacing: -0.5px; }
+        .tsc-ticker { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 1.8em; font-weight: 700; color: var(--text-primary); letter-spacing: -0.5px; }
         .tsc-price-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
         .tsc-price { font-size: 1.05em; color: var(--text-secondary); font-weight: 500; }
         .tsc-change { font-size: 0.9em; font-weight: 600; padding: 2px 8px; border-radius: 4px; }
         .tsc-change.up { color: var(--accent-green); background: rgba(6, 255, 165, 0.1); }
         .tsc-change.down { color: var(--danger); background: rgba(239, 68, 68, 0.1); }
         .tsc-header-right { display: flex; align-items: center; gap: 10px; }
-        .tsc-badge { font-size: 0.85em; font-weight: 700; padding: 8px 20px; border-radius: 8px; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
+        .tsc-badge { font-size: 0.85em; font-weight: 700; padding: 8px 20px; border-radius: 8px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; letter-spacing: 0.5px; }
         .tsc-badge-BUY { background: #10b981; color: white; }
         .tsc-badge-SELL { background: #ef4444; color: white; }
         .tsc-badge-HOLD { background: #f59e0b; color: white; }
         .tsc-menu-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 12px; color: var(--text-muted); cursor: pointer; font-size: 1.1em; transition: all 0.2s; }
         .tsc-menu-btn:hover { background: rgba(255,255,255,0.1); color: var(--text-primary); }
         .tsc-body { padding: 0 28px 28px; }
-        .tsc-setup-banner { background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(157, 78, 221, 0.15)); border: 1px solid rgba(0, 217, 255, 0.25); color: var(--text-primary); padding: 12px 20px; border-radius: 10px; text-align: center; font-weight: 600; font-size: 0.95em; font-family: 'Space Grotesk', sans-serif; margin-bottom: 20px; }
+        .tsc-setup-banner { background: linear-gradient(135deg, rgba(0, 217, 255, 0.15), rgba(157, 78, 221, 0.15)); border: 1px solid rgba(0, 217, 255, 0.25); color: var(--text-primary); padding: 12px 20px; border-radius: 10px; text-align: center; font-weight: 600; font-size: 0.95em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; margin-bottom: 20px; }
         .tsc-confidence-card { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-confidence-top { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
-        .tsc-signal-label { font-size: 1.1em; font-weight: 700; padding: 8px 20px; border-radius: 6px; font-family: 'Space Grotesk', sans-serif; }
+        .tsc-signal-label { font-size: 1.1em; font-weight: 700; padding: 8px 20px; border-radius: 6px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
         .tsc-signal-label-BUY { background: #10b981; color: white; }
         .tsc-signal-label-SELL { background: #ef4444; color: white; }
         .tsc-signal-label-HOLD { background: #f59e0b; color: white; }
         .tsc-confidence-info { flex: 1; }
-        .tsc-confidence-pct { font-family: 'Space Grotesk', sans-serif; font-size: 1.1em; font-weight: 600; }
+        .tsc-confidence-pct { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 1.1em; font-weight: 600; }
         .tsc-confidence-pct span { color: var(--text-secondary); font-weight: 400; font-size: 0.85em; }
         .tsc-confidence-hint { color: var(--text-muted); font-size: 0.85em; margin-top: 2px; }
         .tsc-rr-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0; margin-bottom: 20px; background: var(--bg-card-hover); border-radius: 12px; border: 1px solid var(--border-color); overflow: visible; }
@@ -1989,35 +2008,35 @@ def index():
         .tsc-rr-item:first-child { border-radius: 12px 0 0 12px; }
         .tsc-rr-item:last-child { border-right: none; border-radius: 0 12px 12px 0; }
         .tsc-rr-label { font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 6px; }
-        .tsc-rr-value { font-size: 1.5em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
+        .tsc-rr-value { font-size: 1.5em; font-weight: 700; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
         .tsc-rr-value.green { color: var(--accent-green); }
         .tsc-rr-value.red { color: var(--danger); }
         .tsc-rr-value.neutral { color: var(--text-primary); }
         .tsc-rr-bar { height: 4px; border-radius: 2px; margin-top: 10px; display: flex; overflow: hidden; background: var(--bg-dark); }
         .tsc-rr-bar-fill { height: 100%; border-radius: 2px; }
         .tsc-why { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
-        .tsc-why h4 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
+        .tsc-why h4 { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
         .tsc-why p { color: var(--text-secondary); line-height: 1.7; font-size: 0.95em; }
         .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
         .tsc-calc-check { width: 20px; height: 20px; background: var(--accent-green); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7em; font-weight: 700; }
-        .tsc-calc-title { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1em; }
+        .tsc-calc-title { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 600; font-size: 1em; }
         .tsc-calc-row { display: flex; align-items: center; gap: 16px; margin-bottom: 12px; }
         .tsc-calc-input-wrap { flex: 1; position: relative; }
-        .tsc-calc-input { width: 100%; padding: 14px 14px 14px 8px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-dark); color: var(--text-primary); font-size: 1em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; transition: all 0.2s; }
+        .tsc-calc-input { width: 100%; padding: 14px 14px 14px 8px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-dark); color: var(--text-primary); font-size: 1em; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 600; transition: all 0.2s; }
         .tsc-calc-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(6, 255, 165, 0.1); }
         .tsc-calc-info-box { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; }
         .tsc-calc-info-label { color: var(--text-muted); font-size: 0.85em; }
-        .tsc-calc-info-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.1em; }
+        .tsc-calc-info-value { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.1em; }
         .tsc-calc-result { background: linear-gradient(135deg, rgba(6, 255, 165, 0.1), rgba(6, 255, 165, 0.05)); border: 1px solid rgba(6, 255, 165, 0.25); border-radius: 10px; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
         .tsc-calc-result-label { color: var(--text-secondary); font-size: 0.9em; font-weight: 500; }
-        .tsc-calc-result-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.3em; color: var(--accent-green); }
+        .tsc-calc-result-value { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.3em; color: var(--accent-green); }
         .tsc-calc-details { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 14px; }
         .tsc-calc-detail-item { background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; }
         .tsc-calc-detail-label { font-size: 0.72em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; margin-bottom: 4px; }
-        .tsc-calc-detail-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1em; color: var(--text-primary); }
+        .tsc-calc-detail-value { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1em; color: var(--text-primary); }
         .tsc-accordion { margin-bottom: 16px; }
-        .tsc-accordion-toggle { background: var(--bg-card-hover); border: 1px solid var(--border-color); color: var(--text-secondary); padding: 14px 20px; border-radius: 10px; cursor: pointer; font-size: 0.9em; font-weight: 600; transition: all 0.2s; width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; font-family: 'Space Grotesk', sans-serif; }
+        .tsc-accordion-toggle { background: var(--bg-card-hover); border: 1px solid var(--border-color); color: var(--text-secondary); padding: 14px 20px; border-radius: 10px; cursor: pointer; font-size: 0.9em; font-weight: 600; transition: all 0.2s; width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
         .tsc-accordion-toggle:hover { border-color: var(--accent-cyan); color: var(--text-primary); background: var(--bg-card-hover); }
         .tsc-accordion-toggle .tsc-arrow { transition: transform 0.3s; font-size: 0.8em; }
         .tsc-accordion-toggle.open .tsc-arrow { transform: rotate(180deg); }
@@ -2026,22 +2045,22 @@ def index():
         .tsc-accordion-inner { padding: 16px 0 0; }
         .tsc-tech-item { background: var(--bg-card-hover); border: 1px solid var(--border-color); border-radius: 10px; padding: 18px 20px; margin-bottom: 12px; }
         .tsc-tech-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .tsc-tech-item-name { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 0.95em; color: var(--text-primary); }
-        .tsc-tech-item-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.1em; }
+        .tsc-tech-item-name { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 0.95em; color: var(--text-primary); }
+        .tsc-tech-item-value { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.1em; }
         .tsc-tech-item-explain { color: var(--text-secondary); font-size: 0.85em; line-height: 1.7; margin-top: 6px; }
         .tsc-tech-item-example { color: var(--text-muted); font-size: 0.8em; line-height: 1.6; margin-top: 8px; padding: 10px 12px; background: var(--bg-dark); border-radius: 6px; border-left: 3px solid var(--accent-purple); }
-        .tsc-capital-display { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.5em; color: var(--text-primary); text-align: right; min-width: 120px; }
+        .tsc-capital-display { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.5em; color: var(--text-primary); text-align: right; min-width: 120px; }
         .tsc-tip { position: relative; cursor: help; }
         .tsc-tip .tsc-tip-text { visibility: hidden; opacity: 0; position: absolute; z-index: 20; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); width: 340px; background: #1a1f2e; color: var(--text-secondary); padding: 16px; border-radius: 10px; font-size: 0.82em; line-height: 1.65; border: 1px solid var(--border-color); box-shadow: 0 10px 30px rgba(0,0,0,0.55); transition: opacity 0.2s, visibility 0.2s; font-weight: 400; text-transform: none; letter-spacing: normal; pointer-events: none; }
         .tsc-tip .tsc-tip-text::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -7px; border-width: 7px; border-style: solid; border-color: #1a1f2e transparent transparent transparent; }
         .tsc-tip:hover .tsc-tip-text { visibility: visible; opacity: 1; pointer-events: auto; }
         .tsc-tip .tsc-tip-text strong { color: var(--text-primary); }
-        .tsc-tip .tsc-tip-formula { display: block; margin-top: 8px; padding: 8px 10px; background: var(--bg-dark); border-radius: 6px; font-family: 'Space Grotesk', monospace; font-size: 0.95em; color: var(--accent-cyan); word-break: break-word; }
+        .tsc-tip .tsc-tip-formula { display: block; margin-top: 8px; padding: 8px 10px; background: var(--bg-dark); border-radius: 6px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 0.95em; color: var(--accent-cyan); word-break: break-word; }
         .tsc-rr-item .tsc-rr-label { display: inline-flex; align-items: center; gap: 5px; }
         .tsc-rr-item .tsc-rr-label .tsc-tip-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--text-muted); font-size: 0.65em; color: var(--text-muted); flex-shrink: 0; transition: border-color 0.2s, color 0.2s; }
         .tsc-tip:hover .tsc-tip-icon { border-color: var(--accent-cyan); color: var(--accent-cyan); }
         .tsc-auto-risk { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 10px; margin-bottom: 16px; }
-        .tsc-auto-risk-badge { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.5em; color: var(--accent-green); min-width: 60px; }
+        .tsc-auto-risk-badge { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700; font-size: 1.5em; color: var(--accent-green); min-width: 60px; }
         .tsc-auto-risk-label { font-size: 0.85em; color: var(--text-secondary); line-height: 1.5; }
         .tsc-auto-risk-label strong { color: var(--text-primary); }
         @media (max-width: 600px) {
@@ -2076,12 +2095,12 @@ def index():
         .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 25px 0; }
         .summary-card { background: var(--bg-card-hover); padding: 22px; border-radius: 10px; text-align: center; border: 1px solid var(--border-color); transition: all 0.3s; }
         .summary-card:hover { border-color: var(--accent-cyan); transform: translateY(-3px); }
-        .summary-value { font-size: 1.8em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
+        .summary-value { font-size: 1.8em; font-weight: 700; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
         .summary-label { font-size: 0.85em; color: var(--text-secondary); margin-top: 8px; }
-        .optimize-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--accent-green), #059669); color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
+        .optimize-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--accent-green), #059669); color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; letter-spacing: 0.5px; }
         .optimize-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(6, 255, 165, 0.3); }
         .risk-desc { margin-top: 10px; padding: 12px; background: var(--bg-dark); border-radius: 6px; color: var(--text-muted); font-size: 0.85em; line-height: 1.5; border-left: 3px solid var(--accent-purple); }
-        #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; }
+        #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
         #capital-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(6, 255, 165, 0.1); }
         @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         .result-card { animation: slideIn 0.5s ease; }
@@ -2107,6 +2126,7 @@ def index():
             <p>Advanced Trading Insights with AI-Powered Analysis</p>
             <div class="stock-count">🚀 Now analyzing ''' + str(len(ALL_VALID_TICKERS)) + '''+ NSE stocks across ''' + str(len(STOCKS)) + ''' sectors</div>
         </header>
+        <main>
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
             <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
@@ -2116,12 +2136,12 @@ def index():
             <div id="search-view">
                 <div class="grid">
                     <div class="card">
-                        <h3>🔍 Search Any NSE Stock</h3>
+                        <h2>🔍 Search Any NSE Stock</h2>
                         <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
                         <div class="suggestions" id="suggestions"></div>
                     </div>
                     <div class="card">
-                        <h3>📊 Browse by Sector</h3>
+                        <h2>📊 Browse by Sector</h2>
                         <div id="categories" style="max-height: 500px; overflow-y: auto;"></div>
                     </div>
                 </div>
@@ -2133,14 +2153,14 @@ def index():
         </div>
         <div id="regression-tab" class="tab-content">
             <div class="card">
-                <h3>📈 Market Connection Analysis</h3>
+                <h2>📈 Market Connection Analysis</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 20px;">Find out how closely any NSE stock is tied to the Nifty 50, including hidden connections that simple charts don't show</p>
                 <input type="text" id="regression-search" placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)">
                 <div class="suggestions" id="regression-suggestions"></div>
                 <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze Connection</button>
             </div>
             <div class="card" style="margin-top: 20px; border-left: 3px solid var(--accent-purple); padding: 20px 25px;">
-                <h4 style="color: var(--accent-purple); margin-bottom: 10px; font-family: 'Space Grotesk', sans-serif;">How to read your results</h4>
+                <h3 style="color: var(--accent-purple); margin-bottom: 10px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;">How to read your results</h3>
                 <p style="color: var(--text-secondary); font-size: 0.92em; line-height: 1.8; margin: 0;">
                     This tool measures how connected a stock is to the Nifty 50 index. It goes beyond simple correlation by using a technique called <strong style="color: var(--text-primary);">HSIC</strong> (Hilbert-Schmidt Independence Criterion). Think of it as an X-ray that can detect both <em>obvious</em> and <em>hidden</em> links between a stock and the market.
                 </p>
@@ -2165,7 +2185,7 @@ def index():
         <div id="dividend-tab" class="tab-content">
             <div class="grid">
                 <div class="card">
-                    <h3>Stock Universe</h3>
+                    <h2>Stock Universe</h2>
                     <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9em;">Select which stocks to scan for dividend yields</p>
                     <div class="btn-group">
                         <button class="scope-btn active" onclick="setScope('all', this)">All Stocks</button>
@@ -2194,7 +2214,7 @@ def index():
                     </div>
                 </div>
                 <div class="card">
-                    <h3>Portfolio Configuration</h3>
+                    <h2>Portfolio Configuration</h2>
                     <div style="margin-bottom: 22px;">
                         <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Investment Capital (INR)</label>
                         <input type="text" id="capital-input" inputmode="numeric" placeholder="e.g. 10,00,000" value="1,00,000">
@@ -2213,6 +2233,7 @@ def index():
             </div>
             <div id="dividend-results"></div>
         </div>
+        </main>
     </div>
     <script>
         const stocks = ''' + str(STOCKS).replace("'", '"') + ''';
@@ -2668,25 +2689,25 @@ def index():
                                 <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
                                     <span class="hsic-tooltip">Magnetism (HSIC)<span class="hsic-tooltip-text">The Magnetism Score uses a kernel method (HSIC) to detect all types of statistical ties, including non-linear ones that correlation misses. Think of it as an X-ray for hidden market connections.</span></span>
                                 </div>
-                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:var(--text-primary);">${scorePercent}%</div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif; color:var(--text-primary);">${scorePercent}%</div>
                             </div>
                             <div style="text-align:center;">
                                 <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
                                     <span class="hsic-tooltip">Correlation<span class="hsic-tooltip-text">How closely the stock's daily returns move with the market. +1 = perfect match, 0 = no pattern, -1 = opposite.</span></span>
                                 </div>
-                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:var(--text-primary);">${data.correlation >= 0 ? '+' : ''}${data.correlation.toFixed(2)}</div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif; color:var(--text-primary);">${data.correlation >= 0 ? '+' : ''}${data.correlation.toFixed(2)}</div>
                             </div>
                             <div style="text-align:center;">
                                 <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
                                     <span class="hsic-tooltip">Beta<span class="hsic-tooltip-text">If Nifty 50 moves 1%, this stock historically moves about ${Math.abs(data.beta).toFixed(1)}% in the ${data.beta >= 0 ? 'same' : 'opposite'} direction. Beta > 1 means it amplifies market moves.</span></span>
                                 </div>
-                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:var(--text-primary);">${data.beta.toFixed(2)}</div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif; color:var(--text-primary);">${data.beta.toFixed(2)}</div>
                             </div>
                             <div style="text-align:center;">
                                 <div style="font-size:0.7em; text-transform:uppercase; color:var(--text-muted); letter-spacing:0.5px;">
                                     <span class="hsic-tooltip">Downside Beta<span class="hsic-tooltip-text">Same as beta, but measured only on days when the market fell. A high downside beta means the stock tends to fall harder than the market during sell-offs. This is the most relevant measure for crash protection.</span></span>
                                 </div>
-                                <div style="font-size:1.4em; font-weight:700; font-family:'Space Grotesk',sans-serif; color:${data.downside_beta > 1.2 ? '#ff6b6b' : data.downside_beta > 0.8 ? '#ffa94d' : 'var(--text-primary)'};">${data.downside_beta.toFixed(2)}</div>
+                                <div style="font-size:1.4em; font-weight:700; font-family:system-ui,-apple-system,'Segoe UI',Roboto,Arial,sans-serif; color:${data.downside_beta > 1.2 ? '#ff6b6b' : data.downside_beta > 0.8 ? '#ffa94d' : 'var(--text-primary)'};">${data.downside_beta.toFixed(2)}</div>
                             </div>
                         </div>
                     </div>
@@ -2720,7 +2741,7 @@ def index():
                                     <span class="hsic-tooltip-text">Based on the composite score and downside beta. A stock with high market connection and high downside beta offers little crash protection. Genuinely uncorrelated stocks (where both HSIC and correlation are low) are the best diversifiers.</span>
                                 </span>
                             </div>
-                            <div style="font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 1.3em; margin-bottom: 6px; color: ${protColor};">
+                            <div style="font-weight: 700; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-size: 1.3em; margin-bottom: 6px; color: ${protColor};">
                                 ${protLabel}
                             </div>
                             <div class="insight-card-body">${data.diversification_note}</div>
@@ -2919,7 +2940,7 @@ def index():
                     </div>
                     <div class="action-banner">Scanning <span id="live-scan-count">0</span> / <span id="live-scan-total">0</span> stocks | <span id="live-dividend-count">0</span> dividend payers found</div>
                     <div style="color: var(--text-secondary); font-size: 0.9em; margin-top: 8px;">New dividend yielders appear in the table below and move up if higher yield is found.</div>
-                    <h3 style="color: var(--accent-purple); margin: 20px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">Top Dividend Payers (Live)</h3>
+                    <h3 style="color: var(--accent-purple); margin: 20px 0 10px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">Top Dividend Payers (Live)</h3>
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
@@ -3048,7 +3069,7 @@ def index():
                         </div>
                     </div>
                     ${data.unallocated > 100 ? `<div style="margin: 15px 0; padding: 12px 15px; background: rgba(245, 158, 11, 0.1); border-left: 3px solid var(--warning); border-radius: 8px; font-size: 0.9em;"><strong style="color: var(--warning);">Unallocated:</strong> <span style="color: var(--text-secondary);">INR ${fmt(data.unallocated)} (due to rounding to whole shares)</span></div>` : ''}
-                    <h3 style="color: var(--accent-cyan); margin: 30px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">Optimized Allocation</h3>
+                    <h3 style="color: var(--accent-cyan); margin: 30px 0 15px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">Optimized Allocation</h3>
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
@@ -3057,7 +3078,7 @@ def index():
                             <tbody>${allocRows}</tbody>
                         </table>
                     </div>
-                    <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
+                    <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
                     ${data.dividend_results_truncated ? `<div style="margin-bottom: 10px; color: var(--warning); font-size: 0.85em;">Showing top ${data.all_dividend_stocks.length} dividend payers to reduce memory usage. ${data.dividend_stocks_found} total dividend-paying stocks found.</div>` : ''}
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
@@ -3112,7 +3133,7 @@ def index():
                             <div class="summary-label">Capital Deployed (INR)</div>
                         </div>
                     </div>
-                    <h3 style="color: var(--accent-cyan); margin: 20px 0 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">Top Allocation (Live)</h3>
+                    <h3 style="color: var(--accent-cyan); margin: 20px 0 10px; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-weight: 700;">Top Allocation (Live)</h3>
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
