@@ -1865,7 +1865,10 @@ def index():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
     <title>NSE Stock Analysis & Dividend Portfolio Optimizer | Stock Analysis Pro</title>
-    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         :root { --bg-dark: #0a0e1a; --bg-card: #131824; --bg-card-hover: #1a1f2e; --accent-cyan: #00d9ff; --accent-purple: #9d4edd; --accent-green: #06ffa5; --text-primary: #ffffff; --text-secondary: #a0aec0; --text-muted: #718096; --border-color: #2d3748; --success: #10b981; --warning: #f59e0b; --danger: #ef4444; }
@@ -2218,9 +2221,9 @@ def index():
         </div>
     </main>
     <script>
-        const stocks = ''' + str(STOCKS).replace("'", '"') + ''';
-        const nifty50List = ''' + json.dumps(NIFTY_50_STOCKS) + ''';
-        const tickerNames = ''' + json.dumps(TICKER_TO_NAME) + ''';
+        const stocks = ''' + json.dumps(STOCKS, separators=(',', ':')) + ''';
+        const nifty50List = ''' + json.dumps(NIFTY_50_STOCKS, separators=(',', ':')) + ''';
+        const tickerNames = ''' + json.dumps(TICKER_TO_NAME, separators=(',', ':')) + ''';
         function getStockName(symbol) {
             return tickerNames[symbol] || symbol;
         }
@@ -2239,12 +2242,14 @@ def index():
             if (loadedTabs.has(tab)) return;
             if (tab === 'analysis') {
                 const cat = document.getElementById('categories');
+                let allHtml = '';
                 Object.entries(stocks).forEach(([name, list]) => {
                     let html = `<div class="category"><h3>${name} (${list.length})</h3><div class="stocks">`;
                     list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
                     html += '</div></div>';
-                    cat.innerHTML += html;
+                    allHtml += html;
                 });
+                cat.innerHTML = allHtml;
                 setupAutocomplete('search', 'suggestions', 'analyze');
             } else if (tab === 'regression') {
                 setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
@@ -2294,8 +2299,7 @@ def index():
                 const raw = input.value.trim();
                 const q = raw.toUpperCase();
                 if (q.length === 0) { sug.innerHTML = ''; return; }
-                const all = [...new Set(Object.values(stocks).flat())];
-                const filtered = all.filter(s => {
+                const filtered = allTickers.filter(s => {
                     const name = getStockName(s).toUpperCase();
                     return s.includes(q) || name.includes(q);
                 }).slice(0, 12);
