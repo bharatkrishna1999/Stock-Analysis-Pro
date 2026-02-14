@@ -1859,7 +1859,7 @@ analyzer = Analyzer()
 def index():
     # Using your exact working HTML
     html = '''<!DOCTYPE html>
-<html>
+<html lang="en-IN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1883,13 +1883,13 @@ def index():
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 40px; }
         .card { background: var(--bg-card); border-radius: 12px; padding: 25px; border: 1px solid var(--border-color); transition: all 0.3s; }
         .card:hover { background: var(--bg-card-hover); border-color: var(--accent-cyan); }
-        .card h3 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
+        .card h2 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
         #search, #regression-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
         #search:focus, #regression-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
         #dividend-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
         .suggestions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 15px; max-height: 300px; overflow-y: auto; }
         .category { margin-bottom: 20px; }
-        .category h4 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
+        .category h3 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
         .stocks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         button { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); font-size: 0.9em; }
         button:hover { background: var(--accent-cyan); color: var(--bg-dark); border-color: var(--accent-cyan); transform: translateY(-2px); }
@@ -1996,7 +1996,7 @@ def index():
         .tsc-rr-bar { height: 4px; border-radius: 2px; margin-top: 10px; display: flex; overflow: hidden; background: var(--bg-dark); }
         .tsc-rr-bar-fill { height: 100%; border-radius: 2px; }
         .tsc-why { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
-        .tsc-why h4 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
+        .tsc-why h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
         .tsc-why p { color: var(--text-secondary); line-height: 1.7; font-size: 0.95em; }
         .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
@@ -2101,12 +2101,14 @@ def index():
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
+    <header>
+        <div class="container">
             <h1>📊 Stock Analysis Pro</h1>
             <p>Advanced Trading Insights with AI-Powered Analysis</p>
             <div class="stock-count">🚀 Now analyzing ''' + str(len(ALL_VALID_TICKERS)) + '''+ NSE stocks across ''' + str(len(STOCKS)) + ''' sectors</div>
-        </header>
+        </div>
+    </header>
+    <main class="container">
         <div class="tabs">
             <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
             <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
@@ -2116,12 +2118,12 @@ def index():
             <div id="search-view">
                 <div class="grid">
                     <div class="card">
-                        <h3>🔍 Search Any NSE Stock</h3>
+                        <h2>🔍 Search Any NSE Stock</h2>
                         <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
                         <div class="suggestions" id="suggestions"></div>
                     </div>
                     <div class="card">
-                        <h3>📊 Browse by Sector</h3>
+                        <h2>📊 Browse by Sector</h2>
                         <div id="categories" style="max-height: 500px; overflow-y: auto;"></div>
                     </div>
                 </div>
@@ -2133,14 +2135,14 @@ def index():
         </div>
         <div id="regression-tab" class="tab-content">
             <div class="card">
-                <h3>📈 Market Connection Analysis</h3>
+                <h2>📈 Market Connection Analysis</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 20px;">Find out how closely any NSE stock is tied to the Nifty 50, including hidden connections that simple charts don't show</p>
                 <input type="text" id="regression-search" placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)">
                 <div class="suggestions" id="regression-suggestions"></div>
                 <button onclick="analyzeRegression()" style="margin-top: 15px; width: 100%; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; font-weight: 600; padding: 14px;">Analyze Connection</button>
             </div>
             <div class="card" style="margin-top: 20px; border-left: 3px solid var(--accent-purple); padding: 20px 25px;">
-                <h4 style="color: var(--accent-purple); margin-bottom: 10px; font-family: 'Space Grotesk', sans-serif;">How to read your results</h4>
+                <h3 style="color: var(--accent-purple); margin-bottom: 10px; font-family: 'Space Grotesk', sans-serif;">How to read your results</h3>
                 <p style="color: var(--text-secondary); font-size: 0.92em; line-height: 1.8; margin: 0;">
                     This tool measures how connected a stock is to the Nifty 50 index. It goes beyond simple correlation by using a technique called <strong style="color: var(--text-primary);">HSIC</strong> (Hilbert-Schmidt Independence Criterion). Think of it as an X-ray that can detect both <em>obvious</em> and <em>hidden</em> links between a stock and the market.
                 </p>
@@ -2165,7 +2167,7 @@ def index():
         <div id="dividend-tab" class="tab-content">
             <div class="grid">
                 <div class="card">
-                    <h3>Stock Universe</h3>
+                    <h2>Stock Universe</h2>
                     <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9em;">Select which stocks to scan for dividend yields</p>
                     <div class="btn-group">
                         <button class="scope-btn active" onclick="setScope('all', this)">All Stocks</button>
@@ -2194,7 +2196,7 @@ def index():
                     </div>
                 </div>
                 <div class="card">
-                    <h3>Portfolio Configuration</h3>
+                    <h2>Portfolio Configuration</h2>
                     <div style="margin-bottom: 22px;">
                         <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Investment Capital (INR)</label>
                         <input type="text" id="capital-input" inputmode="numeric" placeholder="e.g. 10,00,000" value="1,00,000">
@@ -2213,7 +2215,7 @@ def index():
             </div>
             <div id="dividend-results"></div>
         </div>
-    </div>
+    </main>
     <script>
         const stocks = ''' + str(STOCKS).replace("'", '"') + ''';
         const nifty50List = ''' + json.dumps(NIFTY_50_STOCKS) + ''';
@@ -2237,7 +2239,7 @@ def index():
             if (tab === 'analysis') {
                 const cat = document.getElementById('categories');
                 Object.entries(stocks).forEach(([name, list]) => {
-                    let html = `<div class="category"><h4>${name} (${list.length})</h4><div class="stocks">`;
+                    let html = `<div class="category"><h3>${name} (${list.length})</h3><div class="stocks">`;
                     list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
                     html += '</div></div>';
                     cat.innerHTML += html;
@@ -2344,7 +2346,7 @@ def index():
                     <!-- HEADER -->
                     <div class="tsc-header">
                         <div>
-                            <div class="tsc-ticker">${symbol}</div>
+                            <h2 class="tsc-ticker">${symbol}</h2>
                             <div class="tsc-price-row">
                                 <span class="tsc-price"><span style="font-size:0.75em;color:var(--text-muted);font-weight:400;">CMP</span> ${d.price}</span>
                                 <span class="tsc-change ${dailyClass} tsc-tip">${dailySign}${dailyRaw.toFixed(2)}%<span class="tsc-tip-text" style="width:220px;bottom:calc(100% + 8px);">Change from previous trading day's closing price.</span></span>
@@ -2393,7 +2395,7 @@ def index():
 
                         <!-- WHY THIS MAKES SENSE -->
                         <div class="tsc-why">
-                            <h4>Why This Makes Sense</h4>
+                            <h3>Why This Makes Sense</h3>
                             <p>${s.why_makes_sense || s.rec}</p>
                         </div>
 
