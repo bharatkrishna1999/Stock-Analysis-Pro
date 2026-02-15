@@ -1457,22 +1457,44 @@ class Analyzer:
         parts = []
 
         # --- Sentence 1: The headline verdict ---
+        # R/R quality dominates the tone. A "strong buy" with 0.5x R/R is
+        # misleading — the headline must be honest about the trade quality.
         if final_signal == 'BUY':
-            if confidence >= 75:
-                parts.append(f"This stock looks like a strong buying opportunity right now.")
+            if risk_reward < 1.0:
+                parts.append(
+                    f"The trend is bullish, but the risk-reward setup is poor "
+                    f"({risk_reward}x — you'd risk more than you stand to gain). "
+                    f"Consider waiting for a better entry point."
+                )
+            elif risk_reward < 1.5 and confidence < 70:
+                parts.append(f"This stock shows a mildly favorable setup for buying, but the reward barely outweighs the risk. Proceed with caution.")
+            elif confidence >= 75 and risk_reward >= 1.5:
+                parts.append(f"This stock looks like a strong buying opportunity — the trend, momentum, and risk-reward are all lining up.")
             elif confidence >= 60:
                 parts.append(f"This stock shows a decent setup for buying, though not without some caution.")
             else:
                 parts.append(f"There's a mild case for buying this stock, but the setup isn't particularly strong.")
         elif final_signal == 'SELL':
-            if confidence >= 75:
+            if risk_reward < 1.0:
+                parts.append(
+                    f"The stock is weakening, but the risk-reward on the short side "
+                    f"is poor ({risk_reward}x). The potential loss exceeds the potential gain."
+                )
+            elif confidence >= 75 and risk_reward >= 1.5:
                 parts.append(f"This stock is showing strong signs of weakness — it's time to exit or consider shorting.")
             elif confidence >= 60:
                 parts.append(f"The stock is leaning bearish. Consider reducing your position or staying out.")
             else:
                 parts.append(f"There are some bearish signals here, but conviction is low.")
         else:
-            if original_signal and original_signal != 'HOLD':
+            if factor_label in ('rr_reject', 'rr_conflict'):
+                parts.append(
+                    f"The stock's trend says {original_signal}, but the risk-reward "
+                    f"is only {risk_reward}x — the potential downside far exceeds "
+                    f"the upside. The system has downgraded this to HOLD until "
+                    f"the setup improves."
+                )
+            elif original_signal and original_signal != 'HOLD':
                 parts.append(f"The stock's own indicators say {original_signal}, but the bigger picture is conflicting, so the recommendation is to HOLD and wait for clarity.")
             else:
                 parts.append(f"This stock is in a wait-and-watch zone. There's no clear edge for buying or selling right now.")
@@ -1530,8 +1552,21 @@ class Analyzer:
             f"and the {sector_name} sector is {sector_word.get(sector_regime, 'unclear')}."
         )
 
-        # --- Sentence 5: What the regime layer did ---
-        if factor_label == 'full_alignment':
+        # --- Sentence 5: What the regime + R/R layer did ---
+        if factor_label == 'rr_reject':
+            parts.append(
+                f"The system has downgraded this to HOLD primarily because "
+                f"the risk-reward ratio ({risk_reward}x) is too unfavorable — "
+                f"the stop loss is far from the entry while the target is close, "
+                f"meaning the downside exposure far outweighs the upside potential."
+            )
+        elif factor_label == 'rr_conflict':
+            parts.append(
+                f"The combination of a weak risk-reward ({risk_reward}x) and "
+                f"opposing regime conditions makes this trade too risky. "
+                f"The system has downgraded to HOLD."
+            )
+        elif factor_label == 'full_alignment':
             parts.append("Since the stock, sector, and market all agree on direction, this is a high-conviction setup and the system has increased the recommended position size by 20%.")
         elif factor_label == 'hard_conflict':
             parts.append(f"Because both the market and sector are moving against this stock's signal, the system has overridden the {original_signal} to HOLD and sharply reduced the position size as a safety measure.")
@@ -1541,8 +1576,8 @@ class Analyzer:
             parts.append("The broader environment is mixed, so position sizing stays at the default level.")
 
         # --- Sentence 6: Risk-reward & what to do ---
+        rr_quality = "excellent" if risk_reward >= 2.5 else "strong" if risk_reward >= 2 else "good" if risk_reward >= 1.5 else "acceptable" if risk_reward >= 1 else "unfavorable (risk exceeds reward)"
         if final_signal == 'BUY':
-            rr_quality = "strong" if risk_reward >= 2 else "decent" if risk_reward >= 1 else "unfavorable (risk exceeds reward)"
             parts.append(
                 f"If you buy at the current price of {price}, the target is {target} "
                 f"(+{abs(expected_move):.1f}%) with a stop loss at {stop} (-{max_risk:.1f}%). "
@@ -1552,14 +1587,21 @@ class Analyzer:
         elif final_signal == 'SELL':
             parts.append(
                 f"The target on the downside is {target} ({expected_move:+.1f}%) "
-                f"with a stop loss at {stop}. Risk-reward is {risk_reward}x. "
+                f"with a stop loss at {stop}. Risk-reward is {risk_reward}x ({rr_quality}). "
                 f"Risk no more than {rec_risk}% of your capital."
             )
         else:
-            parts.append(
-                f"For now, don't take a new position. Watch for the market or sector conditions to improve "
-                f"before acting on this stock's signal."
-            )
+            if risk_reward > 0 and risk_reward < 1.0:
+                parts.append(
+                    f"The numbers: target {target}, stop {stop}, risk-reward {risk_reward}x ({rr_quality}). "
+                    f"Don't take a new position until the risk-reward improves — "
+                    f"either wait for a pullback to a better entry, or for the stop/target levels to shift."
+                )
+            else:
+                parts.append(
+                    f"For now, don't take a new position. Watch for the market or sector conditions to improve "
+                    f"before acting on this stock's signal."
+                )
 
         # --- Sentence 7: Confidence summary ---
         parts.append(
@@ -1636,6 +1678,11 @@ class Analyzer:
             )
 
         # --- Regime factor for risk ---
+        market_aligned = False
+        sector_aligned = False
+        market_conflict = False
+        sector_conflict = False
+
         if original_signal in ('BUY', 'SELL'):
             if original_signal == 'BUY':
                 market_aligned = market_regime == 'bullish'
@@ -1670,6 +1717,49 @@ class Analyzer:
             regime_factor = 1.0
             factor_label = 'neutral'
 
+        # --- R/R quality gating ---
+        # Risk-reward is computed from entry/stop/target levels. If risk
+        # exceeds reward, the trade setup is structurally unfavorable
+        # regardless of how strong the trend looks.
+        #   R/R < 0.5  → always downgrade to HOLD (risking 2x the reward)
+        #   R/R < 1.0 + any regime conflict → downgrade to HOLD
+        #   R/R < 1.0 without conflict → keep signal but reduce risk further
+        risk_reward = sig_data.get('risk_reward', 0)
+        rr_gated = False
+
+        if gated_signal in ('BUY', 'SELL') and 0 < risk_reward < 1.0:
+            if risk_reward < 0.5:
+                # Extremely poor R/R — mathematically doesn't make sense
+                gated_signal = 'HOLD'
+                regime_factor = min(regime_factor, 0.5)
+                factor_label = 'rr_reject'
+                rr_gate_text = (
+                    f"Risk-reward is only {risk_reward}x — you'd risk "
+                    f"roughly {1/risk_reward:.1f}x more than you stand to gain. "
+                    f"The trade setup doesn't justify the risk at current levels."
+                )
+                gate_reason = rr_gate_text + (" " + gate_reason if gate_reason else "")
+                rr_gated = True
+            elif market_conflict or sector_conflict:
+                # Poor R/R AND regime headwind — too many factors against
+                gated_signal = 'HOLD'
+                regime_factor = min(regime_factor, 0.6)
+                factor_label = 'rr_conflict'
+                rr_gate_text = (
+                    f"Weak risk-reward ({risk_reward}x) combined with regime "
+                    f"headwinds — risk exceeds reward while broader conditions "
+                    f"are also unfavorable."
+                )
+                gate_reason = rr_gate_text + (" " + gate_reason if gate_reason else "")
+                rr_gated = True
+            else:
+                # Poor R/R but no regime conflict — warn but don't override
+                regime_factor = min(regime_factor, 0.8)
+                if factor_label == 'full_alignment':
+                    factor_label = 'mixed'  # can't call it full alignment with poor R/R
+
+        sig_data['rr_gated'] = rr_gated
+
         # --- Apply regime factor to risk ---
         original_risk = sig_data['rec_risk_pct']
         adjusted_risk = round(max(0.25, min(original_risk * regime_factor, 3.0)), 2)
@@ -1686,6 +1776,8 @@ class Analyzer:
             'conflict': 'Conflict — one of market or sector regime opposes the signal.',
             'hard_conflict': 'Hard conflict — both market and sector regimes oppose the signal.',
             'neutral': 'Neutral — HOLD signal, no directional alignment applicable.',
+            'rr_reject': f'Risk-reward too low ({risk_reward}x) — trade rejected regardless of regime.',
+            'rr_conflict': f'Weak risk-reward ({risk_reward}x) compounded by regime conflict.',
         }
         reason_parts.append(alignment_labels.get(factor_label, ''))
 
