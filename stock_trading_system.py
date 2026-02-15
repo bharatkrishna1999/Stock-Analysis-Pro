@@ -1427,6 +1427,147 @@ class Analyzer:
             return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"'}
         return self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
 
+    def _build_verdict(self, signal_result, original_signal, gated_signal,
+                       gate_reason, market_regime, sector_regime, sector_name,
+                       regime_factor, factor_label, final_score):
+        """Build a plain-English verdict that tells the complete story.
+
+        Weaves together trend, momentum, valuation, regime context, and
+        risk-reward into a narrative a beginner can follow.
+        """
+        s = signal_result.get('signal', {})
+        d = signal_result.get('details', {})
+        price = d.get('price', '?')
+        rsi_raw = d.get('rsi_raw', 50)
+        zscore_raw = d.get('zscore_raw', 0)
+        volatility = d.get('volatility', '?')
+        macd_bullish = d.get('macd_bullish', True)
+        above_sma20 = d.get('above_sma20', False)
+        above_sma50 = d.get('above_sma50', False)
+        confidence = s.get('confidence', 50)
+        risk_reward = s.get('risk_reward', 0)
+        expected_move = s.get('expected_move_signed', 0)
+        max_risk = s.get('max_risk_pct', 0)
+        target = s.get('target', '?')
+        stop = s.get('stop', '?')
+        days = s.get('days_to_target', 7)
+        rec_risk = s.get('rec_risk_pct', 1.0)
+        final_signal = gated_signal
+
+        parts = []
+
+        # --- Sentence 1: The headline verdict ---
+        if final_signal == 'BUY':
+            if confidence >= 75:
+                parts.append(f"This stock looks like a strong buying opportunity right now.")
+            elif confidence >= 60:
+                parts.append(f"This stock shows a decent setup for buying, though not without some caution.")
+            else:
+                parts.append(f"There's a mild case for buying this stock, but the setup isn't particularly strong.")
+        elif final_signal == 'SELL':
+            if confidence >= 75:
+                parts.append(f"This stock is showing strong signs of weakness — it's time to exit or consider shorting.")
+            elif confidence >= 60:
+                parts.append(f"The stock is leaning bearish. Consider reducing your position or staying out.")
+            else:
+                parts.append(f"There are some bearish signals here, but conviction is low.")
+        else:
+            if original_signal and original_signal != 'HOLD':
+                parts.append(f"The stock's own indicators say {original_signal}, but the bigger picture is conflicting, so the recommendation is to HOLD and wait for clarity.")
+            else:
+                parts.append(f"This stock is in a wait-and-watch zone. There's no clear edge for buying or selling right now.")
+
+        # --- Sentence 2: Trend & momentum story ---
+        trend_parts = []
+        if above_sma20 and above_sma50:
+            trend_parts.append("the price is trading above both its 20-day and 50-day moving averages, which is a healthy uptrend")
+        elif above_sma20 and not above_sma50:
+            trend_parts.append("the price is above the 20-day average but still below the 50-day, suggesting a short-term recovery within a longer-term weakness")
+        elif not above_sma20 and above_sma50:
+            trend_parts.append("the price has dipped below the 20-day average but is still above the 50-day, hinting at a short-term pullback in an otherwise intact trend")
+        else:
+            trend_parts.append("the price is below both the 20-day and 50-day averages, which means the trend is pointing down")
+
+        if macd_bullish:
+            trend_parts.append("MACD momentum is bullish (buying pressure is building)")
+        else:
+            trend_parts.append("MACD momentum is bearish (selling pressure is dominant)")
+
+        parts.append(f"On the technical side, {', and '.join(trend_parts)}.")
+
+        # --- Sentence 3: RSI & valuation ---
+        rsi_text = ""
+        if rsi_raw > 70:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (overbought — the stock may be stretched too far up and due for a pullback)"
+        elif rsi_raw < 30:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (oversold — the stock has been beaten down and could bounce)"
+        elif rsi_raw > 60:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (strong momentum, but not yet overbought)"
+        elif rsi_raw < 40:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (weak momentum, but not yet oversold)"
+        else:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (neutral range — no extreme reading)"
+
+        zscore_text = ""
+        if zscore_raw > 2:
+            zscore_text = "the price is stretched far above its recent average (high chance of a pullback)"
+        elif zscore_raw > 1:
+            zscore_text = "the price is moderately above its recent average"
+        elif zscore_raw < -2:
+            zscore_text = "the price is well below its recent average (potential bounce zone)"
+        elif zscore_raw < -1:
+            zscore_text = "the price is moderately below its recent average"
+        else:
+            zscore_text = "the price is near its recent average (fair value zone)"
+
+        parts.append(f"{rsi_text}, and {zscore_text}.")
+
+        # --- Sentence 4: Market & sector context ---
+        market_word = {'bullish': 'supportive (bullish)', 'bearish': 'hostile (bearish)', 'neutral': 'mixed (neutral)'}
+        sector_word = {'bullish': 'in favor (bullish)', 'bearish': 'working against it (bearish)', 'neutral': 'not giving a clear signal (neutral)'}
+        parts.append(
+            f"Looking at the bigger picture, the overall market (Nifty 50) is {market_word.get(market_regime, 'unclear')}, "
+            f"and the {sector_name} sector is {sector_word.get(sector_regime, 'unclear')}."
+        )
+
+        # --- Sentence 5: What the regime layer did ---
+        if factor_label == 'full_alignment':
+            parts.append("Since the stock, sector, and market all agree on direction, this is a high-conviction setup and the system has increased the recommended position size by 20%.")
+        elif factor_label == 'hard_conflict':
+            parts.append(f"Because both the market and sector are moving against this stock's signal, the system has overridden the {original_signal} to HOLD and sharply reduced the position size as a safety measure.")
+        elif factor_label == 'conflict':
+            parts.append("There's a tug-of-war — the stock says one thing but part of the broader environment disagrees. The system has reduced risk by 30% to account for this headwind.")
+        else:
+            parts.append("The broader environment is mixed, so position sizing stays at the default level.")
+
+        # --- Sentence 6: Risk-reward & what to do ---
+        if final_signal == 'BUY':
+            rr_quality = "strong" if risk_reward >= 2 else "decent" if risk_reward >= 1 else "unfavorable (risk exceeds reward)"
+            parts.append(
+                f"If you buy at the current price of {price}, the target is {target} "
+                f"(+{abs(expected_move):.1f}%) with a stop loss at {stop} (-{max_risk:.1f}%). "
+                f"The risk-reward ratio is {risk_reward}x which is {rr_quality}. "
+                f"The system recommends risking {rec_risk}% of your capital on this trade."
+            )
+        elif final_signal == 'SELL':
+            parts.append(
+                f"The target on the downside is {target} ({expected_move:+.1f}%) "
+                f"with a stop loss at {stop}. Risk-reward is {risk_reward}x. "
+                f"Risk no more than {rec_risk}% of your capital."
+            )
+        else:
+            parts.append(
+                f"For now, don't take a new position. Watch for the market or sector conditions to improve "
+                f"before acting on this stock's signal."
+            )
+
+        # --- Sentence 7: Confidence summary ---
+        parts.append(
+            f"Overall confidence across all factors is {confidence}% (regime-adjusted score: {final_score * 100:.0f}%)."
+        )
+
+        return " ".join(parts)
+
     def _apply_regime_layer(self, signal_result, symbol):
         """Apply market + sector regime layer on top of stock-level signal.
 
@@ -1579,6 +1720,13 @@ class Analyzer:
         sig_data['regime_score'] = round(final_score, 3)
         sig_data['regime_factor'] = regime_factor
         sig_data['regime_reason_text'] = regime_reason_text
+
+        # --- Build plain-English verdict narrative ---
+        sig_data['verdict_text'] = self._build_verdict(
+            signal_result, original_signal, gated_signal, gate_reason,
+            market_regime, sector_regime, sector_name,
+            regime_factor, factor_label, final_score,
+        )
 
         # --- Add detailed regime block for transparency ---
         signal_result['regime'] = {
@@ -2363,6 +2511,15 @@ def index():
         .tsc-regime-reason { color: var(--text-secondary); font-size: 0.9em; line-height: 1.6; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
         .tsc-regime-override { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; font-size: 0.9em; color: #fca5a5; }
         @media (max-width: 600px) { .tsc-regime-grid { grid-template-columns: 1fr 1fr; } }
+        .tsc-verdict { position: relative; border-radius: 14px; padding: 26px 28px; margin-bottom: 22px; border: 1px solid transparent; line-height: 1.8; }
+        .tsc-verdict-BUY { background: linear-gradient(135deg, rgba(16, 185, 129, 0.10), rgba(6, 255, 165, 0.06)); border-color: rgba(16, 185, 129, 0.30); }
+        .tsc-verdict-SELL { background: linear-gradient(135deg, rgba(239, 68, 68, 0.10), rgba(239, 68, 68, 0.06)); border-color: rgba(239, 68, 68, 0.30); }
+        .tsc-verdict-HOLD { background: linear-gradient(135deg, rgba(245, 158, 11, 0.10), rgba(245, 158, 11, 0.06)); border-color: rgba(245, 158, 11, 0.30); }
+        .tsc-verdict-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+        .tsc-verdict-icon { font-size: 1.5em; line-height: 1; }
+        .tsc-verdict-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.15em; color: var(--text-primary); }
+        .tsc-verdict-body { color: var(--text-secondary); font-size: 0.93em; line-height: 1.85; }
+        .tsc-verdict-body strong { color: var(--text-primary); font-weight: 600; }
         .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
         .tsc-calc-check { width: 20px; height: 20px; background: var(--accent-green); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7em; font-weight: 700; }
@@ -2726,6 +2883,14 @@ def index():
                     <div class="tsc-body">
                         <!-- SETUP BANNER -->
                         <div class="tsc-setup-banner">${s.setup_duration || 'Short Term Setup'} &bull; ${s.days_to_target} Days</div>
+
+                        <!-- THE BOTTOM LINE (verdict) -->
+                        ${s.verdict_text ? '<div class="tsc-verdict tsc-verdict-' + s.signal + '">' +
+                            '<div class="tsc-verdict-header">' +
+                                '<span class="tsc-verdict-title">The Bottom Line</span>' +
+                            '</div>' +
+                            '<div class="tsc-verdict-body">' + s.verdict_text + '</div>' +
+                        '</div>' : ''}
 
                         <!-- CONFIDENCE CARD -->
                         <div class="tsc-confidence-card">
