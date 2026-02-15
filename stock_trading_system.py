@@ -1458,18 +1458,18 @@ class Analyzer:
 
         # --- Sentence 1: The headline verdict ---
         # R/R quality dominates the tone. A "strong buy" with 0.5x R/R is
-        # misleading — the headline must be honest about the trade quality.
+        # misleading - the headline must be honest about the trade quality.
         if final_signal == 'BUY':
             if risk_reward < 1.0:
                 parts.append(
                     f"The trend is bullish, but the risk-reward setup is poor "
-                    f"({risk_reward}x — you'd risk more than you stand to gain). "
+                    f"({risk_reward}x - you'd risk more than you stand to gain). "
                     f"Consider waiting for a better entry point."
                 )
             elif risk_reward < 1.5 and confidence < 70:
                 parts.append(f"This stock shows a mildly favorable setup for buying, but the reward barely outweighs the risk. Proceed with caution.")
             elif confidence >= 75 and risk_reward >= 1.5:
-                parts.append(f"This stock looks like a strong buying opportunity — the trend, momentum, and risk-reward are all lining up.")
+                parts.append(f"This stock looks like a strong buying opportunity - the trend, momentum, and risk-reward are all lining up.")
             elif confidence >= 60:
                 parts.append(f"This stock shows a decent setup for buying, though not without some caution.")
             else:
@@ -1481,7 +1481,7 @@ class Analyzer:
                     f"is poor ({risk_reward}x). The potential loss exceeds the potential gain."
                 )
             elif confidence >= 75 and risk_reward >= 1.5:
-                parts.append(f"This stock is showing strong signs of weakness — it's time to exit or consider shorting.")
+                parts.append(f"This stock is showing strong signs of weakness - it's time to exit or consider shorting.")
             elif confidence >= 60:
                 parts.append(f"The stock is leaning bearish. Consider reducing your position or staying out.")
             else:
@@ -1490,7 +1490,7 @@ class Analyzer:
             if factor_label in ('rr_reject', 'rr_conflict'):
                 parts.append(
                     f"The stock's trend says {original_signal}, but the risk-reward "
-                    f"is only {risk_reward}x — the potential downside far exceeds "
+                    f"is only {risk_reward}x - the potential downside far exceeds "
                     f"the upside. The system has downgraded this to HOLD until "
                     f"the setup improves."
                 )
@@ -1520,15 +1520,15 @@ class Analyzer:
         # --- Sentence 3: RSI & valuation ---
         rsi_text = ""
         if rsi_raw > 70:
-            rsi_text = f"RSI is at {rsi_raw:.0f} (overbought — the stock may be stretched too far up and due for a pullback)"
+            rsi_text = f"RSI is at {rsi_raw:.0f} (overbought - the stock may be stretched too far up and due for a pullback)"
         elif rsi_raw < 30:
-            rsi_text = f"RSI is at {rsi_raw:.0f} (oversold — the stock has been beaten down and could bounce)"
+            rsi_text = f"RSI is at {rsi_raw:.0f} (oversold - the stock has been beaten down and could bounce)"
         elif rsi_raw > 60:
             rsi_text = f"RSI is at {rsi_raw:.0f} (strong momentum, but not yet overbought)"
         elif rsi_raw < 40:
             rsi_text = f"RSI is at {rsi_raw:.0f} (weak momentum, but not yet oversold)"
         else:
-            rsi_text = f"RSI is at {rsi_raw:.0f} (neutral range — no extreme reading)"
+            rsi_text = f"RSI is at {rsi_raw:.0f} (neutral range - no extreme reading)"
 
         zscore_text = ""
         if zscore_raw > 2:
@@ -1556,7 +1556,7 @@ class Analyzer:
         if factor_label == 'rr_reject':
             parts.append(
                 f"The system has downgraded this to HOLD primarily because "
-                f"the risk-reward ratio ({risk_reward}x) is too unfavorable — "
+                f"the risk-reward ratio ({risk_reward}x) is too unfavorable - "
                 f"the stop loss is far from the entry while the target is close, "
                 f"meaning the downside exposure far outweighs the upside potential."
             )
@@ -1571,7 +1571,7 @@ class Analyzer:
         elif factor_label == 'hard_conflict':
             parts.append(f"Because both the market and sector are moving against this stock's signal, the system has overridden the {original_signal} to HOLD and sharply reduced the position size as a safety measure.")
         elif factor_label == 'conflict':
-            parts.append("There's a tug-of-war — the stock says one thing but part of the broader environment disagrees. The system has reduced risk by 30% to account for this headwind.")
+            parts.append("There's a tug-of-war - the stock says one thing but part of the broader environment disagrees. The system has reduced risk by 30% to account for this headwind.")
         else:
             parts.append("The broader environment is mixed, so position sizing stays at the default level.")
 
@@ -1594,7 +1594,7 @@ class Analyzer:
             if risk_reward > 0 and risk_reward < 1.0:
                 parts.append(
                     f"The numbers: target {target}, stop {stop}, risk-reward {risk_reward}x ({rr_quality}). "
-                    f"Don't take a new position until the risk-reward improves — "
+                    f"Don't take a new position until the risk-reward improves - "
                     f"either wait for a pullback to a better entry, or for the stop/target levels to shift."
                 )
             else:
@@ -1704,7 +1704,7 @@ class Analyzer:
                 gated_signal = 'HOLD'
                 if gate_reason is None:
                     gate_reason = (
-                        f"Signal downgraded to HOLD: hard conflict — both market ({market_regime}) "
+                        f"Signal downgraded to HOLD: hard conflict - both market ({market_regime}) "
                         f"and sector ({sector_regime}) regimes oppose the {original_signal} signal."
                     )
             elif market_conflict or sector_conflict:
@@ -1729,31 +1729,31 @@ class Analyzer:
 
         if gated_signal in ('BUY', 'SELL') and 0 < risk_reward < 1.0:
             if risk_reward < 0.5:
-                # Extremely poor R/R — mathematically doesn't make sense
+                # Extremely poor R/R - mathematically doesn't make sense
                 gated_signal = 'HOLD'
                 regime_factor = min(regime_factor, 0.5)
                 factor_label = 'rr_reject'
                 rr_gate_text = (
-                    f"Risk-reward is only {risk_reward}x — you'd risk "
+                    f"Risk-reward is only {risk_reward}x - you'd risk "
                     f"roughly {1/risk_reward:.1f}x more than you stand to gain. "
                     f"The trade setup doesn't justify the risk at current levels."
                 )
                 gate_reason = rr_gate_text + (" " + gate_reason if gate_reason else "")
                 rr_gated = True
             elif market_conflict or sector_conflict:
-                # Poor R/R AND regime headwind — too many factors against
+                # Poor R/R AND regime headwind - too many factors against
                 gated_signal = 'HOLD'
                 regime_factor = min(regime_factor, 0.6)
                 factor_label = 'rr_conflict'
                 rr_gate_text = (
                     f"Weak risk-reward ({risk_reward}x) combined with regime "
-                    f"headwinds — risk exceeds reward while broader conditions "
+                    f"headwinds - risk exceeds reward while broader conditions "
                     f"are also unfavorable."
                 )
                 gate_reason = rr_gate_text + (" " + gate_reason if gate_reason else "")
                 rr_gated = True
             else:
-                # Poor R/R but no regime conflict — warn but don't override
+                # Poor R/R but no regime conflict - warn but don't override
                 regime_factor = min(regime_factor, 0.8)
                 if factor_label == 'full_alignment':
                     factor_label = 'mixed'  # can't call it full alignment with poor R/R
@@ -1771,12 +1771,12 @@ class Analyzer:
         reason_parts.append(f"Sector regime: {sector_regime.upper()} ({sector_name}).")
 
         alignment_labels = {
-            'full_alignment': 'Full alignment — market, sector, and stock signal all agree.',
-            'mixed': 'Mixed — partial alignment between regime and signal.',
-            'conflict': 'Conflict — one of market or sector regime opposes the signal.',
-            'hard_conflict': 'Hard conflict — both market and sector regimes oppose the signal.',
-            'neutral': 'Neutral — HOLD signal, no directional alignment applicable.',
-            'rr_reject': f'Risk-reward too low ({risk_reward}x) — trade rejected regardless of regime.',
+            'full_alignment': 'Full alignment - market, sector, and stock signal all agree.',
+            'mixed': 'Mixed - partial alignment between regime and signal.',
+            'conflict': 'Conflict - one of market or sector regime opposes the signal.',
+            'hard_conflict': 'Hard conflict - both market and sector regimes oppose the signal.',
+            'neutral': 'Neutral - HOLD signal, no directional alignment applicable.',
+            'rr_reject': f'Risk-reward too low ({risk_reward}x) - trade rejected regardless of regime.',
             'rr_conflict': f'Weak risk-reward ({risk_reward}x) compounded by regime conflict.',
         }
         reason_parts.append(alignment_labels.get(factor_label, ''))
