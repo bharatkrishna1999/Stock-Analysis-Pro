@@ -908,13 +908,13 @@ class Analyzer:
         deviation_direction = "above" if i['pct_deviation'] > 0 else "below"
         zscore_explain = f"Z-Score: {i['zscore']:.2f} | Price is {abs(i['pct_deviation']):.2f}% {deviation_direction} mean (₹{i['mean_price']:.2f})"
         if i['zscore'] > 2:
-            zscore_explain += f" → EXTREME OVEREXTENSION (+2σ). Price {abs(i['pct_deviation']):.1f}% above average - HIGH probability mean reversion DOWN expected."
+            zscore_explain += f" → EXTREME OVEREXTENSION (+2σ). Price {abs(i['pct_deviation']):.1f}% above average, with HIGH probability mean reversion DOWN expected."
         elif i['zscore'] > 1:
-            zscore_explain += f" → MODERATELY OVERBOUGHT. Price {abs(i['pct_deviation']):.1f}% above mean - potential pullback zone."
+            zscore_explain += f" → MODERATELY OVERBOUGHT. Price {abs(i['pct_deviation']):.1f}% above mean. Potential pullback zone."
         elif i['zscore'] < -2:
-            zscore_explain += f" → EXTREME OVERSOLD (-2σ). Price {abs(i['pct_deviation']):.1f}% below average - HIGH probability bounce to mean."
+            zscore_explain += f" → EXTREME OVERSOLD (-2σ). Price {abs(i['pct_deviation']):.1f}% below average, with HIGH probability bounce to mean."
         elif i['zscore'] < -1:
-            zscore_explain += f" → MODERATELY OVERSOLD. Price {abs(i['pct_deviation']):.1f}% below mean - bounce opportunity."
+            zscore_explain += f" → MODERATELY OVERSOLD. Price {abs(i['pct_deviation']):.1f}% below mean. Bounce opportunity."
         else:
             zscore_explain += f" → NEAR MEAN (within ±1σ). Price at fair value."
         bb_explain = f"Bollinger Band: {i['bb_position']:.0f}% position"
@@ -1077,12 +1077,12 @@ class Analyzer:
             f"For HOLD setups the target is the 18-day high + 2% (breakout level)."
         )
         max_risk_tooltip = (
-            f"Definition: The percentage you could lose if the trade hits your stop loss - the invalidation level "
+            f"Definition: The percentage you could lose if the trade hits your stop loss, which is the invalidation level "
             f"below which the trade thesis no longer holds. "
             f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
             f"Formula: ((Current - Stop) / Current) x 100 = "
             f"(({i['price']:.2f} - {stop_price:.2f}) / {i['price']:.2f}) x 100 = {max_risk_pct:.1f}%. "
-            f"The stop loss is placed 2% below the 18-day low (recent support - buffer), acting as the "
+            f"The stop loss is placed 2% below the 18-day low (recent support with buffer), acting as the "
             f"invalidation level. If price breaks this, the original setup is no longer valid."
         ) if sig == "BUY" else (
             f"Definition: The percentage you could lose if the trade hits your stop loss. "
@@ -1129,7 +1129,7 @@ class Analyzer:
         if confidence >= 70:
             confidence_oneliner = "Past similar setups moved in this direction most of the time."
         elif confidence >= 55:
-            confidence_oneliner = "Past similar setups moved upward more often than not." if sig == "BUY" else "Past similar setups moved downward more often than not." if sig == "SELL" else "Mixed signals - waiting for clearer direction is advisable."
+            confidence_oneliner = "Past similar setups moved upward more often than not." if sig == "BUY" else "Past similar setups moved downward more often than not." if sig == "SELL" else "Mixed signals. Waiting for clearer direction is advisable."
         else:
             confidence_oneliner = "Setup shows potential but has mixed signals. Use tighter risk controls."
         # SMA status for technical details
@@ -1183,7 +1183,7 @@ class Analyzer:
                 'entry_explain': entry_explain, 'exit_explain': exit_explain, 'confidence_explain': confidence_explain,
                 'time_explain': time_explain, 'trend_explain': trend_explain, 'momentum_explain': momentum_explain,
                 'rsi_explain': rsi_explain, 'position_explain': position_explain, 'zscore_explain': zscore_explain,
-                'bb_explain': bb_explain, 'macd_text': "BULLISH - momentum favors buyers" if i['macd_bullish'] else "BEARISH - momentum favors sellers"
+                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers"
             },
             'details': {
                 'price': f"₹{i['price']:.2f}", 'price_raw': round(i['price'], 2),
@@ -1463,13 +1463,13 @@ class Analyzer:
             if risk_reward < 1.0:
                 parts.append(
                     f"The trend is bullish, but the risk-reward setup is poor "
-                    f"({risk_reward}x - you'd risk more than you stand to gain). "
+                    f"({risk_reward}x, meaning you'd risk more than you stand to gain). "
                     f"Consider waiting for a better entry point."
                 )
             elif risk_reward < 1.5 and confidence < 70:
                 parts.append(f"This stock shows a mildly favorable setup for buying, but the reward barely outweighs the risk. Proceed with caution.")
             elif confidence >= 75 and risk_reward >= 1.5:
-                parts.append(f"This stock looks like a strong buying opportunity - the trend, momentum, and risk-reward are all lining up.")
+                parts.append(f"This stock looks like a strong buying opportunity. The trend, momentum, and risk-reward are all lining up.")
             elif confidence >= 60:
                 parts.append(f"This stock shows a decent setup for buying, though not without some caution.")
             else:
@@ -1481,7 +1481,7 @@ class Analyzer:
                     f"is poor ({risk_reward}x). The potential loss exceeds the potential gain."
                 )
             elif confidence >= 75 and risk_reward >= 1.5:
-                parts.append(f"This stock is showing strong signs of weakness - it's time to exit or consider shorting.")
+                parts.append(f"This stock is showing strong signs of weakness, and it's time to exit or consider shorting.")
             elif confidence >= 60:
                 parts.append(f"The stock is leaning bearish. Consider reducing your position or staying out.")
             else:
@@ -1490,7 +1490,7 @@ class Analyzer:
             if factor_label in ('rr_reject', 'rr_conflict'):
                 parts.append(
                     f"The stock's trend says {original_signal}, but the risk-reward "
-                    f"is only {risk_reward}x - the potential downside far exceeds "
+                    f"is only {risk_reward}x. The potential downside far exceeds "
                     f"the upside. The system has downgraded this to HOLD until "
                     f"the setup improves."
                 )
@@ -1520,15 +1520,15 @@ class Analyzer:
         # --- Sentence 3: RSI & valuation ---
         rsi_text = ""
         if rsi_raw > 70:
-            rsi_text = f"RSI is at {rsi_raw:.0f} (overbought - the stock may be stretched too far up and due for a pullback)"
+            rsi_text = f"RSI is at {rsi_raw:.0f} (overbought, meaning the stock may be stretched too far up and due for a pullback)"
         elif rsi_raw < 30:
-            rsi_text = f"RSI is at {rsi_raw:.0f} (oversold - the stock has been beaten down and could bounce)"
+            rsi_text = f"RSI is at {rsi_raw:.0f} (oversold, meaning the stock has been beaten down and could bounce)"
         elif rsi_raw > 60:
             rsi_text = f"RSI is at {rsi_raw:.0f} (strong momentum, but not yet overbought)"
         elif rsi_raw < 40:
             rsi_text = f"RSI is at {rsi_raw:.0f} (weak momentum, but not yet oversold)"
         else:
-            rsi_text = f"RSI is at {rsi_raw:.0f} (neutral range - no extreme reading)"
+            rsi_text = f"RSI is at {rsi_raw:.0f} (neutral range, no extreme reading)"
 
         zscore_text = ""
         if zscore_raw > 2:
@@ -1556,8 +1556,8 @@ class Analyzer:
         if factor_label == 'rr_reject':
             parts.append(
                 f"The system has downgraded this to HOLD primarily because "
-                f"the risk-reward ratio ({risk_reward}x) is too unfavorable - "
-                f"the stop loss is far from the entry while the target is close, "
+                f"the risk-reward ratio ({risk_reward}x) is too unfavorable. "
+                f"The stop loss is far from the entry while the target is close, "
                 f"meaning the downside exposure far outweighs the upside potential."
             )
         elif factor_label == 'rr_conflict':
@@ -1571,7 +1571,7 @@ class Analyzer:
         elif factor_label == 'hard_conflict':
             parts.append(f"Because both the market and sector are moving against this stock's signal, the system has overridden the {original_signal} to HOLD and sharply reduced the position size as a safety measure.")
         elif factor_label == 'conflict':
-            parts.append("There's a tug-of-war - the stock says one thing but part of the broader environment disagrees. The system has reduced risk by 30% to account for this headwind.")
+            parts.append("The stock says one thing but part of the broader environment disagrees. The system has reduced risk by 30% to account for this headwind.")
         else:
             parts.append("The broader environment is mixed, so position sizing stays at the default level.")
 
@@ -1594,8 +1594,8 @@ class Analyzer:
             if risk_reward > 0 and risk_reward < 1.0:
                 parts.append(
                     f"The numbers: target {target}, stop {stop}, risk-reward {risk_reward}x ({rr_quality}). "
-                    f"Don't take a new position until the risk-reward improves - "
-                    f"either wait for a pullback to a better entry, or for the stop/target levels to shift."
+                    f"Don't take a new position until the risk-reward improves. "
+                    f"Either wait for a pullback to a better entry, or for the stop/target levels to shift."
                 )
             else:
                 parts.append(
@@ -1704,7 +1704,7 @@ class Analyzer:
                 gated_signal = 'HOLD'
                 if gate_reason is None:
                     gate_reason = (
-                        f"Signal downgraded to HOLD: hard conflict - both market ({market_regime}) "
+                        f"Signal downgraded to HOLD due to hard conflict. Both market ({market_regime}) "
                         f"and sector ({sector_regime}) regimes oppose the {original_signal} signal."
                     )
             elif market_conflict or sector_conflict:
@@ -1734,7 +1734,7 @@ class Analyzer:
                 regime_factor = min(regime_factor, 0.5)
                 factor_label = 'rr_reject'
                 rr_gate_text = (
-                    f"Risk-reward is only {risk_reward}x - you'd risk "
+                    f"Risk-reward is only {risk_reward}x, meaning you'd risk "
                     f"roughly {1/risk_reward:.1f}x more than you stand to gain. "
                     f"The trade setup doesn't justify the risk at current levels."
                 )
@@ -1747,7 +1747,7 @@ class Analyzer:
                 factor_label = 'rr_conflict'
                 rr_gate_text = (
                     f"Weak risk-reward ({risk_reward}x) combined with regime "
-                    f"headwinds - risk exceeds reward while broader conditions "
+                    f"headwinds. Risk exceeds reward while broader conditions "
                     f"are also unfavorable."
                 )
                 gate_reason = rr_gate_text + (" " + gate_reason if gate_reason else "")
@@ -1771,12 +1771,12 @@ class Analyzer:
         reason_parts.append(f"Sector regime: {sector_regime.upper()} ({sector_name}).")
 
         alignment_labels = {
-            'full_alignment': 'Full alignment - market, sector, and stock signal all agree.',
-            'mixed': 'Mixed - partial alignment between regime and signal.',
-            'conflict': 'Conflict - one of market or sector regime opposes the signal.',
-            'hard_conflict': 'Hard conflict - both market and sector regimes oppose the signal.',
-            'neutral': 'Neutral - HOLD signal, no directional alignment applicable.',
-            'rr_reject': f'Risk-reward too low ({risk_reward}x) - trade rejected regardless of regime.',
+            'full_alignment': 'Full alignment: market, sector, and stock signal all agree.',
+            'mixed': 'Mixed: partial alignment between regime and signal.',
+            'conflict': 'Conflict: one of market or sector regime opposes the signal.',
+            'hard_conflict': 'Hard conflict: both market and sector regimes oppose the signal.',
+            'neutral': 'Neutral: HOLD signal, no directional alignment applicable.',
+            'rr_reject': f'Risk-reward too low ({risk_reward}x), trade rejected regardless of regime.',
             'rr_conflict': f'Weak risk-reward ({risk_reward}x) compounded by regime conflict.',
         }
         reason_parts.append(alignment_labels.get(factor_label, ''))
@@ -3141,7 +3141,7 @@ def index():
                                             ${s.macd_text}
                                         </div>
                                         <div class="tsc-tech-item-example">
-                                            <strong>What is MACD?</strong> Imagine two runners - one fast and one slow. MACD tracks the gap between them. When the fast runner pulls ahead (Bullish), it means momentum is building upward - like a car accelerating. When the slow runner catches up (Bearish), the stock is losing steam. It's one of the most reliable ways to spot when a trend is gaining or losing strength.
+                                            <strong>What is MACD?</strong> Imagine two runners, one fast and one slow. MACD tracks the gap between them. When the fast runner pulls ahead (Bullish), it means momentum is building upward, like a car accelerating. When the slow runner catches up (Bearish), the stock is losing steam. It's one of the most reliable ways to spot when a trend is gaining or losing strength.
                                         </div>
                                     </div>
                                     <!-- SMA Status -->
@@ -3154,7 +3154,7 @@ def index():
                                             ${s.trend_explain}
                                         </div>
                                         <div class="tsc-tech-item-example">
-                                            <strong>What are Moving Averages?</strong> A moving average smooths out daily price noise to show the real trend. The 20-day SMA shows the short-term trend (like last month's direction), while the 50-day SMA shows the bigger picture. When the price is above both, it's like a boat sailing with the current - the trend is your friend. Below both means you're swimming against the tide.
+                                            <strong>What are Moving Averages?</strong> A moving average smooths out daily price noise to show the real trend. The 20-day SMA shows the short-term trend (like last month's direction), while the 50-day SMA shows the bigger picture. When the price is above both, it's like a boat sailing with the current and the trend is your friend. Below both means you're swimming against the tide.
                                         </div>
                                     </div>
                                     <!-- Z-Score -->
