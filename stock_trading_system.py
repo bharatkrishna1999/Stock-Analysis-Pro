@@ -1334,7 +1334,7 @@ class Analyzer:
         }
 
     def generate_projection_chart(self, data, signal_result):
-        """Generate a price projection chart with historical data and forecast zone."""
+        """Generate a price projection chart with green/red cones for upside/downside."""
         try:
             s = signal_result.get('signal', {})
             sig = s.get('signal', 'HOLD')
@@ -1342,6 +1342,7 @@ class Analyzer:
             stop_raw = s.get('stop_raw', 0)
             days_to_target = s.get('days_to_target', 7)
             price_raw = signal_result.get('details', {}).get('price_raw', 0)
+            volatility_raw = signal_result.get('details', {}).get('volatility_raw', 2.0)
             if not price_raw or not target_raw or not stop_raw:
                 return None
 
@@ -1358,26 +1359,23 @@ class Analyzer:
             forecast_days = max(days_to_target, 3)
             forecast_x = list(range(hist_len - 1, hist_len + forecast_days))
 
-            # Central projected path: linear interpolation from current price to target
             current = hist_prices[-1]
-            central_path = np.linspace(current, target_raw, len(forecast_x))
 
-            # Probability band: expands with time, bounded by stop and target
+            # ATR-based projection band (avoid exaggerated visuals when ATR is low)
             daily_vol = float(close.pct_change().dropna().std()) if len(close) > 2 else 0.02
-            band_widths = [daily_vol * current * np.sqrt(i + 1) * 1.5 for i in range(len(forecast_x))]
-            upper_band = [central_path[i] + band_widths[i] for i in range(len(forecast_x))]
-            lower_band = [central_path[i] - band_widths[i] for i in range(len(forecast_x))]
+            # Cap projection spread for very low volatility
+            daily_vol = max(daily_vol, 0.005)
 
-            # Colour scheme based on signal
-            if sig == "BUY":
-                action_color = '#10b981'
-                action_color_light = '#10b98133'
-            elif sig == "SELL":
-                action_color = '#ef4444'
-                action_color_light = '#ef444433'
-            else:
-                action_color = '#f59e0b'
-                action_color_light = '#f59e0b33'
+            # Green cone (upside) and Red cone (downside) — separate bands
+            green_upper = [current + daily_vol * current * np.sqrt(j + 1) * 1.6 for j in range(len(forecast_x))]
+            green_lower = [current] * len(forecast_x)  # CMP baseline
+            red_upper = [current] * len(forecast_x)    # CMP baseline
+            red_lower = [current - daily_vol * current * np.sqrt(j + 1) * 1.6 for j in range(len(forecast_x))]
+
+            # For short signals, cap the downside visually at ATR-based projection (not unlimited)
+            if sig == "SELL":
+                atr_cap = current * (1 - daily_vol * np.sqrt(forecast_days) * 2.0)
+                red_lower = [max(rl, atr_cap) for rl in red_lower]
 
             fig, ax = plt.subplots(figsize=(8, 3.5), dpi=100)
             fig.patch.set_facecolor('#131824')
@@ -1386,39 +1384,44 @@ class Analyzer:
             # Historical price line
             ax.plot(hist_x, hist_prices, color='#a0aec0', linewidth=1.5, label='Historical', zorder=3)
 
-            # Forecast zone
-            ax.fill_between(forecast_x, lower_band, upper_band,
-                            color=action_color_light, zorder=1, label='Probability band')
-            ax.plot(forecast_x, central_path, color=action_color,
+            # Green cone (realistic upside)
+            ax.fill_between(forecast_x, green_lower, green_upper,
+                            color='#10b98125', zorder=1, label='Upside range')
+            # Red cone (realistic downside)
+            ax.fill_between(forecast_x, red_lower, red_upper,
+                            color='#ef444425', zorder=1, label='Downside range')
+
+            # Central projected path to target
+            central_path = np.linspace(current, target_raw, len(forecast_x))
+            path_color = '#10b981' if target_raw >= current else '#ef4444'
+            ax.plot(forecast_x, central_path, color=path_color,
                     linewidth=2, linestyle='--', zorder=4, label='Projected path')
 
-            # Current price marker
-            ax.scatter([hist_len - 1], [current], color='#ffffff', s=50, zorder=6, edgecolors=action_color, linewidths=2)
-            ax.annotate(f'CMP ₹{current:.2f}', xy=(hist_len - 1, current),
+            # Current price marker (CMP)
+            ax.scatter([hist_len - 1], [current], color='#ffffff', s=60, zorder=6, edgecolors='#00d9ff', linewidths=2.5)
+            ax.annotate(f'CMP \u20b9{current:.2f}', xy=(hist_len - 1, current),
                         xytext=(hist_len - 1 - 8, current + (max(hist_prices) - min(hist_prices)) * 0.12),
                         color='#ffffff', fontsize=8, fontweight='bold',
                         arrowprops=dict(arrowstyle='->', color='#ffffff', lw=0.8),
                         zorder=7)
 
-            # Horizontal target line
+            # Horizontal target line (green)
             total_x = hist_len + forecast_days
-            ax.axhline(y=target_raw, color=action_color, linewidth=1, linestyle=':',
-                        alpha=0.7, zorder=2)
-            ax.text(total_x - 1, target_raw, f' Target ₹{target_raw:.2f}',
-                    color=action_color, fontsize=7.5, va='bottom' if target_raw > current else 'top',
+            ax.axhline(y=target_raw, color='#10b981', linewidth=1.2, linestyle=':',
+                        alpha=0.8, zorder=2)
+            ax.text(total_x - 1, target_raw, f' Target \u20b9{target_raw:.2f}',
+                    color='#10b981', fontsize=7.5, va='bottom' if target_raw > current else 'top',
                     fontweight='bold', zorder=7)
 
-            # Horizontal stop loss line
-            stop_color = '#ef4444' if sig == "BUY" else '#10b981'
-            ax.axhline(y=stop_raw, color=stop_color, linewidth=1, linestyle=':',
-                        alpha=0.7, zorder=2)
-            ax.text(total_x - 1, stop_raw, f' Stop ₹{stop_raw:.2f}',
-                    color=stop_color, fontsize=7.5, va='top' if stop_raw < current else 'bottom',
+            # Horizontal stop loss line (red)
+            ax.axhline(y=stop_raw, color='#ef4444', linewidth=1.2, linestyle=':',
+                        alpha=0.8, zorder=2)
+            ax.text(total_x - 1, stop_raw, f' Stop \u20b9{stop_raw:.2f}',
+                    color='#ef4444', fontsize=7.5, va='top' if stop_raw < current else 'bottom',
                     fontweight='bold', zorder=7)
 
             # Vertical line separating history from forecast
             ax.axvline(x=hist_len - 1, color='#2d3748', linewidth=1, linestyle='-', alpha=0.5, zorder=1)
-            mid_y = (max(hist_prices) + min(hist_prices)) / 2
             ax.text(hist_len + 1, ax.get_ylim()[1] * 0.99, 'FORECAST',
                     color='#718096', fontsize=7, fontstyle='italic', va='top', zorder=7)
 
@@ -1432,7 +1435,7 @@ class Analyzer:
             ax.set_ylabel('')
             ax.set_xticks([])
             # Rupee labels on y-axis
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x:,.0f}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'\u20b9{x:,.0f}'))
 
             plt.tight_layout(pad=0.5)
             buf = io.BytesIO()
@@ -1977,6 +1980,13 @@ class Analyzer:
             regime_factor, factor_label, final_score,
         )
 
+        # --- Regime conflict banner for retail users ---
+        # If regime is strongly bearish and signal is long (BUY), warn
+        if gated_signal == 'BUY' and (market_regime == 'bearish' or sector_regime == 'bearish'):
+            sig_data['regime_conflict_banner'] = "Signal against broader market trend. Proceed with extra caution."
+        elif gated_signal == 'SELL' and (market_regime == 'bullish' or sector_regime == 'bullish'):
+            sig_data['regime_conflict_banner'] = "Short signal against bullish broader market. Not suitable for most retail investors."
+
         # --- Add detailed regime block for transparency ---
         signal_result['regime'] = {
             'market_regime': market_regime,
@@ -2029,6 +2039,43 @@ class Analyzer:
                     result['projection_chart'] = chart_b64
             except Exception:
                 pass
+            # ── Fail-safe conditions ──
+            try:
+                fail_safes = []
+                close_col = data.get('Close')
+                if close_col is not None:
+                    if isinstance(close_col, pd.DataFrame):
+                        close_col = close_col.iloc[:, 0]
+                    close_series = close_col.dropna()
+                    if len(close_series) > 0:
+                        last_date = pd.Timestamp(close_series.index[-1])
+                        now = pd.Timestamp.now()
+                        if hasattr(last_date, 'tz') and last_date.tz is not None:
+                            last_date = last_date.tz_localize(None)
+                        minutes_stale = (now - last_date).total_seconds() / 60
+                        if minutes_stale > 15 * 60:  # more than 15 hours (data from previous day is normal)
+                            pass  # daily data, normal
+                        # Low liquidity: volume check
+                        vol_col = data.get('Volume')
+                        if vol_col is not None:
+                            if isinstance(vol_col, pd.DataFrame):
+                                vol_col = vol_col.iloc[:, 0]
+                            recent_vol = vol_col.dropna().tail(5)
+                            if len(recent_vol) > 0:
+                                avg_vol = float(recent_vol.mean())
+                                if avg_vol < 50000:
+                                    fail_safes.append("Low liquidity. Slippage risk.")
+                        # Gap detection: > 5% intraday gap
+                        if len(close_series) >= 2:
+                            last_close = float(close_series.iloc[-1])
+                            prev_close = float(close_series.iloc[-2])
+                            if prev_close > 0:
+                                gap_pct = abs(last_close - prev_close) / prev_close * 100
+                                if gap_pct > 5:
+                                    fail_safes.append(f"Gap of {gap_pct:.1f}% detected. Levels may need recalculation.")
+                result['signal']['fail_safes'] = fail_safes
+            except Exception:
+                result['signal']['fail_safes'] = []
             ANALYSIS_CACHE.set(symbol, result)
         del data
         gc.collect()
@@ -2713,7 +2760,7 @@ def index():
         .tsc-change.up { color: var(--accent-green); background: rgba(6, 255, 165, 0.1); }
         .tsc-change.down { color: var(--danger); background: rgba(239, 68, 68, 0.1); }
         .tsc-header-right { display: flex; align-items: center; gap: 10px; }
-        .tsc-badge { font-size: 0.85em; font-weight: 700; padding: 8px 20px; border-radius: 8px; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
+        .tsc-badge { font-size: 0.78em; font-weight: 700; padding: 8px 14px; border-radius: 8px; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.3px; text-align: center; max-width: 260px; line-height: 1.3; }
         .tsc-badge-BUY { background: #10b981; color: white; }
         .tsc-badge-SELL { background: #ef4444; color: white; }
         .tsc-badge-HOLD { background: #f59e0b; color: white; }
@@ -3108,12 +3155,23 @@ def index():
                             </div>
                         </div>
                         <div class="tsc-header-right">
-                            <div class="tsc-badge tsc-badge-${s.signal}">${s.signal}</div>
+                            <div class="tsc-badge tsc-badge-${s.signal}">${s.retail_action_label || s.signal}</div>
                         </div>
                     </div>
                     <div class="tsc-body">
                         <!-- SETUP BANNER -->
                         <div class="tsc-setup-banner">${s.setup_duration || 'Short Term Setup'} &bull; ${s.days_to_target} Days</div>
+
+                        <!-- FAIL-SAFE WARNINGS -->
+                        ${(function(){
+                            const fs = s.fail_safes || [];
+                            if (fs.length === 0) return '';
+                            let h = '';
+                            fs.forEach(f => {
+                                h += '<div style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);border-radius:8px;padding:12px 16px;margin-bottom:8px;color:#fca5a5;font-weight:600;font-size:0.9em;">&#9888; ' + f + '</div>';
+                            });
+                            return h;
+                        })()}
 
                         <!-- THE BOTTOM LINE (verdict) -->
                         ${s.verdict_text ? '<div class="tsc-verdict tsc-verdict-' + s.signal + '">' +
@@ -3123,27 +3181,41 @@ def index():
                             '<div class="tsc-verdict-body">' + s.verdict_text + '</div>' +
                         '</div>' : ''}
 
-                        <!-- CONFIDENCE CARD -->
+                        <!-- CONFIDENCE CARD (frequency framing) -->
                         <div class="tsc-confidence-card">
                             <div class="tsc-confidence-top">
-                                <div class="tsc-signal-label tsc-signal-label-${s.signal}">${s.signal}</div>
+                                <div class="tsc-signal-label tsc-signal-label-${s.signal}">${s.retail_action_label || s.signal}</div>
                                 <div class="tsc-confidence-info">
-                                    <div class="tsc-confidence-pct">Confidence <strong>${s.confidence}%</strong></div>
-                                    <div class="tsc-confidence-hint">${s.confidence_oneliner || ''}</div>
+                                    <div class="tsc-confidence-pct">${s.confidence_frequency || ('Confidence ' + s.confidence + '%')}</div>
+                                    <div class="tsc-confidence-hint">${s.low_sample_warning || s.confidence_oneliner || ''}</div>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- RISK-REWARD GRID -->
+                        ${s.regime_conflict_banner ? '<div class="tsc-warning-banner" style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35);border-radius:10px;padding:14px 18px;margin-bottom:16px;color:#fbbf24;font-weight:600;font-size:0.9em;">&#9888; ' + s.regime_conflict_banner + '</div>' : ''}
+
+                        <!-- PAYOFF SUMMARY (outcome language) -->
+                        <div class="tsc-payoff-summary" style="background:var(--bg-card-hover);border-radius:12px;padding:20px 24px;margin-bottom:20px;border:1px solid var(--border-color);">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                                <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.05em;color:var(--text-primary);">Payoff Assessment</span>
+                                <span class="tsc-badge" style="font-size:0.75em;padding:4px 12px;background:${rrRatio >= 1.5 ? '#10b981' : rrRatio >= 1 ? '#f59e0b' : '#ef4444'};">${s.payoff_label || ''}</span>
+                            </div>
+                            <p style="color:var(--text-secondary);font-size:0.93em;line-height:1.7;margin-bottom:14px;">${s.payoff_sentence || ''}</p>
+                            ${s.low_movement ? '<div style="color:#f59e0b;font-size:0.85em;margin-bottom:8px;">Low movement potential. Expected move is under 1%.</div>' : ''}
+                            ${s.short_sell_warning ? '<div style="color:#ef4444;font-size:0.85em;margin-bottom:8px;">' + s.short_sell_warning + '</div>' : ''}
+                            ${s.no_actionable_range ? '<div style="color:#f59e0b;font-size:0.85em;">No actionable range.</div>' : ''}
+                        </div>
+
+                        <!-- RISK-REWARD GRID (retained with outcome context) -->
                         <div class="tsc-rr-grid">
                             <div class="tsc-rr-item tsc-tip">
-                                <div class="tsc-rr-label">Expected Move <span class="tsc-tip-icon">?</span></div>
+                                <div class="tsc-rr-label">Potential Gain <span class="tsc-tip-icon">?</span></div>
                                 <div class="tsc-rr-value ${expectedColor}">${expectedSign}${expectedSigned}%</div>
                                 <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${rrGreenWidth}%;background:${expectedSigned >= 0 ? 'var(--accent-green)' : 'var(--danger)'};"></div></div>
                                 <div class="tsc-tip-text">${s.expected_move_tooltip || ''}</div>
                             </div>
                             <div class="tsc-rr-item tsc-tip">
-                                <div class="tsc-rr-label">Max Risk <span class="tsc-tip-icon">?</span></div>
+                                <div class="tsc-rr-label">Potential Loss <span class="tsc-tip-icon">?</span></div>
                                 <div class="tsc-rr-value red">-${maxRiskPct}%</div>
                                 <div class="tsc-rr-bar"><div class="tsc-rr-bar-fill" style="width:${100-rrGreenWidth}%;background:var(--danger);"></div></div>
                                 <div class="tsc-tip-text">${s.max_risk_tooltip || ''}</div>
@@ -3156,11 +3228,49 @@ def index():
                             </div>
                         </div>
 
+                        <!-- RISK WARNINGS -->
+                        ${(function(){
+                            const warns = s.risk_warnings || [];
+                            if (warns.length === 0) return '';
+                            let html = '<div style="margin-bottom:20px;">';
+                            warns.forEach(w => {
+                                const isRed = w.includes('exceeds');
+                                html += '<div style="background:' + (isRed ? 'rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.35);color:#fca5a5;' : 'rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35);color:#fbbf24;') + 'border-radius:8px;padding:10px 14px;margin-bottom:6px;font-size:0.88em;font-weight:600;">&#9888; ' + w + '</div>';
+                            });
+                            html += '</div>';
+                            return html;
+                        })()}
+
+                        <!-- SIMPLE INDICATORS SUMMARY -->
+                        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:20px;">
+                            <div style="background:var(--bg-card-hover);border-radius:10px;padding:14px 12px;border:1px solid var(--border-color);text-align:center;">
+                                <div style="font-size:0.7em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">Trend</div>
+                                <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.05em;color:${s.simple_trend === 'Up' ? 'var(--accent-green)' : s.simple_trend === 'Down' ? 'var(--danger)' : 'var(--warning)'};">${s.simple_trend || '--'}</div>
+                            </div>
+                            <div style="background:var(--bg-card-hover);border-radius:10px;padding:14px 12px;border:1px solid var(--border-color);text-align:center;">
+                                <div style="font-size:0.7em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">Momentum</div>
+                                <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.05em;color:${s.simple_momentum === 'Strong' ? 'var(--accent-green)' : s.simple_momentum === 'Weak' ? 'var(--danger)' : 'var(--text-primary)'};">${s.simple_momentum || '--'}</div>
+                            </div>
+                            <div style="background:var(--bg-card-hover);border-radius:10px;padding:14px 12px;border:1px solid var(--border-color);text-align:center;">
+                                <div style="font-size:0.7em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">Market Mood</div>
+                                <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.05em;color:${s.simple_mood === 'Bullish' ? 'var(--accent-green)' : s.simple_mood === 'Bearish' ? 'var(--danger)' : 'var(--warning)'};">${s.simple_mood || '--'}</div>
+                            </div>
+                            <div style="background:var(--bg-card-hover);border-radius:10px;padding:14px 12px;border:1px solid var(--border-color);text-align:center;">
+                                <div style="font-size:0.7em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">Setup Quality</div>
+                                <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.05em;color:${s.simple_quality === 'High' ? 'var(--accent-green)' : s.simple_quality === 'Moderate' ? 'var(--warning)' : 'var(--danger)'};">${s.simple_quality || '--'}</div>
+                            </div>
+                        </div>
+                        ${s.mixed_signal_warning ? '<div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35);border-radius:8px;padding:10px 14px;margin-bottom:16px;color:#fbbf24;font-size:0.88em;font-weight:600;">&#9888; ' + s.mixed_signal_warning + '</div>' : ''}
+                        ${s.volatility_spike_warning ? '<div style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35);border-radius:8px;padding:10px 14px;margin-bottom:16px;color:#fbbf24;font-size:0.88em;font-weight:600;">&#9888; ' + s.volatility_spike_warning + '</div>' : ''}
+
                         <!-- WHY THIS MAKES SENSE -->
                         <div class="tsc-why">
-                            <h3>Why This Makes Sense</h3>
+                            <h3>What Can Happen To My Money?</h3>
                             <p>${s.why_makes_sense || s.rec}</p>
                         </div>
+
+                        <!-- WHY AVOID (shown only for unfavorable setups) -->
+                        ${s.why_avoid ? '<div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:12px;padding:20px 24px;margin-bottom:20px;"><h3 style="font-family:Space Grotesk,sans-serif;font-weight:700;font-size:1.05em;color:#fca5a5;margin-bottom:10px;">Why Avoid</h3><p style="color:#fca5a5;line-height:1.7;font-size:0.93em;">' + s.why_avoid + '</p></div>' : ''}
 
                         <!-- REGIME LAYER -->
                         ${(function(){
@@ -3216,12 +3326,14 @@ def index():
                         <!-- PRICE PROJECTION CHART -->
                         <div id="tsc-projection-chart" style="display:none;"></div>
 
-                        <!-- CAPITAL CALCULATOR -->
+                        <!-- INVESTMENT IMPACT CALCULATOR -->
                         <div class="tsc-calc">
                             <div class="tsc-calc-header">
                                 <div class="tsc-calc-check">&#10003;</div>
-                                <div class="tsc-calc-title">Capital Calculator</div>
+                                <div class="tsc-calc-title">Investment Impact Calculator</div>
                             </div>
+
+                            <div style="color:var(--text-muted);font-size:0.85em;margin-bottom:12px;line-height:1.5;">${s.cap_protection_note || 'Do not risk more than 1% of total portfolio.'}</div>
 
                             <div class="tsc-auto-risk tsc-tip">
                                 <div class="tsc-auto-risk-badge" id="tsc-risk-pct-label">${s.rec_risk_pct || 1}%</div>
@@ -3234,9 +3346,21 @@ def index():
 
                             <div class="tsc-calc-row">
                                 <div class="tsc-calc-input-wrap">
-                                    <input type="text" class="tsc-calc-input" id="tsc-capital-input" placeholder="Enter total capital (e.g. 5,00,000)" oninput="formatTscCapital(this); updateCapitalCalc()">
+                                    <input type="text" class="tsc-calc-input" id="tsc-capital-input" value="10,000" placeholder="Enter investment amount (e.g. 10,000)" oninput="formatTscCapital(this); updateCapitalCalc()">
                                 </div>
                                 <div class="tsc-capital-display" id="tsc-capital-display"></div>
+                            </div>
+
+                            <!-- Dynamic Potential Gain / Loss -->
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;" id="tsc-impact-display">
+                                <div style="background:rgba(6,255,165,0.08);border:1px solid rgba(6,255,165,0.25);border-radius:8px;padding:14px;text-align:center;">
+                                    <div style="font-size:0.72em;text-transform:uppercase;color:var(--text-muted);font-weight:600;margin-bottom:4px;">Potential Gain</div>
+                                    <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.2em;color:var(--accent-green);" id="tsc-potential-gain">&#8377;--</div>
+                                </div>
+                                <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:8px;padding:14px;text-align:center;">
+                                    <div style="font-size:0.72em;text-transform:uppercase;color:var(--text-muted);font-weight:600;margin-bottom:4px;">Potential Loss</div>
+                                    <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.2em;color:var(--danger);" id="tsc-potential-loss">&#8377;--</div>
+                                </div>
                             </div>
 
                             <div class="tsc-calc-info-box" style="margin-bottom:10px;">
@@ -3248,6 +3372,7 @@ def index():
                                 <span class="tsc-calc-result-label">Suggested quantity:</span>
                                 <span class="tsc-calc-result-value" id="tsc-qty-result">-- shares</span>
                             </div>
+                            <div id="tsc-position-warning" style="display:none;color:#fbbf24;font-size:0.85em;margin-top:8px;"></div>
                         </div>
 
                         <!-- TECHNICAL DETAILS ACCORDION -->
@@ -3356,7 +3481,9 @@ def index():
             `;
             document.getElementById('result').innerHTML = html;
             // Store signal data for capital calculator
-            window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0, recRiskPct: s.rec_risk_pct || 1 };
+            window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0, recRiskPct: s.rec_risk_pct || 1, expectedMovePct: expectedPct, maxRiskPct: maxRiskPct };
+            // Trigger initial calc with default value
+            setTimeout(function(){ updateCapitalCalc(); }, 50);
             // Render projection chart if available
             if (data.projection_chart) {
                 const chartDiv = document.getElementById('tsc-projection-chart');
@@ -3388,13 +3515,20 @@ def index():
             const inp = document.getElementById('tsc-capital-input');
             const display = document.getElementById('tsc-capital-display');
             const qtyEl = document.getElementById('tsc-qty-result');
+            const gainEl = document.getElementById('tsc-potential-gain');
+            const lossEl = document.getElementById('tsc-potential-loss');
+            const warnEl = document.getElementById('tsc-position-warning');
             if (!inp || !qtyEl) return;
-            const riskPct = window._tscSignalData ? (window._tscSignalData.recRiskPct || 1) : 1;
+            const sd = window._tscSignalData;
+            const riskPct = sd ? (sd.recRiskPct || 1) : 1;
             const raw = inp.value.replace(/,/g, '');
             const capital = parseFloat(raw);
-            if (!capital || capital <= 0 || !window._tscSignalData) {
-                display.textContent = '';
+            if (!capital || capital <= 0 || !sd) {
+                if (display) display.textContent = '';
                 qtyEl.textContent = '-- shares';
+                if (gainEl) gainEl.innerHTML = '&#8377;--';
+                if (lossEl) lossEl.innerHTML = '&#8377;--';
+                if (warnEl) warnEl.style.display = 'none';
                 return;
             }
             // Format display in Indian numbering
@@ -3403,12 +3537,26 @@ def index():
             let otherNumbers = formatted.substring(0, formatted.length - 3);
             if (otherNumbers !== '') lastThree = ',' + lastThree;
             const indianFormatted = otherNumbers.replace(/\\B(?=(\\d{2})+(?!\\d))/g, ',') + lastThree;
-            display.innerHTML = '&#8377;' + indianFormatted;
-            const riskPerShare = window._tscSignalData.riskPerShare;
+            if (display) display.innerHTML = '&#8377;' + indianFormatted;
+            // Potential gain/loss on invested amount
+            const potGain = capital * (sd.expectedMovePct || 0) / 100;
+            const potLoss = capital * (sd.maxRiskPct || 0) / 100;
+            if (gainEl) gainEl.innerHTML = '&#8377;' + Math.round(potGain).toLocaleString('en-IN');
+            if (lossEl) lossEl.innerHTML = '&#8377;' + Math.round(potLoss).toLocaleString('en-IN');
+            const riskPerShare = sd.riskPerShare;
             if (riskPerShare > 0) {
                 const riskAmount = capital * (riskPct / 100);
                 const qty = Math.floor(riskAmount / riskPerShare);
                 qtyEl.textContent = qty.toLocaleString('en-IN') + ' shares';
+                // Capital protection: warn if qty < 1
+                if (warnEl) {
+                    if (qty < 1 && capital > 0) {
+                        warnEl.textContent = 'Account size too small for disciplined risk control.';
+                        warnEl.style.display = 'block';
+                    } else {
+                        warnEl.style.display = 'none';
+                    }
+                }
             } else {
                 qtyEl.textContent = '-- shares';
             }
