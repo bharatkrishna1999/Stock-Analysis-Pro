@@ -2724,6 +2724,20 @@ def index():
         .summary-label { font-size: 0.85em; color: var(--text-secondary); margin-top: 8px; }
         .optimize-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--accent-green), #059669); color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
         .optimize-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(6, 255, 165, 0.3); }
+        .dividend-search-row { display: flex; gap: 10px; align-items: stretch; }
+        .dividend-search-row .search-input-wrap { flex: 1; min-width: 0; position: relative; }
+        .dividend-search-row .search-input-wrap input { width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; box-sizing: border-box; }
+        .dividend-search-row .search-input-wrap input:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 255, 255, 0.1); }
+        .search-btn { padding: 12px 22px; background: var(--accent-cyan); color: var(--bg-dark); border: none; border-radius: 8px; font-size: 0.95em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; flex-shrink: 0; }
+        .search-btn:hover { opacity: 0.9; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.25); }
+        .portfolio-action-btn { width: 100%; padding: 14px 20px; background: linear-gradient(135deg, var(--accent-cyan), #0891b2); color: var(--bg-dark); border: none; border-radius: 10px; font-size: 1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; display: flex; align-items: center; justify-content: center; gap: 8px; letter-spacing: 0.3px; margin-top: 6px; }
+        .portfolio-action-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0, 255, 255, 0.25); }
+        .portfolio-action-btn:active { transform: translateY(0); }
+        @media (max-width: 480px) {
+            .dividend-search-row { flex-direction: column; }
+            .search-btn { width: 100%; padding: 14px; text-align: center; }
+            .portfolio-action-btn { font-size: 0.95em; padding: 14px 16px; }
+        }
         .risk-desc { margin-top: 10px; padding: 12px; background: var(--bg-dark); border-radius: 6px; color: var(--text-muted); font-size: 0.85em; line-height: 1.5; border-left: 3px solid var(--accent-purple); }
         #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; }
         #capital-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(6, 255, 165, 0.1); }
@@ -2812,31 +2826,15 @@ def index():
             <div class="grid">
                 <div class="card">
                     <h2>Stock Universe</h2>
-                    <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9em;">Select which stocks to scan for dividend yields</p>
-                    <div class="btn-group">
-                        <button class="scope-btn active" onclick="setScope('all', this)">All Stocks</button>
-                        <button class="scope-btn" onclick="setScope('nifty50', this)">Nifty 50</button>
-                        <button class="scope-btn" onclick="setScope('custom', this)">Custom Sectors</button>
-                    </div>
-                    <div id="dividend-search-wrap" style="margin-top: 15px;">
-                        <input type="text" id="dividend-search" placeholder="Search stocks (e.g., TCS, RELIANCE, INFY)..." style="width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s;">
-                        <div class="suggestions" id="dividend-suggestions"></div>
-                    </div>
-                    <div id="nifty50-checkboxes" style="display:none; margin-top: 15px;">
-                        <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
-                            <label style="cursor: pointer; color: var(--accent-cyan); font-weight: 600; font-size: 0.9em;">
-                                <input type="checkbox" id="select-all-nifty" checked onchange="toggleAllNifty(this.checked)"> Select All Nifty 50
-                            </label>
-                        </div>
-                        <div id="nifty50-grid" class="sector-grid"></div>
-                    </div>
-                    <div id="sector-checkboxes" style="display:none; margin-top: 15px;">
+                    <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9em;">Select sectors to scan for dividend yields and optimize your portfolio</p>
+                    <div id="sector-checkboxes" style="margin-top: 15px;">
                         <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
                             <label style="cursor: pointer; color: var(--accent-cyan); font-weight: 600; font-size: 0.9em;">
                                 <input type="checkbox" id="select-all-sectors" onchange="toggleAllSectors(this.checked)"> Select All Sectors
                             </label>
                         </div>
                         <div id="sector-grid" class="sector-grid"></div>
+                        <button class="optimize-btn" onclick="analyzeDividends()" style="margin-top: 18px;">Scan Dividends & Optimize Portfolio</button>
                     </div>
                 </div>
                 <div class="card">
@@ -2854,7 +2852,12 @@ def index():
                         </div>
                         <div class="risk-desc" id="risk-desc">Max 15% per stock. Balanced yield vs risk tradeoff. Good diversification across dividend payers.</div>
                     </div>
-                    <button class="optimize-btn" onclick="analyzeDividends()">Scan Dividends & Optimize Portfolio</button>
+                    <div style="margin-top: 18px;">
+                        <button class="portfolio-action-btn" onclick="analyzeDividends()" style="width:100%;padding:14px 20px;background:linear-gradient(135deg,#06ffa5,#0891b2);color:#0a0f1a;border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;">
+                            <span>&#9881;</span>
+                            <span>Optimize Portfolio</span>
+                        </button>
+                    </div>
                 </div>
             </div>
             <div id="dividend-results"></div>
@@ -2898,7 +2901,6 @@ def index():
                     if (e.key === 'Enter') analyzeRegression();
                 });
             } else if (tab === 'dividend') {
-                setupDividendSearch();
             }
             loadedTabs.add(tab);
         }
@@ -2931,29 +2933,6 @@ def index():
         }
         function init() {
             ensureTabLoaded('analysis');
-        }
-        function setupDividendSearch() {
-            const input = document.getElementById('dividend-search');
-            if (!input) return;
-            const sug = document.getElementById('dividend-suggestions');
-            input.addEventListener('input', () => {
-                const raw = input.value.trim();
-                const q = raw.toUpperCase();
-                if (q.length === 0) { sug.innerHTML = ''; return; }
-                const filtered = allTickers.filter(s => {
-                    const name = getStockName(s).toUpperCase();
-                    return s.includes(q) || name.includes(q);
-                }).slice(0, 12);
-                sug.innerHTML = filtered.map(s =>
-                    `<button onclick="scanStockSector('${s}')">${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span></button>`
-                ).join('');
-            });
-            input.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    const q = input.value.toUpperCase().trim();
-                    if (q) scanStockSector(q);
-                }
-            });
         }
         function analyze(symbol) {
             document.getElementById('search-view').style.display = 'none';
@@ -3479,7 +3458,7 @@ def index():
             document.getElementById('search').value = '';
             document.getElementById('suggestions').innerHTML = '';
         }
-        let dividendScope = 'all';
+        let dividendScope = 'custom';
         let dividendRisk = 'moderate';
         function formatIndianNumber(num) {
             num = num.toString();
@@ -3498,14 +3477,6 @@ def index():
         }
         function getCapitalValue() {
             return parseFloat(document.getElementById('capital-input').value.replace(/,/g, ''));
-        }
-        function setScope(scope, btn) {
-            dividendScope = scope;
-            document.querySelectorAll('.scope-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
-            document.getElementById('nifty50-checkboxes').style.display = scope === 'nifty50' ? 'block' : 'none';
-            document.getElementById('dividend-search-wrap').style.display = scope === 'all' ? 'block' : 'none';
         }
         function toggleAllNifty(checked) {
             document.querySelectorAll('.nifty-cb').forEach(cb => cb.checked = checked);
@@ -3581,14 +3552,7 @@ def index():
             dividendHighlight = '';
             let sectors = '';
             let symbolsParam = '';
-            if (dividendScope === 'all') { sectors = 'all'; dividendSectorLabel = 'All NSE'; }
-            else if (dividendScope === 'nifty50') {
-                const checked = document.querySelectorAll('.nifty-cb:checked');
-                if (checked.length === 0) { alert('Please select at least one Nifty 50 stock'); return; }
-                symbolsParam = Array.from(checked).map(c => c.value).join(',');
-                dividendSectorLabel = 'Nifty 50';
-            }
-            else if (dividendScope === 'custom') {
+            if (dividendScope === 'custom') {
                 const checked = document.querySelectorAll('.sector-cb:checked');
                 if (checked.length === 0) { alert('Please select at least one sector'); return; }
                 const sectorList = Array.from(checked).map(c => c.value);
@@ -3826,7 +3790,7 @@ def index():
                 grid.appendChild(label);
             });
         }
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); initNifty50Checkboxes(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
     </script>
 </body>
 </html>'''
@@ -3911,6 +3875,38 @@ def regression_route():
     except Exception as e:
         print(f"Error in HSIC analysis for {normalized_symbol}: {e}")
         return jsonify({'error': f'HSIC dependency analysis failed for {normalized_symbol}: {str(e)}'})
+
+@app.route('/dividend-info')
+def dividend_info_route():
+    """Fetch dividend information for a single stock."""
+    symbol = request.args.get('symbol', '').strip().upper()
+    if not symbol:
+        return jsonify({'error': 'Please enter a stock symbol'})
+    if symbol not in ALL_VALID_TICKERS:
+        return jsonify({'error': f'{symbol} is not a recognized NSE stock'})
+    try:
+        results, dividend_found = analyzer.fetch_dividend_data([symbol], limit_results=False)
+        if not results:
+            return jsonify({
+                'symbol': symbol,
+                'found': False,
+                'message': f'{symbol} does not pay dividends or no dividend data is available for the past year'
+            })
+        stock = results[0]
+        stock['found'] = True
+        stock['name'] = TICKER_TO_NAME.get(symbol, symbol)
+        # Find the sector
+        skip_sectors = {"All NSE", "Nifty 50", "Nifty Next 50", "Others", "Conglomerate"}
+        stock['sector'] = ''
+        for sector_name, sector_stocks in STOCKS.items():
+            if sector_name in skip_sectors:
+                continue
+            if symbol in sector_stocks:
+                stock['sector'] = sector_name
+                break
+        return jsonify(stock)
+    except Exception as e:
+        return jsonify({'error': f'Failed to fetch dividend data for {symbol}: {str(e)}'})
 
 @app.route('/dividend-scan')
 def dividend_scan_route():
