@@ -57,6 +57,7 @@ REGRESSION_WAIT_TIMEOUT_SECONDS = 2.0
 REGRESSION_CACHE_TTL = timedelta(hours=8)
 ANALYZE_CACHE_TTL = timedelta(minutes=20)
 PRICE_HISTORY_CACHE_TTL = timedelta(minutes=30)
+REGIME_CACHE_TTL = timedelta(minutes=30)
 
 YAHOO_TICKER_ALIASES = {
     "ETERNAL": ["ZOMATO"],
@@ -231,6 +232,7 @@ class HybridTTLCache:
 PRICE_HISTORY_CACHE = HybridTTLCache('price_history', PRICE_HISTORY_CACHE_TTL, max_entries=180)
 ANALYSIS_CACHE = HybridTTLCache('analysis', ANALYZE_CACHE_TTL, max_entries=180)
 REGRESSION_CACHE = HybridTTLCache('regression', REGRESSION_CACHE_TTL, max_entries=96)
+REGIME_CACHE = HybridTTLCache('regime', REGIME_CACHE_TTL, max_entries=32)
 REGRESSION_JOB_CACHE = {}
 REGRESSION_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
@@ -626,6 +628,43 @@ print(
     f"(duplicates removed). Universe source: {UNIVERSE_SOURCE}"
 )
 
+# ===== TICKER-TO-SECTOR REVERSE MAPPING =====
+TICKER_TO_SECTOR = {}
+for _sector_name, _sector_tickers in STOCKS.items():
+    for _t in _sector_tickers:
+        if _t not in TICKER_TO_SECTOR:
+            TICKER_TO_SECTOR[_t] = _sector_name
+
+# ===== SECTOR INDEX MAP (Yahoo Finance tickers for NSE sectoral indices) =====
+SECTOR_INDEX_MAP = {
+    'IT Sector': '^CNXIT',
+    'Banking': '^NSEBANK',
+    'Financial Services': '^CNXFIN',
+    'Auto': '^CNXAUTO',
+    'Auto Components': '^CNXAUTO',
+    'Pharma': '^CNXPHARMA',
+    'Healthcare': '^CNXPHARMA',
+    'Consumer Goods': '^CNXFMCG',
+    'FMCG': '^CNXFMCG',
+    'Retail': '^CNXFMCG',
+    'Energy - Oil & Gas': '^CNXENERGY',
+    'Power': '^CNXENERGY',
+    'Metals & Mining': '^CNXMETAL',
+    'Cement': '^CNXINFRA',
+    'Real Estate': '^CNXREALTY',
+    'Infrastructure': '^CNXINFRA',
+    'Construction': '^CNXINFRA',
+    'Media': '^CNXMEDIA',
+    'Telecom': '^CNXMEDIA',
+    'Electronics': '^CNXIT',
+    'Paints': '^CNXFMCG',
+    'Textiles': '^CNXFMCG',
+    'Chemicals': '^CNXPHARMA',
+    'Logistics': '^CNXINFRA',
+    'Aviation': '^CNXINFRA',
+    'Hospitality': '^CNXFMCG',
+}
+
 # ===== REST OF CODE REMAINS IDENTICAL =====
 
 class Analyzer:
@@ -869,13 +908,13 @@ class Analyzer:
         deviation_direction = "above" if i['pct_deviation'] > 0 else "below"
         zscore_explain = f"Z-Score: {i['zscore']:.2f} | Price is {abs(i['pct_deviation']):.2f}% {deviation_direction} mean (₹{i['mean_price']:.2f})"
         if i['zscore'] > 2:
-            zscore_explain += f" → EXTREME OVEREXTENSION (+2σ). Price {abs(i['pct_deviation']):.1f}% above average - HIGH probability mean reversion DOWN expected."
+            zscore_explain += f" → EXTREME OVEREXTENSION (+2σ). Price {abs(i['pct_deviation']):.1f}% above average, with HIGH probability mean reversion DOWN expected."
         elif i['zscore'] > 1:
-            zscore_explain += f" → MODERATELY OVERBOUGHT. Price {abs(i['pct_deviation']):.1f}% above mean - potential pullback zone."
+            zscore_explain += f" → MODERATELY OVERBOUGHT. Price {abs(i['pct_deviation']):.1f}% above mean. Potential pullback zone."
         elif i['zscore'] < -2:
-            zscore_explain += f" → EXTREME OVERSOLD (-2σ). Price {abs(i['pct_deviation']):.1f}% below average - HIGH probability bounce to mean."
+            zscore_explain += f" → EXTREME OVERSOLD (-2σ). Price {abs(i['pct_deviation']):.1f}% below average, with HIGH probability bounce to mean."
         elif i['zscore'] < -1:
-            zscore_explain += f" → MODERATELY OVERSOLD. Price {abs(i['pct_deviation']):.1f}% below mean - bounce opportunity."
+            zscore_explain += f" → MODERATELY OVERSOLD. Price {abs(i['pct_deviation']):.1f}% below mean. Bounce opportunity."
         else:
             zscore_explain += f" → NEAR MEAN (within ±1σ). Price at fair value."
         bb_explain = f"Bollinger Band: {i['bb_position']:.0f}% position"
@@ -1038,12 +1077,12 @@ class Analyzer:
             f"For HOLD setups the target is the 18-day high + 2% (breakout level)."
         )
         max_risk_tooltip = (
-            f"Definition: The percentage you could lose if the trade hits your stop loss - the invalidation level "
+            f"Definition: The percentage you could lose if the trade hits your stop loss, which is the invalidation level "
             f"below which the trade thesis no longer holds. "
             f"Inputs: Current price ({i['price']:.2f}), Stop loss ({stop_price:.2f}). "
             f"Formula: ((Current - Stop) / Current) x 100 = "
             f"(({i['price']:.2f} - {stop_price:.2f}) / {i['price']:.2f}) x 100 = {max_risk_pct:.1f}%. "
-            f"The stop loss is placed 2% below the 18-day low (recent support - buffer), acting as the "
+            f"The stop loss is placed 2% below the 18-day low (recent support with buffer), acting as the "
             f"invalidation level. If price breaks this, the original setup is no longer valid."
         ) if sig == "BUY" else (
             f"Definition: The percentage you could lose if the trade hits your stop loss. "
@@ -1090,7 +1129,7 @@ class Analyzer:
         if confidence >= 70:
             confidence_oneliner = "Past similar setups moved in this direction most of the time."
         elif confidence >= 55:
-            confidence_oneliner = "Past similar setups moved upward more often than not." if sig == "BUY" else "Past similar setups moved downward more often than not." if sig == "SELL" else "Mixed signals - waiting for clearer direction is advisable."
+            confidence_oneliner = "Past similar setups moved upward more often than not." if sig == "BUY" else "Past similar setups moved downward more often than not." if sig == "SELL" else "Mixed signals. Waiting for clearer direction is advisable."
         else:
             confidence_oneliner = "Setup shows potential but has mixed signals. Use tighter risk controls."
         # SMA status for technical details
@@ -1144,7 +1183,7 @@ class Analyzer:
                 'entry_explain': entry_explain, 'exit_explain': exit_explain, 'confidence_explain': confidence_explain,
                 'time_explain': time_explain, 'trend_explain': trend_explain, 'momentum_explain': momentum_explain,
                 'rsi_explain': rsi_explain, 'position_explain': position_explain, 'zscore_explain': zscore_explain,
-                'bb_explain': bb_explain, 'macd_text': "BULLISH - momentum favors buyers" if i['macd_bullish'] else "BEARISH - momentum favors sellers"
+                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers"
             },
             'details': {
                 'price': f"₹{i['price']:.2f}", 'price_raw': round(i['price'], 2),
@@ -1278,6 +1317,559 @@ class Analyzer:
             print(f"Error generating projection chart: {e}")
             return None
 
+    # ===== REGIME DETECTION LAYER =====
+
+    def _compute_regime(self, close_series):
+        """Compute market/sector regime from a close price series.
+
+        Rules (price vs SMA20/SMA50 + RSI):
+          bullish (1.0): price > SMA20 AND price > SMA50 AND RSI > 40
+          bearish (0.0): price < SMA20 AND price < SMA50 AND RSI < 60
+          neutral (0.5): everything else
+
+        RSI guards prevent false classification during extreme mean-reversion:
+          - RSI > 40 filter: avoids calling a regime "bullish" if a crash just
+            pushed RSI into deep oversold territory despite price still above MAs.
+          - RSI < 60 filter: avoids calling a regime "bearish" during a strong
+            bounce that hasn't yet lifted price above the MAs.
+        """
+        if close_series is None or len(close_series) < 20:
+            return 'neutral', 0.5, {'reason': 'Insufficient data for regime detection'}
+
+        price = float(close_series.iloc[-1])
+        sma20 = float(close_series.rolling(20).mean().iloc[-1])
+        sma50_window = min(50, len(close_series))
+        sma50 = float(close_series.rolling(sma50_window).mean().iloc[-1])
+
+        # RSI (14-period)
+        rsi_window = min(14, len(close_series))
+        delta = close_series.diff()
+        gain = delta.where(delta > 0, 0).rolling(rsi_window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(rsi_window).mean()
+        rs = gain / loss
+        rsi_series = 100 - (100 / (1 + rs))
+        current_rsi = float(rsi_series.iloc[-1])
+        if pd.isna(current_rsi) or np.isinf(current_rsi):
+            current_rsi = 50.0
+
+        above_sma20 = price > sma20
+        above_sma50 = price > sma50
+
+        if above_sma20 and above_sma50 and current_rsi > 40:
+            regime = 'bullish'
+            score = 1.0
+        elif not above_sma20 and not above_sma50 and current_rsi < 60:
+            regime = 'bearish'
+            score = 0.0
+        else:
+            regime = 'neutral'
+            score = 0.5
+
+        details = {
+            'price': round(price, 2),
+            'sma20': round(sma20, 2),
+            'sma50': round(sma50, 2),
+            'rsi': round(current_rsi, 1),
+            'above_sma20': above_sma20,
+            'above_sma50': above_sma50,
+        }
+        return regime, score, details
+
+    def _fetch_regime(self, yahoo_ticker, cache_key):
+        """Fetch price data for a ticker, compute its regime, and cache."""
+        cached = REGIME_CACHE.get(cache_key)
+        if cached is not None:
+            return cached['regime'], cached['score'], cached['details']
+        try:
+            data = yf.download(yahoo_ticker, period='3mo', interval='1d',
+                               progress=False, threads=False, timeout=8)
+            if data is None or data.empty:
+                result = {'regime': 'neutral', 'score': 0.5,
+                          'details': {'reason': f'No data for {yahoo_ticker}', 'source': yahoo_ticker}}
+                REGIME_CACHE.set(cache_key, result)
+                return result['regime'], result['score'], result['details']
+
+            close = data.get('Close')
+            if close is None:
+                result = {'regime': 'neutral', 'score': 0.5,
+                          'details': {'reason': f'No close data for {yahoo_ticker}', 'source': yahoo_ticker}}
+                REGIME_CACHE.set(cache_key, result)
+                return result['regime'], result['score'], result['details']
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            close = close.dropna()
+
+            regime, score, details = self._compute_regime(close)
+            details['source'] = yahoo_ticker
+            result = {'regime': regime, 'score': score, 'details': details}
+            REGIME_CACHE.set(cache_key, result)
+            return regime, score, details
+        except Exception as e:
+            result = {'regime': 'neutral', 'score': 0.5,
+                      'details': {'reason': f'Error: {str(e)}', 'source': yahoo_ticker}}
+            REGIME_CACHE.set(cache_key, result)
+            return result['regime'], result['score'], result['details']
+
+    def _get_market_regime(self):
+        """Get Nifty 50 market regime. Falls back to NIFTYBEES ETF if index unavailable."""
+        regime, score, details = self._fetch_regime('^NSEI', 'regime:market:NSEI')
+        if details.get('reason') and 'No data' in details.get('reason', ''):
+            regime, score, details = self._fetch_regime('NIFTYBEES.NS', 'regime:market:NIFTYBEES')
+        return regime, score, details
+
+    def _get_sector_regime(self, symbol):
+        """Get sector regime for a stock. Falls back to neutral if sector data unavailable."""
+        sector = TICKER_TO_SECTOR.get(symbol)
+        if not sector:
+            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}'}
+        sector_ticker = SECTOR_INDEX_MAP.get(sector)
+        if not sector_ticker:
+            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"'}
+        return self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+
+    def _build_verdict(self, signal_result, original_signal, gated_signal,
+                       gate_reason, market_regime, sector_regime, sector_name,
+                       regime_factor, factor_label, final_score):
+        """Build a plain-English verdict that tells the complete story.
+
+        Weaves together trend, momentum, valuation, regime context, and
+        risk-reward into a narrative a beginner can follow.
+        """
+        s = signal_result.get('signal', {})
+        d = signal_result.get('details', {})
+        price = d.get('price', '?')
+        rsi_raw = d.get('rsi_raw', 50)
+        zscore_raw = d.get('zscore_raw', 0)
+        volatility = d.get('volatility', '?')
+        macd_bullish = d.get('macd_bullish', True)
+        above_sma20 = d.get('above_sma20', False)
+        above_sma50 = d.get('above_sma50', False)
+        confidence = s.get('confidence', 50)
+        risk_reward = s.get('risk_reward', 0)
+        expected_move = s.get('expected_move_signed', 0)
+        max_risk = s.get('max_risk_pct', 0)
+        target = s.get('target', '?')
+        stop = s.get('stop', '?')
+        days = s.get('days_to_target', 7)
+        rec_risk = s.get('rec_risk_pct', 1.0)
+        final_signal = gated_signal
+
+        parts = []
+
+        # --- Sentence 1: The headline verdict ---
+        # R/R quality dominates the tone. A "strong buy" with 0.5x R/R is
+        # misleading - the headline must be honest about the trade quality.
+        if final_signal == 'BUY':
+            if risk_reward < 1.0:
+                parts.append(
+                    f"The trend is bullish, but the risk-reward setup is poor "
+                    f"({risk_reward}x, meaning you'd risk more than you stand to gain). "
+                    f"Consider waiting for a better entry point."
+                )
+            elif risk_reward < 1.5 and confidence < 70:
+                parts.append(f"This stock shows a mildly favorable setup for buying, but the reward barely outweighs the risk. Proceed with caution.")
+            elif confidence >= 75 and risk_reward >= 1.5:
+                parts.append(f"This stock looks like a strong buying opportunity. The trend, momentum, and risk-reward are all lining up.")
+            elif confidence >= 60:
+                parts.append(f"This stock shows a decent setup for buying, though not without some caution.")
+            else:
+                parts.append(f"There's a mild case for buying this stock, but the setup isn't particularly strong.")
+        elif final_signal == 'SELL':
+            if risk_reward < 1.0:
+                parts.append(
+                    f"The stock is weakening, but the risk-reward on the short side "
+                    f"is poor ({risk_reward}x). The potential loss exceeds the potential gain."
+                )
+            elif confidence >= 75 and risk_reward >= 1.5:
+                parts.append(f"This stock is showing strong signs of weakness, and it's time to exit or consider shorting.")
+            elif confidence >= 60:
+                parts.append(f"The stock is leaning bearish. Consider reducing your position or staying out.")
+            else:
+                parts.append(f"There are some bearish signals here, but conviction is low.")
+        else:
+            if factor_label in ('rr_reject', 'rr_conflict'):
+                parts.append(
+                    f"The stock's trend says {original_signal}, but the risk-reward "
+                    f"is only {risk_reward}x. The potential downside far exceeds "
+                    f"the upside. The system has downgraded this to HOLD until "
+                    f"the setup improves."
+                )
+            elif original_signal and original_signal != 'HOLD':
+                parts.append(f"The stock's own indicators say {original_signal}, but the bigger picture is conflicting, so the recommendation is to HOLD and wait for clarity.")
+            else:
+                parts.append(f"This stock is in a wait-and-watch zone. There's no clear edge for buying or selling right now.")
+
+        # --- Sentence 2: Trend & momentum story ---
+        trend_parts = []
+        if above_sma20 and above_sma50:
+            trend_parts.append("the price is trading above both its 20-day and 50-day moving averages, which is a healthy uptrend")
+        elif above_sma20 and not above_sma50:
+            trend_parts.append("the price is above the 20-day average but still below the 50-day, suggesting a short-term recovery within a longer-term weakness")
+        elif not above_sma20 and above_sma50:
+            trend_parts.append("the price has dipped below the 20-day average but is still above the 50-day, hinting at a short-term pullback in an otherwise intact trend")
+        else:
+            trend_parts.append("the price is below both the 20-day and 50-day averages, which means the trend is pointing down")
+
+        if macd_bullish:
+            trend_parts.append("MACD momentum is bullish (buying pressure is building)")
+        else:
+            trend_parts.append("MACD momentum is bearish (selling pressure is dominant)")
+
+        parts.append(f"On the technical side, {', and '.join(trend_parts)}.")
+
+        # --- Sentence 3: RSI & valuation ---
+        rsi_text = ""
+        if rsi_raw > 70:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (overbought, meaning the stock may be stretched too far up and due for a pullback)"
+        elif rsi_raw < 30:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (oversold, meaning the stock has been beaten down and could bounce)"
+        elif rsi_raw > 60:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (strong momentum, but not yet overbought)"
+        elif rsi_raw < 40:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (weak momentum, but not yet oversold)"
+        else:
+            rsi_text = f"RSI is at {rsi_raw:.0f} (neutral range, no extreme reading)"
+
+        zscore_text = ""
+        if zscore_raw > 2:
+            zscore_text = "the price is stretched far above its recent average (high chance of a pullback)"
+        elif zscore_raw > 1:
+            zscore_text = "the price is moderately above its recent average"
+        elif zscore_raw < -2:
+            zscore_text = "the price is well below its recent average (potential bounce zone)"
+        elif zscore_raw < -1:
+            zscore_text = "the price is moderately below its recent average"
+        else:
+            zscore_text = "the price is near its recent average (fair value zone)"
+
+        parts.append(f"{rsi_text}, and {zscore_text}.")
+
+        # --- Sentence 4: Market & sector context ---
+        market_word = {'bullish': 'supportive (bullish)', 'bearish': 'hostile (bearish)', 'neutral': 'mixed (neutral)'}
+        sector_word = {'bullish': 'in favor (bullish)', 'bearish': 'working against it (bearish)', 'neutral': 'not giving a clear signal (neutral)'}
+        parts.append(
+            f"Looking at the bigger picture, the overall market (Nifty 50) is {market_word.get(market_regime, 'unclear')}, "
+            f"and the {sector_name} sector is {sector_word.get(sector_regime, 'unclear')}."
+        )
+
+        # --- Sentence 5: What the regime + R/R layer did ---
+        if factor_label == 'rr_reject':
+            parts.append(
+                f"The system has downgraded this to HOLD primarily because "
+                f"the risk-reward ratio ({risk_reward}x) is too unfavorable. "
+                f"The stop loss is far from the entry while the target is close, "
+                f"meaning the downside exposure far outweighs the upside potential."
+            )
+        elif factor_label == 'rr_conflict':
+            parts.append(
+                f"The combination of a weak risk-reward ({risk_reward}x) and "
+                f"opposing regime conditions makes this trade too risky. "
+                f"The system has downgraded to HOLD."
+            )
+        elif factor_label == 'full_alignment':
+            parts.append("Since the stock, sector, and market all agree on direction, this is a high-conviction setup and the system has increased the recommended position size by 20%.")
+        elif factor_label == 'hard_conflict':
+            if gated_signal == original_signal:
+                parts.append(f"Both the market and sector are moving against this stock's signal, but the stock's own bearish conviction is strong enough to keep the {original_signal} call. Position size has been sharply reduced as a safety measure.")
+            else:
+                parts.append(f"Because both the market and sector are moving against this stock's signal, the system has overridden the {original_signal} to HOLD and sharply reduced the position size as a safety measure.")
+        elif factor_label == 'conflict':
+            parts.append("The stock says one thing but part of the broader environment disagrees. The system has reduced risk by 30% to account for this headwind.")
+        else:
+            parts.append("The broader environment is mixed, so position sizing stays at the default level.")
+
+        # --- Sentence 6: Risk-reward & what to do ---
+        rr_quality = "excellent" if risk_reward >= 2.5 else "strong" if risk_reward >= 2 else "good" if risk_reward >= 1.5 else "acceptable" if risk_reward >= 1 else "unfavorable (risk exceeds reward)"
+        if final_signal == 'BUY':
+            parts.append(
+                f"If you buy at the current price of {price}, the target is {target} "
+                f"(+{abs(expected_move):.1f}%) with a stop loss at {stop} (-{max_risk:.1f}%). "
+                f"The risk-reward ratio is {risk_reward}x which is {rr_quality}. "
+                f"The system recommends risking {rec_risk}% of your capital on this trade."
+            )
+        elif final_signal == 'SELL':
+            parts.append(
+                f"The target on the downside is {target} ({expected_move:+.1f}%) "
+                f"with a stop loss at {stop}. Risk-reward is {risk_reward}x ({rr_quality}). "
+                f"Risk no more than {rec_risk}% of your capital."
+            )
+        else:
+            if risk_reward > 0 and risk_reward < 1.0:
+                parts.append(
+                    f"The numbers: target {target}, stop {stop}, risk-reward {risk_reward}x ({rr_quality}). "
+                    f"Don't take a new position until the risk-reward improves. "
+                    f"Either wait for a pullback to a better entry, or for the stop/target levels to shift."
+                )
+            else:
+                parts.append(
+                    f"For now, don't take a new position. Watch for the market or sector conditions to improve "
+                    f"before acting on this stock's signal."
+                )
+
+        # --- Sentence 7: Confidence summary ---
+        parts.append(
+            f"Overall confidence across all factors is {confidence}% (regime-adjusted score: {final_score * 100:.0f}%)."
+        )
+
+        return "<ul>" + "".join(f"<li>{p}</li>" for p in parts) + "</ul>"
+
+    def _apply_regime_layer(self, signal_result, symbol):
+        """Apply market + sector regime layer on top of stock-level signal.
+
+        This method:
+        1. Fetches market regime (Nifty 50) and sector regime (sectoral index).
+        2. Computes a directionally-aware blended score.
+        3. Applies signal gating (BUY/SELL -> HOLD when regime conflicts).
+        4. Applies risk factor to rec_risk_pct.
+        5. Adds explainability fields to the response payload.
+
+        Directional awareness in the blended score:
+          For BUY: bullish regime = favourable (score 1.0 as-is).
+          For SELL: bearish regime = favourable (score inverted: 1.0 - score).
+          For HOLD: regime scores fixed at 0.5 (no directional bias).
+        This ensures the blended score always represents "how favourable is
+        the overall environment for the *direction* of the current signal".
+        """
+        if not signal_result or 'signal' not in signal_result:
+            return signal_result
+
+        sig_data = signal_result['signal']
+        original_signal = sig_data['signal']
+        original_confidence = sig_data['confidence']
+        stock_score = original_confidence / 100.0
+
+        # --- Fetch regimes (failsafe: defaults to neutral on error) ---
+        try:
+            market_regime, market_score, market_details = self._get_market_regime()
+        except Exception:
+            market_regime, market_score, market_details = 'neutral', 0.5, {'reason': 'Error fetching market data'}
+        try:
+            sector_regime, sector_score, sector_details = self._get_sector_regime(symbol)
+        except Exception:
+            sector_regime, sector_score, sector_details = 'neutral', 0.5, {'reason': 'Error fetching sector data'}
+
+        # --- Directionally-aware blended score ---
+        # Raw regime scores: bullish=1.0, neutral=0.5, bearish=0.0
+        # For SELL signals we invert so bearish=1.0 (favourable) and bullish=0.0.
+        if original_signal == 'BUY':
+            market_score_adj = market_score
+            sector_score_adj = sector_score
+        elif original_signal == 'SELL':
+            market_score_adj = 1.0 - market_score
+            sector_score_adj = 1.0 - sector_score
+        else:
+            market_score_adj = 0.5
+            sector_score_adj = 0.5
+
+        final_score = 0.5 * stock_score + 0.3 * sector_score_adj + 0.2 * market_score_adj
+
+        # --- Signal gating ---
+        gated_signal = original_signal
+        gate_reason = None
+
+        if original_signal == 'BUY' and market_regime == 'bearish' and sector_regime == 'bearish':
+            if original_confidence < 65:
+                gated_signal = 'HOLD'
+                gate_reason = (
+                    "BUY downgraded to HOLD: both market and sector are in bearish regime "
+                    "and stock conviction is moderate. "
+                    "Broad weakness across the market and sector makes initiating long positions risky."
+                )
+            else:
+                gate_reason = (
+                    "Both market and sector are bearish, which is a headwind for this BUY. "
+                    "Proceed with caution and a smaller position."
+                )
+        elif original_signal == 'SELL' and market_regime == 'bullish' and sector_regime == 'bullish':
+            if original_confidence < 65:
+                gated_signal = 'HOLD'
+                gate_reason = (
+                    "SELL downgraded to HOLD: both market and sector are in bullish regime "
+                    "and stock conviction is moderate. "
+                    "Broad strength makes shorting against the trend risky."
+                )
+            else:
+                gate_reason = (
+                    "Both market and sector are bullish, which is a headwind for this SELL. "
+                    "The stock's own bearish signals are strong enough to maintain the call, "
+                    "but use tighter risk management."
+                )
+
+        # --- Regime factor for risk ---
+        market_aligned = False
+        sector_aligned = False
+        market_conflict = False
+        sector_conflict = False
+
+        if original_signal in ('BUY', 'SELL'):
+            if original_signal == 'BUY':
+                market_aligned = market_regime == 'bullish'
+                sector_aligned = sector_regime == 'bullish'
+                market_conflict = market_regime == 'bearish'
+                sector_conflict = sector_regime == 'bearish'
+            else:
+                market_aligned = market_regime == 'bearish'
+                sector_aligned = sector_regime == 'bearish'
+                market_conflict = market_regime == 'bullish'
+                sector_conflict = sector_regime == 'bullish'
+
+            if market_aligned and sector_aligned:
+                regime_factor = 1.2
+                factor_label = 'full_alignment'
+            elif market_conflict and sector_conflict:
+                regime_factor = 0.4
+                factor_label = 'hard_conflict'
+                if original_confidence < 65:
+                    gated_signal = 'HOLD'
+                    if gate_reason is None:
+                        gate_reason = (
+                            f"Signal downgraded to HOLD due to hard conflict. Both market ({market_regime}) "
+                            f"and sector ({sector_regime}) regimes oppose the {original_signal} signal."
+                        )
+                else:
+                    regime_factor = 0.5
+                    if gate_reason is None:
+                        gate_reason = (
+                            f"Both market ({market_regime}) and sector ({sector_regime}) regimes oppose "
+                            f"the {original_signal} signal, but stock conviction is high enough to "
+                            f"maintain the call. Position size reduced as a safety measure."
+                        )
+            elif market_conflict or sector_conflict:
+                regime_factor = 0.7
+                factor_label = 'conflict'
+            else:
+                regime_factor = 1.0
+                factor_label = 'mixed'
+        else:
+            regime_factor = 1.0
+            factor_label = 'neutral'
+
+        # --- R/R quality gating ---
+        # Risk-reward is computed from entry/stop/target levels. If risk
+        # exceeds reward, the trade setup is structurally unfavorable
+        # regardless of how strong the trend looks.
+        #   R/R < 0.5  → always downgrade to HOLD (risking 2x the reward)
+        #   R/R < 1.0 + any regime conflict → downgrade to HOLD
+        #   R/R < 1.0 without conflict → keep signal but reduce risk further
+        risk_reward = sig_data.get('risk_reward', 0)
+        rr_gated = False
+
+        if gated_signal in ('BUY', 'SELL') and 0 < risk_reward < 1.0:
+            if risk_reward < 0.5:
+                # Extremely poor R/R - mathematically doesn't make sense
+                gated_signal = 'HOLD'
+                regime_factor = min(regime_factor, 0.5)
+                factor_label = 'rr_reject'
+                rr_gate_text = (
+                    f"Risk-reward is only {risk_reward}x, meaning you'd risk "
+                    f"roughly {1/risk_reward:.1f}x more than you stand to gain. "
+                    f"The trade setup doesn't justify the risk at current levels."
+                )
+                gate_reason = rr_gate_text + (" " + gate_reason if gate_reason else "")
+                rr_gated = True
+            elif market_conflict or sector_conflict:
+                # Poor R/R AND regime headwind - too many factors against
+                gated_signal = 'HOLD'
+                regime_factor = min(regime_factor, 0.6)
+                factor_label = 'rr_conflict'
+                rr_gate_text = (
+                    f"Weak risk-reward ({risk_reward}x) combined with regime "
+                    f"headwinds. Risk exceeds reward while broader conditions "
+                    f"are also unfavorable."
+                )
+                gate_reason = rr_gate_text + (" " + gate_reason if gate_reason else "")
+                rr_gated = True
+            else:
+                # Poor R/R but no regime conflict - warn but don't override
+                regime_factor = min(regime_factor, 0.8)
+                if factor_label == 'full_alignment':
+                    factor_label = 'mixed'  # can't call it full alignment with poor R/R
+
+        sig_data['rr_gated'] = rr_gated
+
+        # --- Apply regime factor to risk ---
+        original_risk = sig_data['rec_risk_pct']
+        adjusted_risk = round(max(0.25, min(original_risk * regime_factor, 3.0)), 2)
+
+        # --- Build regime reason text ---
+        reason_parts = []
+        reason_parts.append(f"Market regime: {market_regime.upper()} (Nifty 50).")
+        sector_name = TICKER_TO_SECTOR.get(symbol, 'Unknown')
+        reason_parts.append(f"Sector regime: {sector_regime.upper()} ({sector_name}).")
+
+        alignment_labels = {
+            'full_alignment': 'Full alignment: market, sector, and stock signal all agree.',
+            'mixed': 'Mixed: partial alignment between regime and signal.',
+            'conflict': 'Conflict: one of market or sector regime opposes the signal.',
+            'hard_conflict': 'Hard conflict: both market and sector regimes oppose the signal.',
+            'neutral': 'Neutral: HOLD signal, no directional alignment applicable.',
+            'rr_reject': f'Risk-reward too low ({risk_reward}x), trade rejected regardless of regime.',
+            'rr_conflict': f'Weak risk-reward ({risk_reward}x) compounded by regime conflict.',
+        }
+        reason_parts.append(alignment_labels.get(factor_label, ''))
+
+        if gate_reason:
+            reason_parts.append(gate_reason)
+        if regime_factor != 1.0:
+            reason_parts.append(
+                f"Risk adjusted from {original_risk}% to {adjusted_risk}% "
+                f"(regime factor x{regime_factor})."
+            )
+
+        regime_reason_text = " ".join(reason_parts)
+
+        # --- Update signal data ---
+        if gated_signal != original_signal:
+            sig_data['signal'] = gated_signal
+            sig_data['original_signal'] = original_signal
+            sig_data['action'] = f"REGIME OVERRIDE ({original_signal}\u2192HOLD)"
+        sig_data['rec_risk_pct'] = adjusted_risk
+
+        # Update risk_reason_text to include regime info
+        sig_data['risk_reason_text'] = (
+            sig_data.get('risk_reason_text', '') +
+            f" [Regime layer: {factor_label} (x{regime_factor}). "
+            f"Risk adjusted to {adjusted_risk}%.]"
+        )
+
+        # --- Add regime fields to signal payload ---
+        regime_confidence = max(0, min(round(final_score * 100), 100))
+        sig_data['market_regime'] = market_regime
+        sig_data['sector_regime'] = sector_regime
+        sig_data['regime_score'] = round(final_score, 3)
+        sig_data['regime_factor'] = regime_factor
+        sig_data['regime_reason_text'] = regime_reason_text
+
+        # --- Build plain-English verdict narrative ---
+        sig_data['verdict_text'] = self._build_verdict(
+            signal_result, original_signal, gated_signal, gate_reason,
+            market_regime, sector_regime, sector_name,
+            regime_factor, factor_label, final_score,
+        )
+
+        # --- Add detailed regime block for transparency ---
+        signal_result['regime'] = {
+            'market_regime': market_regime,
+            'market_score': market_score,
+            'market_details': market_details,
+            'sector_regime': sector_regime,
+            'sector_score': sector_score,
+            'sector_name': sector_name,
+            'sector_details': sector_details,
+            'stock_score': round(stock_score, 3),
+            'final_score': round(final_score, 3),
+            'regime_confidence': regime_confidence,
+            'regime_factor': regime_factor,
+            'factor_label': factor_label,
+            'original_signal': original_signal,
+            'gated_signal': gated_signal,
+            'gate_reason': gate_reason,
+            'original_risk_pct': original_risk,
+            'adjusted_risk_pct': adjusted_risk,
+        }
+
+        return signal_result
+
     def analyze(self, symbol):
         """Main analysis method"""
         cached = ANALYSIS_CACHE.get(symbol)
@@ -1291,6 +1883,11 @@ class Analyzer:
             return None
         result = self.signal(ind)
         if result:
+            # Apply regime layer (failsafe: if it errors, stock signal is unchanged)
+            try:
+                self._apply_regime_layer(result, symbol)
+            except Exception as e:
+                print(f"[WARN] Regime layer failed for {symbol}: {e}")
             try:
                 chart_key = f"projection:{symbol}"
                 chart_b64 = ANALYSIS_CACHE.get(chart_key)
@@ -2018,6 +2615,33 @@ def index():
         .tsc-why { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-why h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
         .tsc-why p { color: var(--text-secondary); line-height: 1.7; font-size: 0.95em; }
+        .tsc-regime { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
+        .tsc-regime h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 14px; }
+        .tsc-regime-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+        .tsc-regime-item { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px 14px; border: 1px solid var(--border-color); }
+        .tsc-regime-item-label { font-size: 0.8em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600; }
+        .tsc-regime-item-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; }
+        .tsc-regime-bullish { color: #10b981; }
+        .tsc-regime-bearish { color: #ef4444; }
+        .tsc-regime-neutral { color: #f59e0b; }
+        .tsc-regime-bar { width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; margin-top: 14px; margin-bottom: 10px; }
+        .tsc-regime-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+        .tsc-regime-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; color: var(--text-muted); margin-bottom: 10px; }
+        .tsc-regime-reason { color: var(--text-secondary); font-size: 0.9em; line-height: 1.6; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+        .tsc-regime-override { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; font-size: 0.9em; color: #fca5a5; }
+        @media (max-width: 600px) { .tsc-regime-grid { grid-template-columns: 1fr 1fr; } }
+        .tsc-verdict { position: relative; border-radius: 14px; padding: 26px 28px; margin-bottom: 22px; border: 1px solid transparent; line-height: 1.8; }
+        .tsc-verdict-BUY { background: linear-gradient(135deg, rgba(16, 185, 129, 0.10), rgba(6, 255, 165, 0.06)); border-color: rgba(16, 185, 129, 0.30); }
+        .tsc-verdict-SELL { background: linear-gradient(135deg, rgba(239, 68, 68, 0.10), rgba(239, 68, 68, 0.06)); border-color: rgba(239, 68, 68, 0.30); }
+        .tsc-verdict-HOLD { background: linear-gradient(135deg, rgba(245, 158, 11, 0.10), rgba(245, 158, 11, 0.06)); border-color: rgba(245, 158, 11, 0.30); }
+        .tsc-verdict-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+        .tsc-verdict-icon { font-size: 1.5em; line-height: 1; }
+        .tsc-verdict-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.15em; color: var(--text-primary); }
+        .tsc-verdict-body { color: var(--text-secondary); font-size: 0.93em; line-height: 1.85; }
+        .tsc-verdict-body ul { margin: 0; padding-left: 20px; list-style-type: disc; }
+        .tsc-verdict-body li { margin-bottom: 8px; }
+        .tsc-verdict-body li:last-child { margin-bottom: 0; }
+        .tsc-verdict-body strong { color: var(--text-primary); font-weight: 600; }
         .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
         .tsc-calc-check { width: 20px; height: 20px; background: var(--accent-green); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7em; font-weight: 700; }
@@ -2382,6 +3006,14 @@ def index():
                         <!-- SETUP BANNER -->
                         <div class="tsc-setup-banner">${s.setup_duration || 'Short Term Setup'} &bull; ${s.days_to_target} Days</div>
 
+                        <!-- THE BOTTOM LINE (verdict) -->
+                        ${s.verdict_text ? '<div class="tsc-verdict tsc-verdict-' + s.signal + '">' +
+                            '<div class="tsc-verdict-header">' +
+                                '<span class="tsc-verdict-title">The Bottom Line</span>' +
+                            '</div>' +
+                            '<div class="tsc-verdict-body">' + s.verdict_text + '</div>' +
+                        '</div>' : ''}
+
                         <!-- CONFIDENCE CARD -->
                         <div class="tsc-confidence-card">
                             <div class="tsc-confidence-top">
@@ -2420,6 +3052,41 @@ def index():
                             <h3>Why This Makes Sense</h3>
                             <p>${s.why_makes_sense || s.rec}</p>
                         </div>
+
+                        <!-- REGIME LAYER -->
+                        ${(function(){
+                            if (!s.market_regime) return '';
+                            const mRegime = s.market_regime || 'neutral';
+                            const sRegime = s.sector_regime || 'neutral';
+                            const regimeScore = s.regime_score != null ? (s.regime_score * 100).toFixed(0) : '--';
+                            const regimeFactor = s.regime_factor != null ? s.regime_factor.toFixed(1) : '1.0';
+                            const mClass = 'tsc-regime-' + mRegime;
+                            const sClass = 'tsc-regime-' + sRegime;
+                            const barColor = s.regime_score >= 0.6 ? 'var(--accent-green)' : s.regime_score >= 0.4 ? 'var(--warning)' : 'var(--danger)';
+                            const barWidth = Math.max(5, Math.min((s.regime_score || 0.5) * 100, 100));
+                            const origSig = s.original_signal || '';
+                            const overrideHtml = origSig ? '<div class="tsc-regime-override">Signal overridden: <strong>' + origSig + ' \\u2192 ' + s.signal + '</strong> due to regime conflict.</div>' : '';
+                            return '<div class="tsc-regime">'
+                                + '<h3>Market &amp; Sector Regime</h3>'
+                                + overrideHtml
+                                + '<div class="tsc-regime-grid">'
+                                + '  <div class="tsc-regime-item">'
+                                + '    <div class="tsc-regime-item-label">Market (Nifty 50)</div>'
+                                + '    <div class="tsc-regime-item-value ' + mClass + '">' + mRegime.toUpperCase() + '</div>'
+                                + '  </div>'
+                                + '  <div class="tsc-regime-item">'
+                                + '    <div class="tsc-regime-item-label">Sector</div>'
+                                + '    <div class="tsc-regime-item-value ' + sClass + '">' + sRegime.toUpperCase() + '</div>'
+                                + '  </div>'
+                                + '</div>'
+                                + '<div class="tsc-regime-meta">'
+                                + '  <span>Regime Score: <strong>' + regimeScore + '%</strong></span>'
+                                + '  <span>Risk Factor: <strong>x' + regimeFactor + '</strong></span>'
+                                + '</div>'
+                                + '<div class="tsc-regime-bar"><div class="tsc-regime-bar-fill" style="width:' + barWidth + '%;background:' + barColor + ';"></div></div>'
+                                + '<div class="tsc-regime-reason">' + (s.regime_reason_text || '') + '</div>'
+                                + '</div>';
+                        })()}
 
                         <!-- TRADE LEVELS (moved up for visibility) -->
                         <div class="tsc-calc-details" style="margin-bottom:20px;">
@@ -2504,7 +3171,7 @@ def index():
                                             ${s.macd_text}
                                         </div>
                                         <div class="tsc-tech-item-example">
-                                            <strong>What is MACD?</strong> Imagine two runners - one fast and one slow. MACD tracks the gap between them. When the fast runner pulls ahead (Bullish), it means momentum is building upward - like a car accelerating. When the slow runner catches up (Bearish), the stock is losing steam. It's one of the most reliable ways to spot when a trend is gaining or losing strength.
+                                            <strong>What is MACD?</strong> Imagine two runners, one fast and one slow. MACD tracks the gap between them. When the fast runner pulls ahead (Bullish), it means momentum is building upward, like a car accelerating. When the slow runner catches up (Bearish), the stock is losing steam. It's one of the most reliable ways to spot when a trend is gaining or losing strength.
                                         </div>
                                     </div>
                                     <!-- SMA Status -->
@@ -2517,7 +3184,7 @@ def index():
                                             ${s.trend_explain}
                                         </div>
                                         <div class="tsc-tech-item-example">
-                                            <strong>What are Moving Averages?</strong> A moving average smooths out daily price noise to show the real trend. The 20-day SMA shows the short-term trend (like last month's direction), while the 50-day SMA shows the bigger picture. When the price is above both, it's like a boat sailing with the current - the trend is your friend. Below both means you're swimming against the tide.
+                                            <strong>What are Moving Averages?</strong> A moving average smooths out daily price noise to show the real trend. The 20-day SMA shows the short-term trend (like last month's direction), while the 50-day SMA shows the bigger picture. When the price is above both, it's like a boat sailing with the current and the trend is your friend. Below both means you're swimming against the tide.
                                         </div>
                                     </div>
                                     <!-- Z-Score -->
@@ -3559,6 +4226,125 @@ def duplicates_route():
         'sectors': {name: len(stocks) for name, stocks in STOCKS.items()},
         'remaining_duplicates': dups,
     })
+
+def validate_regime_layer():
+    """Validate the regime layer logic with 4 deterministic scenarios.
+
+    Uses mock data to test gating, scoring, and risk adjustment without
+    requiring live market data.  Returns a list of scenario results with
+    pass/fail status.
+    """
+    a = Analyzer()
+    results = []
+
+    def _make_signal(sig, confidence=65, rec_risk_pct=1.0):
+        """Build a minimal signal_result dict for testing."""
+        return {
+            'signal': {
+                'signal': sig,
+                'action': 'TEST',
+                'confidence': confidence,
+                'rec_risk_pct': rec_risk_pct,
+                'risk_reason_text': 'Base test.',
+            }
+        }
+
+    def _mock_regime(obj, market_regime, sector_regime,
+                     market_score, sector_score, symbol='TCS'):
+        """Monkey-patch regime methods on the analyzer for one test."""
+        obj._get_market_regime = lambda: (market_regime, market_score,
+                                          {'source': 'mock', 'reason': 'test'})
+        obj._get_sector_regime = lambda s: (sector_regime, sector_score,
+                                            {'source': 'mock', 'reason': 'test'})
+
+    # --- Scenario 1: BUY + bullish market + bullish sector ---
+    sr1 = _make_signal('BUY', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bullish', 'bullish', 1.0, 1.0)
+    a._apply_regime_layer(sr1, 'TCS')
+    s1_pass = (
+        sr1['signal']['signal'] == 'BUY'          # should NOT be gated
+        and sr1['signal']['regime_factor'] == 1.2  # full alignment
+        and sr1['signal']['rec_risk_pct'] == 1.2   # 1.0 * 1.2
+    )
+    results.append({
+        'scenario': '1. BUY + bullish market/sector',
+        'expected': 'BUY kept, factor 1.2, risk 1.2%',
+        'actual_signal': sr1['signal']['signal'],
+        'actual_factor': sr1['signal']['regime_factor'],
+        'actual_risk': sr1['signal']['rec_risk_pct'],
+        'pass': s1_pass,
+    })
+
+    # --- Scenario 2: BUY + bearish market + bearish sector (must downgrade) ---
+    sr2 = _make_signal('BUY', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bearish', 'bearish', 0.0, 0.0)
+    a._apply_regime_layer(sr2, 'TCS')
+    s2_pass = (
+        sr2['signal']['signal'] == 'HOLD'          # gated to HOLD
+        and sr2['signal'].get('original_signal') == 'BUY'
+        and sr2['signal']['regime_factor'] == 0.4   # hard conflict
+        and sr2['signal']['rec_risk_pct'] == 0.4    # 1.0 * 0.4
+    )
+    results.append({
+        'scenario': '2. BUY + bearish market/sector (downgrade)',
+        'expected': 'HOLD (from BUY), factor 0.4, risk 0.4%',
+        'actual_signal': sr2['signal']['signal'],
+        'actual_original': sr2['signal'].get('original_signal'),
+        'actual_factor': sr2['signal']['regime_factor'],
+        'actual_risk': sr2['signal']['rec_risk_pct'],
+        'pass': s2_pass,
+    })
+
+    # --- Scenario 3: SELL + bullish market + bullish sector (must downgrade) ---
+    sr3 = _make_signal('SELL', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bullish', 'bullish', 1.0, 1.0)
+    a._apply_regime_layer(sr3, 'TCS')
+    s3_pass = (
+        sr3['signal']['signal'] == 'HOLD'          # gated to HOLD
+        and sr3['signal'].get('original_signal') == 'SELL'
+        and sr3['signal']['regime_factor'] == 0.4   # hard conflict
+        and sr3['signal']['rec_risk_pct'] == 0.4    # 1.0 * 0.4
+    )
+    results.append({
+        'scenario': '3. SELL + bullish market/sector (downgrade)',
+        'expected': 'HOLD (from SELL), factor 0.4, risk 0.4%',
+        'actual_signal': sr3['signal']['signal'],
+        'actual_original': sr3['signal'].get('original_signal'),
+        'actual_factor': sr3['signal']['regime_factor'],
+        'actual_risk': sr3['signal']['rec_risk_pct'],
+        'pass': s3_pass,
+    })
+
+    # --- Scenario 4: Missing sector data (fallback neutral) ---
+    sr4 = _make_signal('BUY', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bullish', 'neutral', 1.0, 0.5, symbol='UNKNOWN')
+    a._apply_regime_layer(sr4, 'UNKNOWN')
+    s4_pass = (
+        sr4['signal']['signal'] == 'BUY'           # not gated (only market bullish, sector neutral)
+        and sr4['signal']['regime_factor'] == 1.0   # mixed (not full alignment, not conflict)
+    )
+    results.append({
+        'scenario': '4. Missing sector data (fallback neutral)',
+        'expected': 'BUY kept, factor 1.0 (mixed)',
+        'actual_signal': sr4['signal']['signal'],
+        'actual_factor': sr4['signal']['regime_factor'],
+        'actual_risk': sr4['signal']['rec_risk_pct'],
+        'pass': s4_pass,
+    })
+
+    all_passed = all(r['pass'] for r in results)
+    return {'all_passed': all_passed, 'scenarios': results}
+
+
+@app.route('/regime-test')
+def regime_test_route():
+    """Debug endpoint: run regime layer validation scenarios."""
+    try:
+        result = validate_regime_layer()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
