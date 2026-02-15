@@ -57,6 +57,7 @@ REGRESSION_WAIT_TIMEOUT_SECONDS = 2.0
 REGRESSION_CACHE_TTL = timedelta(hours=8)
 ANALYZE_CACHE_TTL = timedelta(minutes=20)
 PRICE_HISTORY_CACHE_TTL = timedelta(minutes=30)
+REGIME_CACHE_TTL = timedelta(minutes=30)
 
 YAHOO_TICKER_ALIASES = {
     "ETERNAL": ["ZOMATO"],
@@ -231,6 +232,7 @@ class HybridTTLCache:
 PRICE_HISTORY_CACHE = HybridTTLCache('price_history', PRICE_HISTORY_CACHE_TTL, max_entries=180)
 ANALYSIS_CACHE = HybridTTLCache('analysis', ANALYZE_CACHE_TTL, max_entries=180)
 REGRESSION_CACHE = HybridTTLCache('regression', REGRESSION_CACHE_TTL, max_entries=96)
+REGIME_CACHE = HybridTTLCache('regime', REGIME_CACHE_TTL, max_entries=32)
 REGRESSION_JOB_CACHE = {}
 REGRESSION_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
@@ -625,6 +627,43 @@ print(
     f"✅ Loaded {len(ALL_VALID_TICKERS)} unique stocks across {len(STOCKS)} sectors "
     f"(duplicates removed). Universe source: {UNIVERSE_SOURCE}"
 )
+
+# ===== TICKER-TO-SECTOR REVERSE MAPPING =====
+TICKER_TO_SECTOR = {}
+for _sector_name, _sector_tickers in STOCKS.items():
+    for _t in _sector_tickers:
+        if _t not in TICKER_TO_SECTOR:
+            TICKER_TO_SECTOR[_t] = _sector_name
+
+# ===== SECTOR INDEX MAP (Yahoo Finance tickers for NSE sectoral indices) =====
+SECTOR_INDEX_MAP = {
+    'IT Sector': '^CNXIT',
+    'Banking': '^NSEBANK',
+    'Financial Services': '^CNXFIN',
+    'Auto': '^CNXAUTO',
+    'Auto Components': '^CNXAUTO',
+    'Pharma': '^CNXPHARMA',
+    'Healthcare': '^CNXPHARMA',
+    'Consumer Goods': '^CNXFMCG',
+    'FMCG': '^CNXFMCG',
+    'Retail': '^CNXFMCG',
+    'Energy - Oil & Gas': '^CNXENERGY',
+    'Power': '^CNXENERGY',
+    'Metals & Mining': '^CNXMETAL',
+    'Cement': '^CNXINFRA',
+    'Real Estate': '^CNXREALTY',
+    'Infrastructure': '^CNXINFRA',
+    'Construction': '^CNXINFRA',
+    'Media': '^CNXMEDIA',
+    'Telecom': '^CNXMEDIA',
+    'Electronics': '^CNXIT',
+    'Paints': '^CNXFMCG',
+    'Textiles': '^CNXFMCG',
+    'Chemicals': '^CNXPHARMA',
+    'Logistics': '^CNXINFRA',
+    'Aviation': '^CNXINFRA',
+    'Hospitality': '^CNXFMCG',
+}
 
 # ===== REST OF CODE REMAINS IDENTICAL =====
 
@@ -1278,6 +1317,292 @@ class Analyzer:
             print(f"Error generating projection chart: {e}")
             return None
 
+    # ===== REGIME DETECTION LAYER =====
+
+    def _compute_regime(self, close_series):
+        """Compute market/sector regime from a close price series.
+
+        Rules (price vs SMA20/SMA50 + RSI):
+          bullish (1.0): price > SMA20 AND price > SMA50 AND RSI > 40
+          bearish (0.0): price < SMA20 AND price < SMA50 AND RSI < 60
+          neutral (0.5): everything else
+
+        RSI guards prevent false classification during extreme mean-reversion:
+          - RSI > 40 filter: avoids calling a regime "bullish" if a crash just
+            pushed RSI into deep oversold territory despite price still above MAs.
+          - RSI < 60 filter: avoids calling a regime "bearish" during a strong
+            bounce that hasn't yet lifted price above the MAs.
+        """
+        if close_series is None or len(close_series) < 20:
+            return 'neutral', 0.5, {'reason': 'Insufficient data for regime detection'}
+
+        price = float(close_series.iloc[-1])
+        sma20 = float(close_series.rolling(20).mean().iloc[-1])
+        sma50_window = min(50, len(close_series))
+        sma50 = float(close_series.rolling(sma50_window).mean().iloc[-1])
+
+        # RSI (14-period)
+        rsi_window = min(14, len(close_series))
+        delta = close_series.diff()
+        gain = delta.where(delta > 0, 0).rolling(rsi_window).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(rsi_window).mean()
+        rs = gain / loss
+        rsi_series = 100 - (100 / (1 + rs))
+        current_rsi = float(rsi_series.iloc[-1])
+        if pd.isna(current_rsi) or np.isinf(current_rsi):
+            current_rsi = 50.0
+
+        above_sma20 = price > sma20
+        above_sma50 = price > sma50
+
+        if above_sma20 and above_sma50 and current_rsi > 40:
+            regime = 'bullish'
+            score = 1.0
+        elif not above_sma20 and not above_sma50 and current_rsi < 60:
+            regime = 'bearish'
+            score = 0.0
+        else:
+            regime = 'neutral'
+            score = 0.5
+
+        details = {
+            'price': round(price, 2),
+            'sma20': round(sma20, 2),
+            'sma50': round(sma50, 2),
+            'rsi': round(current_rsi, 1),
+            'above_sma20': above_sma20,
+            'above_sma50': above_sma50,
+        }
+        return regime, score, details
+
+    def _fetch_regime(self, yahoo_ticker, cache_key):
+        """Fetch price data for a ticker, compute its regime, and cache."""
+        cached = REGIME_CACHE.get(cache_key)
+        if cached is not None:
+            return cached['regime'], cached['score'], cached['details']
+        try:
+            data = yf.download(yahoo_ticker, period='3mo', interval='1d',
+                               progress=False, threads=False, timeout=8)
+            if data is None or data.empty:
+                result = {'regime': 'neutral', 'score': 0.5,
+                          'details': {'reason': f'No data for {yahoo_ticker}', 'source': yahoo_ticker}}
+                REGIME_CACHE.set(cache_key, result)
+                return result['regime'], result['score'], result['details']
+
+            close = data.get('Close')
+            if close is None:
+                result = {'regime': 'neutral', 'score': 0.5,
+                          'details': {'reason': f'No close data for {yahoo_ticker}', 'source': yahoo_ticker}}
+                REGIME_CACHE.set(cache_key, result)
+                return result['regime'], result['score'], result['details']
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            close = close.dropna()
+
+            regime, score, details = self._compute_regime(close)
+            details['source'] = yahoo_ticker
+            result = {'regime': regime, 'score': score, 'details': details}
+            REGIME_CACHE.set(cache_key, result)
+            return regime, score, details
+        except Exception as e:
+            result = {'regime': 'neutral', 'score': 0.5,
+                      'details': {'reason': f'Error: {str(e)}', 'source': yahoo_ticker}}
+            REGIME_CACHE.set(cache_key, result)
+            return result['regime'], result['score'], result['details']
+
+    def _get_market_regime(self):
+        """Get Nifty 50 market regime. Falls back to NIFTYBEES ETF if index unavailable."""
+        regime, score, details = self._fetch_regime('^NSEI', 'regime:market:NSEI')
+        if details.get('reason') and 'No data' in details.get('reason', ''):
+            regime, score, details = self._fetch_regime('NIFTYBEES.NS', 'regime:market:NIFTYBEES')
+        return regime, score, details
+
+    def _get_sector_regime(self, symbol):
+        """Get sector regime for a stock. Falls back to neutral if sector data unavailable."""
+        sector = TICKER_TO_SECTOR.get(symbol)
+        if not sector:
+            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}'}
+        sector_ticker = SECTOR_INDEX_MAP.get(sector)
+        if not sector_ticker:
+            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"'}
+        return self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+
+    def _apply_regime_layer(self, signal_result, symbol):
+        """Apply market + sector regime layer on top of stock-level signal.
+
+        This method:
+        1. Fetches market regime (Nifty 50) and sector regime (sectoral index).
+        2. Computes a directionally-aware blended score.
+        3. Applies signal gating (BUY/SELL -> HOLD when regime conflicts).
+        4. Applies risk factor to rec_risk_pct.
+        5. Adds explainability fields to the response payload.
+
+        Directional awareness in the blended score:
+          For BUY: bullish regime = favourable (score 1.0 as-is).
+          For SELL: bearish regime = favourable (score inverted: 1.0 - score).
+          For HOLD: regime scores fixed at 0.5 (no directional bias).
+        This ensures the blended score always represents "how favourable is
+        the overall environment for the *direction* of the current signal".
+        """
+        if not signal_result or 'signal' not in signal_result:
+            return signal_result
+
+        sig_data = signal_result['signal']
+        original_signal = sig_data['signal']
+        original_confidence = sig_data['confidence']
+        stock_score = original_confidence / 100.0
+
+        # --- Fetch regimes (failsafe: defaults to neutral on error) ---
+        try:
+            market_regime, market_score, market_details = self._get_market_regime()
+        except Exception:
+            market_regime, market_score, market_details = 'neutral', 0.5, {'reason': 'Error fetching market data'}
+        try:
+            sector_regime, sector_score, sector_details = self._get_sector_regime(symbol)
+        except Exception:
+            sector_regime, sector_score, sector_details = 'neutral', 0.5, {'reason': 'Error fetching sector data'}
+
+        # --- Directionally-aware blended score ---
+        # Raw regime scores: bullish=1.0, neutral=0.5, bearish=0.0
+        # For SELL signals we invert so bearish=1.0 (favourable) and bullish=0.0.
+        if original_signal == 'BUY':
+            market_score_adj = market_score
+            sector_score_adj = sector_score
+        elif original_signal == 'SELL':
+            market_score_adj = 1.0 - market_score
+            sector_score_adj = 1.0 - sector_score
+        else:
+            market_score_adj = 0.5
+            sector_score_adj = 0.5
+
+        final_score = 0.5 * stock_score + 0.3 * sector_score_adj + 0.2 * market_score_adj
+
+        # --- Signal gating ---
+        gated_signal = original_signal
+        gate_reason = None
+
+        if original_signal == 'BUY' and market_regime == 'bearish' and sector_regime == 'bearish':
+            gated_signal = 'HOLD'
+            gate_reason = (
+                "BUY downgraded to HOLD: both market and sector are in bearish regime. "
+                "Broad weakness across the market and sector makes initiating long positions risky."
+            )
+        elif original_signal == 'SELL' and market_regime == 'bullish' and sector_regime == 'bullish':
+            gated_signal = 'HOLD'
+            gate_reason = (
+                "SELL downgraded to HOLD: both market and sector are in bullish regime. "
+                "Broad strength makes shorting against the trend risky."
+            )
+
+        # --- Regime factor for risk ---
+        if original_signal in ('BUY', 'SELL'):
+            if original_signal == 'BUY':
+                market_aligned = market_regime == 'bullish'
+                sector_aligned = sector_regime == 'bullish'
+                market_conflict = market_regime == 'bearish'
+                sector_conflict = sector_regime == 'bearish'
+            else:
+                market_aligned = market_regime == 'bearish'
+                sector_aligned = sector_regime == 'bearish'
+                market_conflict = market_regime == 'bullish'
+                sector_conflict = sector_regime == 'bullish'
+
+            if market_aligned and sector_aligned:
+                regime_factor = 1.2
+                factor_label = 'full_alignment'
+            elif market_conflict and sector_conflict:
+                regime_factor = 0.4
+                factor_label = 'hard_conflict'
+                gated_signal = 'HOLD'
+                if gate_reason is None:
+                    gate_reason = (
+                        f"Signal downgraded to HOLD: hard conflict — both market ({market_regime}) "
+                        f"and sector ({sector_regime}) regimes oppose the {original_signal} signal."
+                    )
+            elif market_conflict or sector_conflict:
+                regime_factor = 0.7
+                factor_label = 'conflict'
+            else:
+                regime_factor = 1.0
+                factor_label = 'mixed'
+        else:
+            regime_factor = 1.0
+            factor_label = 'neutral'
+
+        # --- Apply regime factor to risk ---
+        original_risk = sig_data['rec_risk_pct']
+        adjusted_risk = round(max(0.25, min(original_risk * regime_factor, 3.0)), 2)
+
+        # --- Build regime reason text ---
+        reason_parts = []
+        reason_parts.append(f"Market regime: {market_regime.upper()} (Nifty 50).")
+        sector_name = TICKER_TO_SECTOR.get(symbol, 'Unknown')
+        reason_parts.append(f"Sector regime: {sector_regime.upper()} ({sector_name}).")
+
+        alignment_labels = {
+            'full_alignment': 'Full alignment — market, sector, and stock signal all agree.',
+            'mixed': 'Mixed — partial alignment between regime and signal.',
+            'conflict': 'Conflict — one of market or sector regime opposes the signal.',
+            'hard_conflict': 'Hard conflict — both market and sector regimes oppose the signal.',
+            'neutral': 'Neutral — HOLD signal, no directional alignment applicable.',
+        }
+        reason_parts.append(alignment_labels.get(factor_label, ''))
+
+        if gate_reason:
+            reason_parts.append(gate_reason)
+        if regime_factor != 1.0:
+            reason_parts.append(
+                f"Risk adjusted from {original_risk}% to {adjusted_risk}% "
+                f"(regime factor x{regime_factor})."
+            )
+
+        regime_reason_text = " ".join(reason_parts)
+
+        # --- Update signal data ---
+        if gated_signal != original_signal:
+            sig_data['signal'] = gated_signal
+            sig_data['original_signal'] = original_signal
+            sig_data['action'] = f"REGIME OVERRIDE ({original_signal}\u2192HOLD)"
+        sig_data['rec_risk_pct'] = adjusted_risk
+
+        # Update risk_reason_text to include regime info
+        sig_data['risk_reason_text'] = (
+            sig_data.get('risk_reason_text', '') +
+            f" [Regime layer: {factor_label} (x{regime_factor}). "
+            f"Risk adjusted to {adjusted_risk}%.]"
+        )
+
+        # --- Add regime fields to signal payload ---
+        regime_confidence = max(0, min(round(final_score * 100), 100))
+        sig_data['market_regime'] = market_regime
+        sig_data['sector_regime'] = sector_regime
+        sig_data['regime_score'] = round(final_score, 3)
+        sig_data['regime_factor'] = regime_factor
+        sig_data['regime_reason_text'] = regime_reason_text
+
+        # --- Add detailed regime block for transparency ---
+        signal_result['regime'] = {
+            'market_regime': market_regime,
+            'market_score': market_score,
+            'market_details': market_details,
+            'sector_regime': sector_regime,
+            'sector_score': sector_score,
+            'sector_name': sector_name,
+            'sector_details': sector_details,
+            'stock_score': round(stock_score, 3),
+            'final_score': round(final_score, 3),
+            'regime_confidence': regime_confidence,
+            'regime_factor': regime_factor,
+            'factor_label': factor_label,
+            'original_signal': original_signal,
+            'gated_signal': gated_signal,
+            'gate_reason': gate_reason,
+            'original_risk_pct': original_risk,
+            'adjusted_risk_pct': adjusted_risk,
+        }
+
+        return signal_result
+
     def analyze(self, symbol):
         """Main analysis method"""
         cached = ANALYSIS_CACHE.get(symbol)
@@ -1291,6 +1616,11 @@ class Analyzer:
             return None
         result = self.signal(ind)
         if result:
+            # Apply regime layer (failsafe: if it errors, stock signal is unchanged)
+            try:
+                self._apply_regime_layer(result, symbol)
+            except Exception as e:
+                print(f"[WARN] Regime layer failed for {symbol}: {e}")
             try:
                 chart_key = f"projection:{symbol}"
                 chart_b64 = ANALYSIS_CACHE.get(chart_key)
@@ -3559,6 +3889,125 @@ def duplicates_route():
         'sectors': {name: len(stocks) for name, stocks in STOCKS.items()},
         'remaining_duplicates': dups,
     })
+
+def validate_regime_layer():
+    """Validate the regime layer logic with 4 deterministic scenarios.
+
+    Uses mock data to test gating, scoring, and risk adjustment without
+    requiring live market data.  Returns a list of scenario results with
+    pass/fail status.
+    """
+    a = Analyzer()
+    results = []
+
+    def _make_signal(sig, confidence=65, rec_risk_pct=1.0):
+        """Build a minimal signal_result dict for testing."""
+        return {
+            'signal': {
+                'signal': sig,
+                'action': 'TEST',
+                'confidence': confidence,
+                'rec_risk_pct': rec_risk_pct,
+                'risk_reason_text': 'Base test.',
+            }
+        }
+
+    def _mock_regime(obj, market_regime, sector_regime,
+                     market_score, sector_score, symbol='TCS'):
+        """Monkey-patch regime methods on the analyzer for one test."""
+        obj._get_market_regime = lambda: (market_regime, market_score,
+                                          {'source': 'mock', 'reason': 'test'})
+        obj._get_sector_regime = lambda s: (sector_regime, sector_score,
+                                            {'source': 'mock', 'reason': 'test'})
+
+    # --- Scenario 1: BUY + bullish market + bullish sector ---
+    sr1 = _make_signal('BUY', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bullish', 'bullish', 1.0, 1.0)
+    a._apply_regime_layer(sr1, 'TCS')
+    s1_pass = (
+        sr1['signal']['signal'] == 'BUY'          # should NOT be gated
+        and sr1['signal']['regime_factor'] == 1.2  # full alignment
+        and sr1['signal']['rec_risk_pct'] == 1.2   # 1.0 * 1.2
+    )
+    results.append({
+        'scenario': '1. BUY + bullish market/sector',
+        'expected': 'BUY kept, factor 1.2, risk 1.2%',
+        'actual_signal': sr1['signal']['signal'],
+        'actual_factor': sr1['signal']['regime_factor'],
+        'actual_risk': sr1['signal']['rec_risk_pct'],
+        'pass': s1_pass,
+    })
+
+    # --- Scenario 2: BUY + bearish market + bearish sector (must downgrade) ---
+    sr2 = _make_signal('BUY', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bearish', 'bearish', 0.0, 0.0)
+    a._apply_regime_layer(sr2, 'TCS')
+    s2_pass = (
+        sr2['signal']['signal'] == 'HOLD'          # gated to HOLD
+        and sr2['signal'].get('original_signal') == 'BUY'
+        and sr2['signal']['regime_factor'] == 0.4   # hard conflict
+        and sr2['signal']['rec_risk_pct'] == 0.4    # 1.0 * 0.4
+    )
+    results.append({
+        'scenario': '2. BUY + bearish market/sector (downgrade)',
+        'expected': 'HOLD (from BUY), factor 0.4, risk 0.4%',
+        'actual_signal': sr2['signal']['signal'],
+        'actual_original': sr2['signal'].get('original_signal'),
+        'actual_factor': sr2['signal']['regime_factor'],
+        'actual_risk': sr2['signal']['rec_risk_pct'],
+        'pass': s2_pass,
+    })
+
+    # --- Scenario 3: SELL + bullish market + bullish sector (must downgrade) ---
+    sr3 = _make_signal('SELL', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bullish', 'bullish', 1.0, 1.0)
+    a._apply_regime_layer(sr3, 'TCS')
+    s3_pass = (
+        sr3['signal']['signal'] == 'HOLD'          # gated to HOLD
+        and sr3['signal'].get('original_signal') == 'SELL'
+        and sr3['signal']['regime_factor'] == 0.4   # hard conflict
+        and sr3['signal']['rec_risk_pct'] == 0.4    # 1.0 * 0.4
+    )
+    results.append({
+        'scenario': '3. SELL + bullish market/sector (downgrade)',
+        'expected': 'HOLD (from SELL), factor 0.4, risk 0.4%',
+        'actual_signal': sr3['signal']['signal'],
+        'actual_original': sr3['signal'].get('original_signal'),
+        'actual_factor': sr3['signal']['regime_factor'],
+        'actual_risk': sr3['signal']['rec_risk_pct'],
+        'pass': s3_pass,
+    })
+
+    # --- Scenario 4: Missing sector data (fallback neutral) ---
+    sr4 = _make_signal('BUY', confidence=70, rec_risk_pct=1.0)
+    _mock_regime(a, 'bullish', 'neutral', 1.0, 0.5, symbol='UNKNOWN')
+    a._apply_regime_layer(sr4, 'UNKNOWN')
+    s4_pass = (
+        sr4['signal']['signal'] == 'BUY'           # not gated (only market bullish, sector neutral)
+        and sr4['signal']['regime_factor'] == 1.0   # mixed (not full alignment, not conflict)
+    )
+    results.append({
+        'scenario': '4. Missing sector data (fallback neutral)',
+        'expected': 'BUY kept, factor 1.0 (mixed)',
+        'actual_signal': sr4['signal']['signal'],
+        'actual_factor': sr4['signal']['regime_factor'],
+        'actual_risk': sr4['signal']['rec_risk_pct'],
+        'pass': s4_pass,
+    })
+
+    all_passed = all(r['pass'] for r in results)
+    return {'all_passed': all_passed, 'scenarios': results}
+
+
+@app.route('/regime-test')
+def regime_test_route():
+    """Debug endpoint: run regime layer validation scenarios."""
+    try:
+        result = validate_regime_layer()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(debug=True, use_reloader=False)
