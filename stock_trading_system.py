@@ -2724,6 +2724,16 @@ def index():
         .summary-label { font-size: 0.85em; color: var(--text-secondary); margin-top: 8px; }
         .optimize-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--accent-green), #059669); color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
         .optimize-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(6, 255, 165, 0.3); }
+        .dividend-search-row { display: flex; gap: 10px; align-items: stretch; }
+        .dividend-search-row .search-input-wrap { flex: 1; min-width: 0; position: relative; }
+        .dividend-search-row .search-input-wrap input { width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; box-sizing: border-box; }
+        .dividend-search-row .search-input-wrap input:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 255, 255, 0.1); }
+        .search-btn { padding: 12px 22px; background: var(--accent-cyan); color: var(--bg-dark); border: none; border-radius: 8px; font-size: 0.95em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; flex-shrink: 0; }
+        .search-btn:hover { opacity: 0.9; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.25); }
+        @media (max-width: 480px) {
+            .dividend-search-row { flex-direction: column; }
+            .search-btn { width: 100%; padding: 14px; text-align: center; }
+        }
         .risk-desc { margin-top: 10px; padding: 12px; background: var(--bg-dark); border-radius: 6px; color: var(--text-muted); font-size: 0.85em; line-height: 1.5; border-left: 3px solid var(--accent-purple); }
         #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; }
         #capital-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(6, 255, 165, 0.1); }
@@ -2818,12 +2828,12 @@ def index():
                         <button class="scope-btn" onclick="setScope('custom', this)">Custom Sectors</button>
                     </div>
                     <div id="dividend-search-wrap" style="margin-top: 15px;">
-                        <div style="display: flex; gap: 10px; align-items: stretch;">
-                            <div style="flex: 1; position: relative;">
-                                <input type="text" id="dividend-search" placeholder="Search stocks (e.g., TCS, RELIANCE, INFY)..." style="width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; box-sizing: border-box;">
+                        <div class="dividend-search-row">
+                            <div class="search-input-wrap">
+                                <input type="text" id="dividend-search" placeholder="Search stocks (e.g., TCS, RELIANCE, INFY)...">
                                 <div class="suggestions" id="dividend-suggestions"></div>
                             </div>
-                            <button class="optimize-btn" onclick="searchStockDividend()" style="white-space: nowrap; padding: 12px 24px; margin: 0; flex-shrink: 0;">Search</button>
+                            <button class="search-btn" onclick="searchStockDividend()">Search</button>
                         </div>
                         <div id="single-stock-result" style="margin-top: 15px;"></div>
                     </div>
@@ -2984,7 +2994,7 @@ def index():
                                 </div>
                                 ${data.sector ? '<span style="background: var(--bg-card); padding: 4px 10px; border-radius: 6px; font-size: 0.8em; color: var(--text-secondary);">' + data.sector + '</span>' : ''}
                             </div>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;">
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px;">
                                 <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; text-align: center;">
                                     <div style="font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Price</div>
                                     <div style="font-size: 1.1em; font-weight: 600; color: var(--text-primary);">₹${fmt(data.price)}</div>
