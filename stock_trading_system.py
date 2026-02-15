@@ -2868,6 +2868,7 @@ def index():
         @media (max-width: 600px) {
             .tsc-tip .tsc-tip-text { width: 260px; font-size: 0.78em; padding: 12px; left: 0; transform: translateX(-20%); }
         }
+        .tsc-simple-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-bottom: 20px; }
         @media (max-width: 768px) {
             .tsc-header { padding: 16px 18px 12px; }
             .tsc-body { padding: 0 18px 18px; }
@@ -2880,6 +2881,7 @@ def index():
             .tsc-confidence-top { flex-wrap: wrap; }
             .tsc-calc-row { flex-direction: column; }
             .tsc-capital-display { text-align: left; }
+            .tsc-simple-grid { grid-template-columns: 1fr 1fr; }
         }
 
         .scope-btn, .risk-btn { padding: 10px 18px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; color: var(--text-secondary); font-size: 0.9em; font-weight: 500; transition: all 0.2s; }
@@ -3242,7 +3244,7 @@ def index():
                         })()}
 
                         <!-- SIMPLE INDICATORS SUMMARY -->
-                        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:20px;">
+                        <div class="tsc-simple-grid">
                             <div style="background:var(--bg-card-hover);border-radius:10px;padding:14px 12px;border:1px solid var(--border-color);text-align:center;">
                                 <div style="font-size:0.7em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px;">Trend</div>
                                 <div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.05em;color:${s.simple_trend === 'Up' ? 'var(--accent-green)' : s.simple_trend === 'Down' ? 'var(--danger)' : 'var(--warning)'};">${s.simple_trend || '--'}</div>
