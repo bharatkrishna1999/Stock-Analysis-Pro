@@ -1161,6 +1161,114 @@ class Analyzer:
             exit_explain = f"If already holding, consider taking profits at ₹{target_price:.2f}."
             confidence_explain = f"{confidence}% confidence. Moderate confidence suggests waiting for better setup."
             time_explain = f"Market consolidating. Wait for breakout confirmation."
+
+        # ── Outcome-based payoff explanation ──
+        if max_risk_pct < 0.1 or expected_move_pct < 0.1:
+            payoff_sentence = "Insufficient payoff distance."
+            payoff_label = "Insufficient Data"
+        else:
+            payoff_sentence = f"For every \u20b91 you risk, expected return is \u20b9{risk_reward:.2f}."
+            if risk_reward < 1:
+                payoff_sentence += " This is not attractive."
+                payoff_label = "Unfavorable Payoff"
+            elif risk_reward <= 1.5:
+                payoff_sentence += " This is an average setup."
+                payoff_label = "Average Payoff"
+            else:
+                payoff_sentence += " This is attractive."
+                payoff_label = "Attractive Payoff"
+
+        # ── Investment Impact Calculator fields ──
+        # Potential gain/loss per ₹10,000 default investment
+        potential_gain_per_unit = round(expected_move_pct / 100, 4)
+        potential_loss_per_unit = round(max_risk_pct / 100, 4)
+        # Edge case: stop loss > CMP for a long-only (BUY/HOLD) signal implies short selling
+        short_sell_warning = ""
+        if sig != "SELL" and stop_price > i['price']:
+            short_sell_warning = "This setup implies short selling. Not applicable in retail mode."
+        # Edge case: CMP equals stop or target
+        no_actionable_range = False
+        if abs(i['price'] - stop_price) < 0.01 or abs(i['price'] - target_price) < 0.01:
+            no_actionable_range = True
+        # Edge case: expected move < 1%
+        low_movement = expected_move_pct < 1.0
+
+        # ── Confidence as frequency framing ──
+        freq_out_of_10 = round(confidence / 10)
+        confidence_frequency = f"In past 10 similar setups, {freq_out_of_10} moved in this direction."
+        low_sample_warning = ""
+        # With limited historical data, flag low reliability
+        if confidence < 55:
+            low_sample_warning = "Low historical sample size. Reliability reduced."
+
+        # ── Retail mode: signal display label ──
+        if sig == "SELL":
+            retail_action_label = "Avoid / Not Suitable for Long Only Investors"
+        elif sig == "BUY":
+            retail_action_label = "Consider Entry"
+        else:
+            retail_action_label = "Wait / Hold"
+
+        # ── Collapse indicators into 4 simple labels ──
+        # Trend
+        if uptrend and i['macd_bullish']:
+            simple_trend = "Up"
+        elif not uptrend and not i['macd_bullish']:
+            simple_trend = "Down"
+        else:
+            simple_trend = "Sideways"
+        # Momentum
+        if abs(i['daily']) > 2 or (i['rsi'] > 65 or i['rsi'] < 35):
+            simple_momentum = "Strong"
+        elif abs(i['daily']) < 0.5 and 40 < i['rsi'] < 60:
+            simple_momentum = "Neutral"
+        else:
+            simple_momentum = "Weak"
+        # Market Mood (derived from trend + momentum)
+        if simple_trend == "Up" and simple_momentum != "Weak":
+            simple_mood = "Bullish"
+        elif simple_trend == "Down" and simple_momentum != "Weak":
+            simple_mood = "Bearish"
+        else:
+            simple_mood = "Mixed"
+        # Setup Quality
+        if risk_reward >= 1.5 and confidence >= 65:
+            simple_quality = "High"
+        elif risk_reward >= 1.0 and confidence >= 50:
+            simple_quality = "Moderate"
+        else:
+            simple_quality = "Low"
+        # Mixed signals warning
+        indicators_conflict = (simple_trend == "Sideways" and simple_momentum == "Strong") or \
+                              (simple_mood == "Mixed" and simple_quality == "Low")
+        mixed_signal_warning = "Mixed signals. Avoid aggressive sizing." if indicators_conflict else ""
+        # Volatility spike warning
+        volatility_spike_warning = "High volatility. Expect sharp swings." if i['volatility'] > 5 else ""
+
+        # ── Risk framing layer ──
+        risk_warnings = []
+        if max_risk_pct > 10:
+            risk_warnings.append("Large downside range.")
+        stop_distance_pct = abs(i['price'] - stop_price) / i['price'] * 100 if i['price'] > 0 else 0
+        if stop_distance_pct > 15:
+            risk_warnings.append("Wide stop. Capital lock up risk.")
+        if expected_move_pct < max_risk_pct:
+            risk_warnings.append("Risk exceeds reward.")
+
+        # ── Capital protection mode ──
+        cap_protection_note = "Do not risk more than 1% of total portfolio."
+
+        # ── Why Avoid section ──
+        why_avoid = ""
+        if risk_reward < 1:
+            why_avoid = "This setup may move in the expected direction, but the potential loss is larger than the potential gain."
+        if risk_reward < 1 and confidence < 55:
+            why_avoid = "Low quality setup. Both confidence and payoff are unfavorable."
+
+        # ── Regime-against-signal banner ──
+        # (will be enriched in _apply_regime_layer; placeholder here)
+        regime_conflict_banner = ""
+
         return {
             'signal': {
                 'signal': sig, 'action': action, 'rec': rec,
@@ -1183,7 +1291,28 @@ class Analyzer:
                 'entry_explain': entry_explain, 'exit_explain': exit_explain, 'confidence_explain': confidence_explain,
                 'time_explain': time_explain, 'trend_explain': trend_explain, 'momentum_explain': momentum_explain,
                 'rsi_explain': rsi_explain, 'position_explain': position_explain, 'zscore_explain': zscore_explain,
-                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers"
+                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers",
+                # ── New outcome-based fields ──
+                'payoff_sentence': payoff_sentence,
+                'payoff_label': payoff_label,
+                'potential_gain_per_unit': potential_gain_per_unit,
+                'potential_loss_per_unit': potential_loss_per_unit,
+                'short_sell_warning': short_sell_warning,
+                'no_actionable_range': no_actionable_range,
+                'low_movement': low_movement,
+                'confidence_frequency': confidence_frequency,
+                'low_sample_warning': low_sample_warning,
+                'retail_action_label': retail_action_label,
+                'simple_trend': simple_trend,
+                'simple_momentum': simple_momentum,
+                'simple_mood': simple_mood,
+                'simple_quality': simple_quality,
+                'mixed_signal_warning': mixed_signal_warning,
+                'volatility_spike_warning': volatility_spike_warning,
+                'risk_warnings': risk_warnings,
+                'cap_protection_note': cap_protection_note,
+                'why_avoid': why_avoid,
+                'regime_conflict_banner': regime_conflict_banner,
             },
             'details': {
                 'price': f"₹{i['price']:.2f}", 'price_raw': round(i['price'], 2),
@@ -1198,7 +1327,8 @@ class Analyzer:
                 'high': f"₹{i['high']:.2f}", 'low': f"₹{i['low']:.2f}",
                 'bb_upper': f"₹{i['bb_upper']:.2f}", 'bb_lower': f"₹{i['bb_lower']:.2f}",
                 'bb_position': round(i['bb_position'], 0), 'bb_label': bb_label,
-                'volatility': f"{i['volatility']:.2f}%", 'macd': "BULLISH" if i['macd_bullish'] else "BEARISH",
+                'volatility': f"{i['volatility']:.2f}%", 'volatility_raw': round(i['volatility'], 2),
+                'macd': "BULLISH" if i['macd_bullish'] else "BEARISH",
                 'macd_bullish': i['macd_bullish']
             }
         }
