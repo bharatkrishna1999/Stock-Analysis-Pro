@@ -1569,7 +1569,10 @@ class Analyzer:
         elif factor_label == 'full_alignment':
             parts.append("Since the stock, sector, and market all agree on direction, this is a high-conviction setup and the system has increased the recommended position size by 20%.")
         elif factor_label == 'hard_conflict':
-            parts.append(f"Because both the market and sector are moving against this stock's signal, the system has overridden the {original_signal} to HOLD and sharply reduced the position size as a safety measure.")
+            if gated_signal == original_signal:
+                parts.append(f"Both the market and sector are moving against this stock's signal, but the stock's own bearish conviction is strong enough to keep the {original_signal} call. Position size has been sharply reduced as a safety measure.")
+            else:
+                parts.append(f"Because both the market and sector are moving against this stock's signal, the system has overridden the {original_signal} to HOLD and sharply reduced the position size as a safety measure.")
         elif factor_label == 'conflict':
             parts.append("The stock says one thing but part of the broader environment disagrees. The system has reduced risk by 30% to account for this headwind.")
         else:
@@ -1608,7 +1611,7 @@ class Analyzer:
             f"Overall confidence across all factors is {confidence}% (regime-adjusted score: {final_score * 100:.0f}%)."
         )
 
-        return " ".join(parts)
+        return "<ul>" + "".join(f"<li>{p}</li>" for p in parts) + "</ul>"
 
     def _apply_regime_layer(self, signal_result, symbol):
         """Apply market + sector regime layer on top of stock-level signal.
@@ -1665,17 +1668,32 @@ class Analyzer:
         gate_reason = None
 
         if original_signal == 'BUY' and market_regime == 'bearish' and sector_regime == 'bearish':
-            gated_signal = 'HOLD'
-            gate_reason = (
-                "BUY downgraded to HOLD: both market and sector are in bearish regime. "
-                "Broad weakness across the market and sector makes initiating long positions risky."
-            )
+            if original_confidence < 65:
+                gated_signal = 'HOLD'
+                gate_reason = (
+                    "BUY downgraded to HOLD: both market and sector are in bearish regime "
+                    "and stock conviction is moderate. "
+                    "Broad weakness across the market and sector makes initiating long positions risky."
+                )
+            else:
+                gate_reason = (
+                    "Both market and sector are bearish, which is a headwind for this BUY. "
+                    "Proceed with caution and a smaller position."
+                )
         elif original_signal == 'SELL' and market_regime == 'bullish' and sector_regime == 'bullish':
-            gated_signal = 'HOLD'
-            gate_reason = (
-                "SELL downgraded to HOLD: both market and sector are in bullish regime. "
-                "Broad strength makes shorting against the trend risky."
-            )
+            if original_confidence < 65:
+                gated_signal = 'HOLD'
+                gate_reason = (
+                    "SELL downgraded to HOLD: both market and sector are in bullish regime "
+                    "and stock conviction is moderate. "
+                    "Broad strength makes shorting against the trend risky."
+                )
+            else:
+                gate_reason = (
+                    "Both market and sector are bullish, which is a headwind for this SELL. "
+                    "The stock's own bearish signals are strong enough to maintain the call, "
+                    "but use tighter risk management."
+                )
 
         # --- Regime factor for risk ---
         market_aligned = False
@@ -1701,12 +1719,21 @@ class Analyzer:
             elif market_conflict and sector_conflict:
                 regime_factor = 0.4
                 factor_label = 'hard_conflict'
-                gated_signal = 'HOLD'
-                if gate_reason is None:
-                    gate_reason = (
-                        f"Signal downgraded to HOLD due to hard conflict. Both market ({market_regime}) "
-                        f"and sector ({sector_regime}) regimes oppose the {original_signal} signal."
-                    )
+                if original_confidence < 65:
+                    gated_signal = 'HOLD'
+                    if gate_reason is None:
+                        gate_reason = (
+                            f"Signal downgraded to HOLD due to hard conflict. Both market ({market_regime}) "
+                            f"and sector ({sector_regime}) regimes oppose the {original_signal} signal."
+                        )
+                else:
+                    regime_factor = 0.5
+                    if gate_reason is None:
+                        gate_reason = (
+                            f"Both market ({market_regime}) and sector ({sector_regime}) regimes oppose "
+                            f"the {original_signal} signal, but stock conviction is high enough to "
+                            f"maintain the call. Position size reduced as a safety measure."
+                        )
             elif market_conflict or sector_conflict:
                 regime_factor = 0.7
                 factor_label = 'conflict'
@@ -2611,6 +2638,9 @@ def index():
         .tsc-verdict-icon { font-size: 1.5em; line-height: 1; }
         .tsc-verdict-title { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.15em; color: var(--text-primary); }
         .tsc-verdict-body { color: var(--text-secondary); font-size: 0.93em; line-height: 1.85; }
+        .tsc-verdict-body ul { margin: 0; padding-left: 20px; list-style-type: disc; }
+        .tsc-verdict-body li { margin-bottom: 8px; }
+        .tsc-verdict-body li:last-child { margin-bottom: 0; }
         .tsc-verdict-body strong { color: var(--text-primary); font-weight: 600; }
         .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
