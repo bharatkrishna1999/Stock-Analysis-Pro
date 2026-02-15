@@ -3578,8 +3578,6 @@ def index():
             btn.classList.add('active');
             document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
             document.getElementById('dividend-search-wrap').style.display = scope === 'search' ? 'block' : 'none';
-
-        }
         }
         function toggleAllNifty(checked) {
             document.querySelectorAll('.nifty-cb').forEach(cb => cb.checked = checked);
