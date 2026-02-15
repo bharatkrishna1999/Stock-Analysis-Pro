@@ -2866,10 +2866,12 @@ def index():
                         </div>
                         <div class="risk-desc" id="risk-desc">Max 15% per stock. Balanced yield vs risk tradeoff. Good diversification across dividend payers.</div>
                     </div>
-                    <button class="portfolio-action-btn" onclick="portfolioQuickAction()">
-                        <span id="portfolio-action-icon">&#128269;</span>
-                        <span id="portfolio-action-label">Search Stock Dividends</span>
-                    </button>
+                    <div style="margin-top: 18px;">
+                        <button class="portfolio-action-btn" onclick="portfolioQuickAction()" style="width:100%;padding:14px 20px;background:linear-gradient(135deg,#06ffa5,#0891b2);color:#0a0f1a;border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;">
+                            <span id="portfolio-action-icon">&#128269;</span>
+                            <span id="portfolio-action-label">Search Stock Dividends</span>
+                        </button>
+                    </div>
                 </div>
             </div>
             <div id="dividend-results"></div>
