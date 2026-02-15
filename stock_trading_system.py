@@ -1008,21 +1008,28 @@ class Analyzer:
         confidence = self.calculate_confidence(i)
         days_to_target = self.estimate_days_to_target(i['price'], target_price, i)
         # Calculate risk-reward metrics
-        # expected_move_pct: always positive magnitude (used for R-multiple math)
+        # expected_move_pct / max_risk_pct: current-price anchored percentages for UI display
+        # rr_expected_move_pct / rr_max_risk_pct: ENTRY-anchored percentages used for R-multiple math
         # expected_move_signed: signed for display (negative for SELL = price expected to drop)
         if sig == "BUY":
             expected_move_pct = ((target_price - i['price']) / i['price']) * 100
             max_risk_pct = ((i['price'] - stop_price) / i['price']) * 100
+            rr_expected_move_pct = ((target_price - entry_price) / entry_price) * 100
+            rr_max_risk_pct = ((entry_price - stop_price) / entry_price) * 100
             expected_move_signed = expected_move_pct
         elif sig == "SELL":
             expected_move_pct = ((i['price'] - target_price) / i['price']) * 100
             max_risk_pct = ((stop_price - i['price']) / i['price']) * 100
+            rr_expected_move_pct = ((entry_price - target_price) / entry_price) * 100
+            rr_max_risk_pct = ((stop_price - entry_price) / entry_price) * 100
             expected_move_signed = -expected_move_pct  # negative: price expected to fall
         else:
             expected_move_pct = abs((target_price - i['price']) / i['price']) * 100
             max_risk_pct = abs((i['price'] - stop_price) / i['price']) * 100
+            rr_expected_move_pct = abs((target_price - entry_price) / entry_price) * 100
+            rr_max_risk_pct = abs((entry_price - stop_price) / entry_price) * 100
             expected_move_signed = expected_move_pct if target_price > i['price'] else -expected_move_pct
-        risk_reward = round(expected_move_pct / max_risk_pct, 2) if max_risk_pct > 0 else 0
+        risk_reward = round(rr_expected_move_pct / rr_max_risk_pct, 2) if rr_max_risk_pct > 0 else 0
         risk_per_share = abs(i['price'] - stop_price)
         # ── Auto-compute recommended risk % ──
         # Base risk: 1% of capital (standard retail default)
@@ -1100,16 +1107,18 @@ class Analyzer:
             risk_reward_tooltip = (
                 f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
                 f"For a SHORT/SELL setup, 'gain' means the price dropping to your target. "
-                f"Inputs: Expected downward move ({expected_move_pct:.1f}%), Max Risk if price rises ({max_risk_pct:.1f}%). "
-                f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
+                f"Inputs: Entry price (₹{entry_price:.2f}), Target (₹{target_price:.2f}), Stop (₹{stop_price:.2f}). "
+                f"Formula: ((Entry - Target) / Entry) / ((Stop - Entry) / Entry) = "
+                f"{rr_expected_move_pct:.1f} / {rr_max_risk_pct:.1f} = {risk_reward:.2f}x. "
                 f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f} if the price falls to target. "
                 f"Above 1.5x is favourable. Below 1.0x means the potential loss (price rising to stop) exceeds the potential gain."
             )
         else:
             risk_reward_tooltip = (
                 f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
-                f"Inputs: Expected Move ({expected_move_pct:.1f}%), Max Risk ({max_risk_pct:.1f}%). "
-                f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
+                f"Inputs: Entry price (₹{entry_price:.2f}), Target (₹{target_price:.2f}), Stop (₹{stop_price:.2f}). "
+                f"Formula: ((Target - Entry) / Entry) / ((Entry - Stop) / Entry) = "
+                f"{rr_expected_move_pct:.1f} / {rr_max_risk_pct:.1f} = {risk_reward:.2f}x. "
                 f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f}. "
                 f"Above 1.5x is favourable. Below 1.0x means the potential loss exceeds the potential gain."
             )
