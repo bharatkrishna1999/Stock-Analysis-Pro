@@ -2812,23 +2812,20 @@ def index():
             <div class="grid">
                 <div class="card">
                     <h2>Stock Universe</h2>
-                    <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9em;">Select which stocks to scan for dividend yields</p>
+                    <p style="color: var(--text-secondary); margin-bottom: 15px; font-size: 0.9em;">Search a company or select sectors to scan for dividend yields</p>
                     <div class="btn-group">
-                        <button class="scope-btn active" onclick="setScope('all', this)">All Stocks</button>
-                        <button class="scope-btn" onclick="setScope('nifty50', this)">Nifty 50</button>
+                        <button class="scope-btn active" onclick="setScope('search', this)">Stock Search</button>
                         <button class="scope-btn" onclick="setScope('custom', this)">Custom Sectors</button>
                     </div>
                     <div id="dividend-search-wrap" style="margin-top: 15px;">
-                        <input type="text" id="dividend-search" placeholder="Search stocks (e.g., TCS, RELIANCE, INFY)..." style="width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s;">
-                        <div class="suggestions" id="dividend-suggestions"></div>
-                    </div>
-                    <div id="nifty50-checkboxes" style="display:none; margin-top: 15px;">
-                        <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
-                            <label style="cursor: pointer; color: var(--accent-cyan); font-weight: 600; font-size: 0.9em;">
-                                <input type="checkbox" id="select-all-nifty" checked onchange="toggleAllNifty(this.checked)"> Select All Nifty 50
-                            </label>
+                        <div style="display: flex; gap: 10px; align-items: stretch;">
+                            <div style="flex: 1; position: relative;">
+                                <input type="text" id="dividend-search" placeholder="Search stocks (e.g., TCS, RELIANCE, INFY)..." style="width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; box-sizing: border-box;">
+                                <div class="suggestions" id="dividend-suggestions"></div>
+                            </div>
+                            <button class="optimize-btn" onclick="searchStockDividend()" style="white-space: nowrap; padding: 12px 24px; margin: 0; flex-shrink: 0;">Search</button>
                         </div>
-                        <div id="nifty50-grid" class="sector-grid"></div>
+                        <div id="single-stock-result" style="margin-top: 15px;"></div>
                     </div>
                     <div id="sector-checkboxes" style="display:none; margin-top: 15px;">
                         <div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
@@ -2837,6 +2834,7 @@ def index():
                             </label>
                         </div>
                         <div id="sector-grid" class="sector-grid"></div>
+                        <button class="optimize-btn" onclick="analyzeDividends()" style="margin-top: 18px;">Scan Dividends & Optimize Portfolio</button>
                     </div>
                 </div>
                 <div class="card">
@@ -2854,7 +2852,6 @@ def index():
                         </div>
                         <div class="risk-desc" id="risk-desc">Max 15% per stock. Balanced yield vs risk tradeoff. Good diversification across dividend payers.</div>
                     </div>
-                    <button class="optimize-btn" onclick="analyzeDividends()">Scan Dividends & Optimize Portfolio</button>
                 </div>
             </div>
             <div id="dividend-results"></div>
@@ -2945,15 +2942,71 @@ def index():
                     return s.includes(q) || name.includes(q);
                 }).slice(0, 12);
                 sug.innerHTML = filtered.map(s =>
-                    `<button onclick="scanStockSector('${s}')">${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span></button>`
+                    `<button onclick="selectDividendStock('${s}')">${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span></button>`
                 ).join('');
             });
             input.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
-                    const q = input.value.toUpperCase().trim();
-                    if (q) scanStockSector(q);
+                    searchStockDividend();
                 }
             });
+        }
+        function selectDividendStock(symbol) {
+            document.getElementById('dividend-search').value = symbol;
+            document.getElementById('dividend-suggestions').innerHTML = '';
+            searchStockDividend();
+        }
+        function searchStockDividend() {
+            const input = document.getElementById('dividend-search');
+            const symbol = input.value.toUpperCase().trim();
+            if (!symbol) { alert('Please enter a stock symbol'); return; }
+            const resultDiv = document.getElementById('single-stock-result');
+            resultDiv.innerHTML = '<div class="loading" style="padding: 15px; text-align: center; color: var(--accent-cyan);">Fetching dividend info for ' + symbol + '...</div>';
+            document.getElementById('dividend-suggestions').innerHTML = '';
+            fetch('/dividend-info?symbol=' + encodeURIComponent(symbol))
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        resultDiv.innerHTML = '<div style="padding: 15px; background: var(--bg-dark); border-radius: 8px; border: 1px solid var(--border-color); color: var(--text-secondary);">' + data.error + '</div>';
+                        return;
+                    }
+                    if (!data.found) {
+                        resultDiv.innerHTML = '<div style="padding: 15px; background: var(--bg-dark); border-radius: 8px; border: 1px solid var(--border-color); color: var(--text-secondary);">' + data.message + '</div>';
+                        return;
+                    }
+                    const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
+                    resultDiv.innerHTML = `
+                        <div style="background: var(--bg-dark); border-radius: 10px; border: 1px solid var(--border-color); padding: 18px; margin-top: 5px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                                <div>
+                                    <span style="font-size: 1.15em; font-weight: 700; color: var(--accent-cyan);">${data.symbol}</span>
+                                    <span style="color: var(--text-muted); font-size: 0.9em; margin-left: 8px;">${data.name}</span>
+                                </div>
+                                ${data.sector ? '<span style="background: var(--bg-card); padding: 4px 10px; border-radius: 6px; font-size: 0.8em; color: var(--text-secondary);">' + data.sector + '</span>' : ''}
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;">
+                                <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Price</div>
+                                    <div style="font-size: 1.1em; font-weight: 600; color: var(--text-primary);">₹${fmt(data.price)}</div>
+                                </div>
+                                <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Dividend Yield</div>
+                                    <div style="font-size: 1.1em; font-weight: 700; color: var(--accent-green);">${data.dividend_yield}%</div>
+                                </div>
+                                <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Annual Dividend</div>
+                                    <div style="font-size: 1.1em; font-weight: 600; color: var(--text-primary);">₹${fmt(data.annual_dividend)}</div>
+                                </div>
+                                <div style="background: var(--bg-card); padding: 12px; border-radius: 8px; text-align: center;">
+                                    <div style="font-size: 0.75em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;">Volatility</div>
+                                    <div style="font-size: 1.1em; font-weight: 600; color: var(--text-primary);">${data.volatility}%</div>
+                                </div>
+                            </div>
+                        </div>`;
+                })
+                .catch(e => {
+                    resultDiv.innerHTML = '<div style="padding: 15px; background: var(--bg-dark); border-radius: 8px; border: 1px solid var(--border-color); color: red;">Failed: ' + e.message + '</div>';
+                });
         }
         function analyze(symbol) {
             document.getElementById('search-view').style.display = 'none';
@@ -3479,7 +3532,7 @@ def index():
             document.getElementById('search').value = '';
             document.getElementById('suggestions').innerHTML = '';
         }
-        let dividendScope = 'all';
+        let dividendScope = 'search';
         let dividendRisk = 'moderate';
         function formatIndianNumber(num) {
             num = num.toString();
@@ -3504,8 +3557,7 @@ def index():
             document.querySelectorAll('.scope-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
             document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
-            document.getElementById('nifty50-checkboxes').style.display = scope === 'nifty50' ? 'block' : 'none';
-            document.getElementById('dividend-search-wrap').style.display = scope === 'all' ? 'block' : 'none';
+            document.getElementById('dividend-search-wrap').style.display = scope === 'search' ? 'block' : 'none';
         }
         function toggleAllNifty(checked) {
             document.querySelectorAll('.nifty-cb').forEach(cb => cb.checked = checked);
@@ -3581,14 +3633,7 @@ def index():
             dividendHighlight = '';
             let sectors = '';
             let symbolsParam = '';
-            if (dividendScope === 'all') { sectors = 'all'; dividendSectorLabel = 'All NSE'; }
-            else if (dividendScope === 'nifty50') {
-                const checked = document.querySelectorAll('.nifty-cb:checked');
-                if (checked.length === 0) { alert('Please select at least one Nifty 50 stock'); return; }
-                symbolsParam = Array.from(checked).map(c => c.value).join(',');
-                dividendSectorLabel = 'Nifty 50';
-            }
-            else if (dividendScope === 'custom') {
+            if (dividendScope === 'custom') {
                 const checked = document.querySelectorAll('.sector-cb:checked');
                 if (checked.length === 0) { alert('Please select at least one sector'); return; }
                 const sectorList = Array.from(checked).map(c => c.value);
@@ -3826,7 +3871,7 @@ def index():
                 grid.appendChild(label);
             });
         }
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); initNifty50Checkboxes(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
     </script>
 </body>
 </html>'''
@@ -3911,6 +3956,38 @@ def regression_route():
     except Exception as e:
         print(f"Error in HSIC analysis for {normalized_symbol}: {e}")
         return jsonify({'error': f'HSIC dependency analysis failed for {normalized_symbol}: {str(e)}'})
+
+@app.route('/dividend-info')
+def dividend_info_route():
+    """Fetch dividend information for a single stock."""
+    symbol = request.args.get('symbol', '').strip().upper()
+    if not symbol:
+        return jsonify({'error': 'Please enter a stock symbol'})
+    if symbol not in ALL_VALID_TICKERS:
+        return jsonify({'error': f'{symbol} is not a recognized NSE stock'})
+    try:
+        results, dividend_found = analyzer.fetch_dividend_data([symbol], limit_results=False)
+        if not results:
+            return jsonify({
+                'symbol': symbol,
+                'found': False,
+                'message': f'{symbol} does not pay dividends or no dividend data is available for the past year'
+            })
+        stock = results[0]
+        stock['found'] = True
+        stock['name'] = TICKER_TO_NAME.get(symbol, symbol)
+        # Find the sector
+        skip_sectors = {"All NSE", "Nifty 50", "Nifty Next 50", "Others", "Conglomerate"}
+        stock['sector'] = ''
+        for sector_name, sector_stocks in STOCKS.items():
+            if sector_name in skip_sectors:
+                continue
+            if symbol in sector_stocks:
+                stock['sector'] = sector_name
+                break
+        return jsonify(stock)
+    except Exception as e:
+        return jsonify({'error': f'Failed to fetch dividend data for {symbol}: {str(e)}'})
 
 @app.route('/dividend-scan')
 def dividend_scan_route():
