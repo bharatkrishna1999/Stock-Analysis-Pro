@@ -2348,6 +2348,21 @@ def index():
         .tsc-why { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-why h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 10px; }
         .tsc-why p { color: var(--text-secondary); line-height: 1.7; font-size: 0.95em; }
+        .tsc-regime { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
+        .tsc-regime h3 { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); margin-bottom: 14px; }
+        .tsc-regime-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+        .tsc-regime-item { background: rgba(0,0,0,0.2); border-radius: 8px; padding: 12px 14px; border: 1px solid var(--border-color); }
+        .tsc-regime-item-label { font-size: 0.8em; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600; }
+        .tsc-regime-item-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; }
+        .tsc-regime-bullish { color: #10b981; }
+        .tsc-regime-bearish { color: #ef4444; }
+        .tsc-regime-neutral { color: #f59e0b; }
+        .tsc-regime-bar { width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 3px; margin-top: 14px; margin-bottom: 10px; }
+        .tsc-regime-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s ease; }
+        .tsc-regime-meta { display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; color: var(--text-muted); margin-bottom: 10px; }
+        .tsc-regime-reason { color: var(--text-secondary); font-size: 0.9em; line-height: 1.6; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+        .tsc-regime-override { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; font-size: 0.9em; color: #fca5a5; }
+        @media (max-width: 600px) { .tsc-regime-grid { grid-template-columns: 1fr 1fr; } }
         .tsc-calc { background: var(--bg-card-hover); border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-calc-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
         .tsc-calc-check { width: 20px; height: 20px; background: var(--accent-green); border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.7em; font-weight: 700; }
@@ -2750,6 +2765,41 @@ def index():
                             <h3>Why This Makes Sense</h3>
                             <p>${s.why_makes_sense || s.rec}</p>
                         </div>
+
+                        <!-- REGIME LAYER -->
+                        ${(function(){
+                            if (!s.market_regime) return '';
+                            const mRegime = s.market_regime || 'neutral';
+                            const sRegime = s.sector_regime || 'neutral';
+                            const regimeScore = s.regime_score != null ? (s.regime_score * 100).toFixed(0) : '--';
+                            const regimeFactor = s.regime_factor != null ? s.regime_factor.toFixed(1) : '1.0';
+                            const mClass = 'tsc-regime-' + mRegime;
+                            const sClass = 'tsc-regime-' + sRegime;
+                            const barColor = s.regime_score >= 0.6 ? 'var(--accent-green)' : s.regime_score >= 0.4 ? 'var(--warning)' : 'var(--danger)';
+                            const barWidth = Math.max(5, Math.min((s.regime_score || 0.5) * 100, 100));
+                            const origSig = s.original_signal || '';
+                            const overrideHtml = origSig ? '<div class="tsc-regime-override">Signal overridden: <strong>' + origSig + ' \\u2192 ' + s.signal + '</strong> due to regime conflict.</div>' : '';
+                            return '<div class="tsc-regime">'
+                                + '<h3>Market &amp; Sector Regime</h3>'
+                                + overrideHtml
+                                + '<div class="tsc-regime-grid">'
+                                + '  <div class="tsc-regime-item">'
+                                + '    <div class="tsc-regime-item-label">Market (Nifty 50)</div>'
+                                + '    <div class="tsc-regime-item-value ' + mClass + '">' + mRegime.toUpperCase() + '</div>'
+                                + '  </div>'
+                                + '  <div class="tsc-regime-item">'
+                                + '    <div class="tsc-regime-item-label">Sector</div>'
+                                + '    <div class="tsc-regime-item-value ' + sClass + '">' + sRegime.toUpperCase() + '</div>'
+                                + '  </div>'
+                                + '</div>'
+                                + '<div class="tsc-regime-meta">'
+                                + '  <span>Regime Score: <strong>' + regimeScore + '%</strong></span>'
+                                + '  <span>Risk Factor: <strong>x' + regimeFactor + '</strong></span>'
+                                + '</div>'
+                                + '<div class="tsc-regime-bar"><div class="tsc-regime-bar-fill" style="width:' + barWidth + '%;background:' + barColor + ';"></div></div>'
+                                + '<div class="tsc-regime-reason">' + (s.regime_reason_text || '') + '</div>'
+                                + '</div>';
+                        })()}
 
                         <!-- TRADE LEVELS (moved up for visibility) -->
                         <div class="tsc-calc-details" style="margin-bottom:20px;">
