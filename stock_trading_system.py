@@ -2730,9 +2730,13 @@ def index():
         .dividend-search-row .search-input-wrap input:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 255, 255, 0.1); }
         .search-btn { padding: 12px 22px; background: var(--accent-cyan); color: var(--bg-dark); border: none; border-radius: 8px; font-size: 0.95em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; flex-shrink: 0; }
         .search-btn:hover { opacity: 0.9; box-shadow: 0 4px 15px rgba(0, 255, 255, 0.25); }
+        .portfolio-action-btn { width: 100%; padding: 14px 20px; background: linear-gradient(135deg, var(--accent-cyan), #0891b2); color: var(--bg-dark); border: none; border-radius: 10px; font-size: 1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; display: flex; align-items: center; justify-content: center; gap: 8px; letter-spacing: 0.3px; margin-top: 6px; }
+        .portfolio-action-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0, 255, 255, 0.25); }
+        .portfolio-action-btn:active { transform: translateY(0); }
         @media (max-width: 480px) {
             .dividend-search-row { flex-direction: column; }
             .search-btn { width: 100%; padding: 14px; text-align: center; }
+            .portfolio-action-btn { font-size: 0.95em; padding: 14px 16px; }
         }
         .risk-desc { margin-top: 10px; padding: 12px; background: var(--bg-dark); border-radius: 6px; color: var(--text-muted); font-size: 0.85em; line-height: 1.5; border-left: 3px solid var(--accent-purple); }
         #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; }
@@ -2862,6 +2866,10 @@ def index():
                         </div>
                         <div class="risk-desc" id="risk-desc">Max 15% per stock. Balanced yield vs risk tradeoff. Good diversification across dividend payers.</div>
                     </div>
+                    <button class="portfolio-action-btn" onclick="portfolioQuickAction()">
+                        <span id="portfolio-action-icon">&#128269;</span>
+                        <span id="portfolio-action-label">Search Stock Dividends</span>
+                    </button>
                 </div>
             </div>
             <div id="dividend-results"></div>
@@ -3568,6 +3576,25 @@ def index():
             btn.classList.add('active');
             document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
             document.getElementById('dividend-search-wrap').style.display = scope === 'search' ? 'block' : 'none';
+            updatePortfolioActionBtn(scope);
+        }
+        function updatePortfolioActionBtn(scope) {
+            const label = document.getElementById('portfolio-action-label');
+            const icon = document.getElementById('portfolio-action-icon');
+            if (scope === 'custom') {
+                icon.innerHTML = '&#9881;';
+                label.textContent = 'Scan Sectors & Optimize';
+            } else {
+                icon.innerHTML = '&#128269;';
+                label.textContent = 'Search Stock Dividends';
+            }
+        }
+        function portfolioQuickAction() {
+            if (dividendScope === 'custom') {
+                analyzeDividends();
+            } else {
+                searchStockDividend();
+            }
         }
         function toggleAllNifty(checked) {
             document.querySelectorAll('.nifty-cb').forEach(cb => cb.checked = checked);
