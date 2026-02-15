@@ -2867,9 +2867,9 @@ def index():
                         <div class="risk-desc" id="risk-desc">Max 15% per stock. Balanced yield vs risk tradeoff. Good diversification across dividend payers.</div>
                     </div>
                     <div style="margin-top: 18px;">
-                        <button class="portfolio-action-btn" onclick="portfolioQuickAction()" style="width:100%;padding:14px 20px;background:linear-gradient(135deg,#06ffa5,#0891b2);color:#0a0f1a;border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;">
-                            <span id="portfolio-action-icon">&#128269;</span>
-                            <span id="portfolio-action-label">Search Stock Dividends</span>
+                        <button class="portfolio-action-btn" onclick="analyzeDividends()" style="width:100%;padding:14px 20px;background:linear-gradient(135deg,#06ffa5,#0891b2);color:#0a0f1a;border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;">
+                            <span>&#9881;</span>
+                            <span>Optimize Portfolio</span>
                         </button>
                     </div>
                 </div>
@@ -3578,25 +3578,8 @@ def index():
             btn.classList.add('active');
             document.getElementById('sector-checkboxes').style.display = scope === 'custom' ? 'block' : 'none';
             document.getElementById('dividend-search-wrap').style.display = scope === 'search' ? 'block' : 'none';
-            updatePortfolioActionBtn(scope);
+
         }
-        function updatePortfolioActionBtn(scope) {
-            const label = document.getElementById('portfolio-action-label');
-            const icon = document.getElementById('portfolio-action-icon');
-            if (scope === 'custom') {
-                icon.innerHTML = '&#9881;';
-                label.textContent = 'Scan Sectors & Optimize';
-            } else {
-                icon.innerHTML = '&#128269;';
-                label.textContent = 'Search Stock Dividends';
-            }
-        }
-        function portfolioQuickAction() {
-            if (dividendScope === 'custom') {
-                analyzeDividends();
-            } else {
-                searchStockDividend();
-            }
         }
         function toggleAllNifty(checked) {
             document.querySelectorAll('.nifty-cb').forEach(cb => cb.checked = checked);
