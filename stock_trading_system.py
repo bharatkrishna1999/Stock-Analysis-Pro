@@ -4148,6 +4148,12 @@ def index():
             btn.classList.add('active');
             updateDCFDisplay();
         }
+        function dcfSliderChange(el) {
+            var targetId = el.dataset.target || (el.id + '-val');
+            var display = document.getElementById(targetId);
+            if (display) display.textContent = el.value + '%';
+            updateDCFDisplay();
+        }
 
         function renderDCFResult(data) {
             var sugG = Math.round(data.suggested_growth_rate * 100);
@@ -4179,19 +4185,19 @@ def index():
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Projection Years</span></div>';
             h += '<div class="dcf-years-group"><button class="dcf-year-btn" onclick="dcfSetYears(5, this)">5 Years</button><button class="dcf-year-btn active" onclick="dcfSetYears(10, this)">10 Years</button></div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Phase 1 Growth (Yr 1\u20135)</span><span class="dcf-param-value" id="dcf-g1-val">' + sugG + '%</span></div>';
-            h += "<input type=\"range\" class=\"dcf-slider\" id=\"dcf-g1\" min=\"0\" max=\"50\" step=\"0.5\" value=\"" + sugG + "\" oninput=\"document.getElementById('dcf-g1-val').textContent=this.value+'%';updateDCFDisplay();\">";
+            h += '<input type="range" class="dcf-slider" id="dcf-g1" min="0" max="50" step="0.5" value="' + sugG + '" oninput="dcfSliderChange(this)">';
             h += '<div class="dcf-param-hint">Based on historical FCF CAGR: ' + histCagr + '. Adjust as needed.</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Phase 2 Growth (Yr 6\u201310)</span><span class="dcf-param-value" id="dcf-g2-val">' + phase2G + '%</span></div>';
-            h += "<input type=\"range\" class=\"dcf-slider\" id=\"dcf-g2\" min=\"0\" max=\"30\" step=\"0.5\" value=\"" + phase2G + "\" oninput=\"document.getElementById('dcf-g2-val').textContent=this.value+'%';updateDCFDisplay();\">";
+            h += '<input type="range" class="dcf-slider" id="dcf-g2" min="0" max="30" step="0.5" value="' + phase2G + '" oninput="dcfSliderChange(this)">';
             h += '<div class="dcf-param-hint">Growth typically decelerates as companies mature.</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Discount Rate / WACC</span><span class="dcf-param-value" id="dcf-wacc-val">' + defaultWACC + '%</span></div>';
-            h += "<input type=\"range\" class=\"dcf-slider\" id=\"dcf-wacc\" min=\"6\" max=\"25\" step=\"0.5\" value=\"" + defaultWACC + "\" oninput=\"document.getElementById('dcf-wacc-val').textContent=this.value+'%';updateDCFDisplay();\">";
+            h += '<input type="range" class="dcf-slider" id="dcf-wacc" min="6" max="25" step="0.5" value="' + defaultWACC + '" oninput="dcfSliderChange(this)">';
             h += '<div class="dcf-param-hint">Your required rate of return. Typically 10\u201315% for NSE stocks.</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Terminal Growth Rate</span><span class="dcf-param-value" id="dcf-tg-val">' + defaultTG + '%</span></div>';
-            h += "<input type=\"range\" class=\"dcf-slider\" id=\"dcf-tg\" min=\"1\" max=\"6\" step=\"0.25\" value=\"" + defaultTG + "\" oninput=\"document.getElementById('dcf-tg-val').textContent=this.value+'%';updateDCFDisplay();\">";
+            h += '<input type="range" class="dcf-slider" id="dcf-tg" min="1" max="6" step="0.25" value="' + defaultTG + '" oninput="dcfSliderChange(this)">';
             h += '<div class="dcf-param-hint">Perpetual growth after projection period. Should not exceed long-run GDP growth.</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Base FCF Adjustment</span><span class="dcf-param-value" id="dcf-fcf-display">100%</span></div>';
-            h += "<input type=\"range\" class=\"dcf-slider\" id=\"dcf-fcf-adj\" min=\"50\" max=\"200\" step=\"5\" value=\"100\" oninput=\"document.getElementById('dcf-fcf-display').textContent=this.value+'%';updateDCFDisplay();\">";
+            h += '<input type="range" class="dcf-slider" id="dcf-fcf-adj" min="50" max="200" step="5" value="100" data-target="dcf-fcf-display" oninput="dcfSliderChange(this)">';
             h += '<div class="dcf-param-hint">Scale latest FCF. 100% = ' + fcfStr + ' (as reported).</div></div>';
             h += '</div>';
             h += '<div class="dcf-results-card"><h3>Valuation Output</h3>';
