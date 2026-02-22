@@ -3013,10 +3013,16 @@ def index():
         .vd-badge-suitable { background:rgba(6,255,165,0.12);color:var(--accent-green);border:1px solid rgba(6,255,165,0.3); }
         .vd-badge-moderate { background:rgba(245,158,11,0.1);color:var(--warning);border:1px solid rgba(245,158,11,0.25); }
         .vd-badge-weak { background:rgba(239,68,68,0.1);color:var(--danger);border:1px solid rgba(239,68,68,0.25); }
-        .vd-section { background:var(--bg-card);border-radius:14px;padding:24px 26px;margin-bottom:20px;border:1px solid var(--border-color); }
-        .vd-section-header { display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--border-color); }
-        .vd-section-title { font-family:'Space Grotesk',sans-serif;font-size:1.05em;font-weight:700; }
-        .vd-section-score { font-family:'Space Grotesk',sans-serif;font-size:0.9em;font-weight:700; }
+        .vd-section { background:var(--bg-card);border-radius:14px;margin-bottom:14px;border:1px solid var(--border-color);overflow:hidden; }
+        .vd-section-header { display:flex;justify-content:space-between;align-items:center;padding:18px 22px;cursor:pointer;user-select:none;transition:background 0.2s; }
+        .vd-section-header:hover { background:var(--bg-card-hover); }
+        .vd-section-header-left { display:flex;align-items:center;gap:12px; }
+        .vd-section-title { font-family:'Space Grotesk',sans-serif;font-size:1.02em;font-weight:700; }
+        .vd-section-score { font-family:'Space Grotesk',sans-serif;font-size:0.88em;font-weight:700; }
+        .vd-section-chevron { color:var(--text-muted);font-size:0.85em;transition:transform 0.25s;margin-left:8px; }
+        .vd-section.open .vd-section-chevron { transform:rotate(180deg); }
+        .vd-section-body { display:none;padding:0 22px 22px; }
+        .vd-section.open .vd-section-body { display:block; }
         .vd-metrics { display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px; }
         .vd-metric { background:var(--bg-dark);border-radius:8px;padding:10px 12px; }
         .vd-metric-label { font-size:0.72em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.4px;margin-bottom:4px; }
@@ -3061,13 +3067,13 @@ def index():
     </header>
     <main class="container">
         <div class="tabs">
-            <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
-            <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
-            <button class="tab" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
+            <button class="tab active" onclick="switchTab('verdict', event)">Investment Verdict</button>
+            <button class="tab" onclick="switchTab('analysis', event)">Technical Analysis</button>
             <button class="tab" onclick="switchTab('dcf', event)">DCF Valuation</button>
-            <button class="tab" onclick="switchTab('verdict', event)">Investment Verdict</button>
+            <button class="tab" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
+            <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
         </div>
-        <div id="analysis-tab" class="tab-content active">
+        <div id="analysis-tab" class="tab-content">
             <div id="search-view">
                 <div class="grid">
                     <div class="card">
@@ -3200,7 +3206,7 @@ def index():
                 <div id="dcf-result"></div>
             </div>
         </div>
-        <div id="verdict-tab" class="tab-content">
+        <div id="verdict-tab" class="tab-content active">
             <div id="verdict-search-view">
                 <div class="grid">
                     <div class="card">
@@ -3208,7 +3214,7 @@ def index():
                         <p style="color:var(--text-secondary);margin-bottom:18px;font-size:0.92em;line-height:1.7;">
                             Combines Technical signals, DCF valuation, Market Connection and Dividend metrics into one unified verdict — telling you exactly what this stock is best suited for.
                         </p>
-                        <input type="text" id="verdict-search" placeholder="Search stock (e.g. TCS, INFY, RELIANCE)...">
+                        <input type="text" id="verdict-search" placeholder="Search stock symbol (e.g. TCS, INFY, RELIANCE, HDFC)..." style="font-size:1.1em;padding:14px 18px;height:54px;">
                         <div class="suggestions" id="verdict-suggestions"></div>
                         <button class="verdict-fetch-btn" onclick="fetchVerdictData()">Analyse &amp; Get Verdict</button>
                     </div>
@@ -3318,7 +3324,7 @@ def index():
             });
         }
         function init() {
-            ensureTabLoaded('analysis');
+            ensureTabLoaded('verdict');
         }
         function analyze(symbol) {
             document.getElementById('search-view').style.display = 'none';
@@ -4560,51 +4566,61 @@ def index():
             return html;
         }
 
+        function verdictToggle(el) {
+            el.closest('.vd-section').classList.toggle('open');
+        }
+
+        function vdSectionHeader(title, titleColor, badge, bdgClass, score) {
+            return '<div class="vd-section-header" onclick="verdictToggle(this)">'
+                 + '<div class="vd-section-header-left">'
+                 + '<div class="vd-section-title" style="color:' + titleColor + ';">' + title + '</div>'
+                 + '<div class="vd-section-score ' + bdgClass + '">' + badge + ' &bull; ' + score + '/100</div>'
+                 + '</div>'
+                 + '<span class="vd-section-chevron">&#9660;</span>'
+                 + '</div>'
+                 + '<div class="vd-section-body">';
+        }
+
         function buildSTSection(tech, stRes) {
             var s = tech && tech.signal ? tech.signal : {};
             var d = tech && tech.details ? tech.details : {};
-            var [, bdgClass] = verdictBadge(stRes.score);
-            var scoreCol = verdictScoreColor(stRes.score);
-            var h = `<div class="vd-section">
-                <div class="vd-section-header">
-                    <div class="vd-section-title" style="color:var(--accent-cyan);">⚡ Short-Term Trading Analysis</div>
-                    <div class="vd-section-score ${bdgClass}">${stRes.score}/100</div>
-                </div>`;
-            if (stRes.error) { h += '<p style="color:var(--text-muted);">Technical data unavailable.</p></div>'; return h; }
-            h += buildMetricsHtml(stRes.items);
-            if (s.target || s.stop) {
-                h += '<div class="vd-trade-levels">';
-                h += `<div class="vd-level"><div class="vd-level-label">Entry / CMP</div><div class="vd-level-val" style="color:var(--text-primary);">${d.price || 'N/A'}</div></div>`;
-                h += `<div class="vd-level"><div class="vd-level-label">Target</div><div class="vd-level-val" style="color:var(--accent-green);">${s.target || 'N/A'}</div></div>`;
-                h += `<div class="vd-level"><div class="vd-level-label">Stop Loss</div><div class="vd-level-val" style="color:var(--danger);">${s.stop || 'N/A'}</div></div>`;
-                h += '</div>';
+            var [badge, bdgClass] = verdictBadge(stRes.score);
+            var h = '<div class="vd-section">';
+            h += vdSectionHeader('&#9889; Short-Term Trading', 'var(--accent-cyan)', badge, bdgClass, stRes.score);
+            if (stRes.error) { h += '<p style="color:var(--text-muted);margin:0;">Technical data unavailable.</p>'; }
+            else {
+                h += buildMetricsHtml(stRes.items);
+                if (s.target || s.stop) {
+                    h += '<div class="vd-trade-levels">';
+                    h += `<div class="vd-level"><div class="vd-level-label">Entry / CMP</div><div class="vd-level-val" style="color:var(--text-primary);">${d.price || 'N/A'}</div></div>`;
+                    h += `<div class="vd-level"><div class="vd-level-label">Target</div><div class="vd-level-val" style="color:var(--accent-green);">${s.target || 'N/A'}</div></div>`;
+                    h += `<div class="vd-level"><div class="vd-level-label">Stop Loss</div><div class="vd-level-val" style="color:var(--danger);">${s.stop || 'N/A'}</div></div>`;
+                    h += '</div>';
+                }
+                if (s.setup_duration || s.days_to_target) {
+                    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0;">';
+                    if (s.setup_duration) h += `<div style="background:var(--bg-dark);padding:6px 13px;border-radius:20px;font-size:0.8em;color:var(--text-secondary);">&#9203; ${s.setup_duration}</div>`;
+                    if (s.days_to_target) h += `<div style="background:var(--bg-dark);padding:6px 13px;border-radius:20px;font-size:0.8em;color:var(--text-secondary);">&#128197; ~${s.days_to_target} days to target</div>`;
+                    if (s.risk_reward) h += `<div style="background:var(--bg-dark);padding:6px 13px;border-radius:20px;font-size:0.8em;color:var(--accent-cyan);">R:R ${s.risk_reward}x</div>`;
+                    h += '</div>';
+                }
+                if (s.why_makes_sense) {
+                    h += `<div class="vd-narrative"><strong style="color:var(--text-primary);">Why this setup makes sense:</strong><br>${s.why_makes_sense}</div>`;
+                } else if (s.verdict_text) {
+                    h += `<div class="vd-narrative">${s.verdict_text}</div>`;
+                }
+                if (s.regime_reason_text) {
+                    h += `<div class="vd-narrative" style="margin-top:8px;border-left:3px solid var(--warning);padding-left:14px;"><strong style="color:var(--warning);">Market Regime:</strong> ${s.regime_reason_text}</div>`;
+                }
             }
-            if (s.setup_duration || s.days_to_target) {
-                h += `<div style="display:flex;gap:12px;flex-wrap:wrap;margin:10px 0;">`;
-                if (s.setup_duration) h += `<div style="background:var(--bg-dark);padding:7px 14px;border-radius:20px;font-size:0.8em;color:var(--text-secondary);">&#9203; ${s.setup_duration}</div>`;
-                if (s.days_to_target) h += `<div style="background:var(--bg-dark);padding:7px 14px;border-radius:20px;font-size:0.8em;color:var(--text-secondary);">&#128197; ~${s.days_to_target} days to target</div>`;
-                if (s.risk_reward) h += `<div style="background:var(--bg-dark);padding:7px 14px;border-radius:20px;font-size:0.8em;color:var(--accent-cyan);">R:R ${s.risk_reward}x</div>`;
-                h += '</div>';
-            }
-            if (s.why_makes_sense) {
-                h += `<div class="vd-narrative"><strong style="color:var(--text-primary);">Why this setup makes sense:</strong><br>${s.why_makes_sense}</div>`;
-            } else if (s.verdict_text) {
-                h += `<div class="vd-narrative">${s.verdict_text}</div>`;
-            }
-            if (s.regime_reason_text) {
-                h += `<div class="vd-narrative" style="margin-top:8px;border-left:3px solid var(--warning);padding-left:14px;"><strong style="color:var(--warning);">Market Regime:</strong> ${s.regime_reason_text}</div>`;
-            }
-            h += '</div>';
+            h += '</div></div>';
             return h;
         }
 
         function buildLTSection(tech, dcfD, regr, ltRes) {
-            var [, bdgClass] = verdictBadge(ltRes.score);
-            var h = `<div class="vd-section">
-                <div class="vd-section-header">
-                    <div class="vd-section-title" style="color:var(--accent-green);">&#128200; Long-Term Holding Analysis</div>
-                    <div class="vd-section-score ${bdgClass}">${ltRes.score}/100</div>
-                </div>`;
+            var [badge, bdgClass] = verdictBadge(ltRes.score);
+            var h = '<div class="vd-section">';
+            h += vdSectionHeader('&#128200; Long-Term Holding', 'var(--accent-green)', badge, bdgClass, ltRes.score);
             h += buildMetricsHtml(ltRes.items);
             var narrativeParts = [];
             if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
@@ -4613,7 +4629,7 @@ def index():
                 var res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, dcfD.total_debt || 0, dcfD.cash || 0, dcfD.shares_outstanding);
                 var up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
                 var ivStr = '\u20b9' + res.intrinsic.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:14px 0;">
+                h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;">
                     <div class="vd-level"><div class="vd-level-label">Intrinsic Value (DCF)</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${ivStr}</div></div>
                     <div class="vd-level"><div class="vd-level-label">Upside / Downside</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${(up >= 0 ? '+' : '') + up.toFixed(1)}%</div></div>
                 </div>`;
@@ -4635,17 +4651,14 @@ def index():
                 else if (dep > 0.7) narrativeParts.push('High market dependency (' + (dep * 100).toFixed(0) + '%) — performance closely tracks the Nifty 50.');
             }
             if (narrativeParts.length > 0) h += '<div class="vd-narrative">' + narrativeParts.join(' ') + '</div>';
-            h += '</div>';
+            h += '</div></div>';
             return h;
         }
 
         function buildDivSection(divD, divRes) {
-            var [, bdgClass] = verdictBadge(divRes.score);
-            var h = `<div class="vd-section">
-                <div class="vd-section-header">
-                    <div class="vd-section-title" style="color:var(--warning);">&#128176; Dividend Income Analysis</div>
-                    <div class="vd-section-score ${bdgClass}">${divRes.score}/100</div>
-                </div>`;
+            var [badge, bdgClass] = verdictBadge(divRes.score);
+            var h = '<div class="vd-section">';
+            h += vdSectionHeader('&#128176; Dividend Income', 'var(--warning)', badge, bdgClass, divRes.score);
             h += buildMetricsHtml(divRes.items);
             if (!divD || !divD.found || !divD.dividend_yield) {
                 h += '<div class="vd-narrative" style="color:var(--text-muted);">No dividend history found for this stock. It may be a growth-oriented company that reinvests earnings rather than paying dividends.</div>';
@@ -4660,7 +4673,7 @@ def index():
                 else if (vol > 40) narrative += 'High price volatility (' + vol.toFixed(1) + '%) may offset dividend income with capital loss risk.';
                 h += '<div class="vd-narrative">' + narrative + '</div>';
             }
-            h += '</div>';
+            h += '</div></div>';
             return h;
         }
 
