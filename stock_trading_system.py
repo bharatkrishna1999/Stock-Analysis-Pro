@@ -2451,6 +2451,149 @@ class Analyzer:
             'risk_appetite': risk_appetite
         }
 
+    def dcf_valuation(self, symbol):
+        """Fetch financial data needed for DCF valuation from yfinance."""
+        try:
+            base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
+            ticker_obj = None
+            info = {}
+            for base in base_symbols:
+                for suffix in ['.NS', '.BO']:
+                    try:
+                        t = yf.Ticker(f"{base}{suffix}")
+                        i = t.info
+                        if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                            ticker_obj = t
+                            info = i
+                            break
+                    except Exception:
+                        continue
+                if ticker_obj:
+                    break
+
+            if not ticker_obj or not info:
+                return None
+
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            if not current_price:
+                return None
+
+            shares = (info.get('sharesOutstanding') or
+                      info.get('impliedSharesOutstanding') or
+                      info.get('floatShares'))
+            if not shares or shares <= 0:
+                return None
+
+            # --- Parse Cash Flow Statement ---
+            current_fcf = None
+            historical_growth = None
+            fcf_history = []
+            try:
+                cashflow = ticker_obj.cashflow
+                if cashflow is not None and not cashflow.empty:
+                    ocf = None
+                    for row_name in ['Operating Cash Flow', 'Total Cash From Operating Activities',
+                                     'Cash From Operating Activities']:
+                        if row_name in cashflow.index:
+                            ocf = cashflow.loc[row_name]
+                            break
+
+                    capex = None
+                    for row_name in ['Capital Expenditure', 'Capital Expenditures',
+                                     'Purchase Of Property Plant And Equipment']:
+                        if row_name in cashflow.index:
+                            capex = cashflow.loc[row_name]
+                            break
+
+                    if ocf is not None:
+                        fcf_row = (ocf + capex) if capex is not None else ocf
+                        fcf_row = fcf_row.dropna()
+                        if not fcf_row.empty:
+                            # oldest → newest chronological order
+                            fcf_vals_chrono = list(reversed(fcf_row.values.tolist()))
+                            dates_chrono = list(reversed(fcf_row.index.tolist()))
+                            for val, dt in zip(fcf_vals_chrono, dates_chrono):
+                                if pd.notna(val):
+                                    year = dt.year if hasattr(dt, 'year') else str(dt)[:4]
+                                    fcf_history.append({'year': int(year), 'fcf': int(round(float(val)))})
+
+                            # Most recent FCF (first element, newest)
+                            latest_vals = [v for v in fcf_row.values if pd.notna(v)]
+                            if latest_vals:
+                                current_fcf = float(latest_vals[0])
+
+                            # CAGR from positive historical FCF values
+                            pos_vals = [v for v in fcf_vals_chrono if pd.notna(v) and v > 0]
+                            if len(pos_vals) >= 2:
+                                periods = len(pos_vals) - 1
+                                historical_growth = (pos_vals[-1] / pos_vals[0]) ** (1.0 / periods) - 1
+            except Exception as e:
+                print(f"DCF cashflow parse error for {symbol}: {e}")
+
+            # Fallback: use EPS-based proxy if FCF unavailable
+            if current_fcf is None or current_fcf <= 0:
+                trailing_eps = info.get('trailingEps')
+                if trailing_eps and trailing_eps > 0:
+                    current_fcf = float(trailing_eps) * float(shares)
+                    historical_growth = info.get('earningsGrowth') or 0.10
+                    fcf_history = []
+                else:
+                    return None
+
+            # --- Parse Balance Sheet for Debt/Cash ---
+            total_debt = 0.0
+            cash = 0.0
+            try:
+                balance_sheet = ticker_obj.balance_sheet
+                if balance_sheet is not None and not balance_sheet.empty:
+                    for row_name in ['Total Debt', 'Long Term Debt', 'Long-Term Debt']:
+                        if row_name in balance_sheet.index:
+                            val = balance_sheet.loc[row_name].iloc[0]
+                            if pd.notna(val):
+                                total_debt = float(val)
+                                break
+                    for row_name in ['Cash And Cash Equivalents', 'Cash',
+                                     'Cash And Short Term Investments']:
+                        if row_name in balance_sheet.index:
+                            val = balance_sheet.loc[row_name].iloc[0]
+                            if pd.notna(val):
+                                cash = float(val)
+                                break
+            except Exception:
+                pass
+
+            # Suggested growth rate: clamp historical CAGR to [3%, 40%]
+            if historical_growth is not None:
+                suggested_growth = min(max(float(historical_growth), 0.03), 0.40)
+            else:
+                analyst_growth = (info.get('earningsGrowth') or
+                                  info.get('revenueGrowth') or 0.10)
+                suggested_growth = min(max(float(analyst_growth), 0.03), 0.40)
+
+            return {
+                'symbol': symbol,
+                'name': info.get('longName') or info.get('shortName') or symbol,
+                'current_price': round(float(current_price), 2),
+                'current_fcf': int(round(float(current_fcf))),
+                'shares_outstanding': int(round(float(shares))),
+                'total_debt': int(round(float(total_debt))),
+                'cash': int(round(float(cash))),
+                'historical_fcf_growth': round(float(historical_growth), 4) if historical_growth is not None else None,
+                'suggested_growth_rate': round(float(suggested_growth), 4),
+                'market_cap': info.get('marketCap'),
+                'sector': info.get('sector') or '',
+                'industry': info.get('industry') or '',
+                'pe_ratio': info.get('trailingPE'),
+                'pb_ratio': info.get('priceToBook'),
+                'ev_ebitda': info.get('enterpriseToEbitda'),
+                'roe': info.get('returnOnEquity'),
+                'fcf_history': fcf_history,
+            }
+        except Exception as e:
+            print(f"DCF valuation error for {symbol}: {e}")
+            return None
+
+
 analyzer = Analyzer()
 
 # ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
@@ -2756,6 +2899,162 @@ def index():
         @media (max-width: 400px) {
             .tab { font-size: 0.78em; padding: 10px 4px; }
         }
+
+        /* ===== DCF VALUATION TAB STYLES ===== */
+        #dcf-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
+        #dcf-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(0, 217, 255, 0.1); }
+        .dcf-fetch-btn { width: 100%; margin-top: 14px; padding: 14px; background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple)); color: white; border: none; border-radius: 8px; font-size: 1em; font-weight: 700; cursor: pointer; font-family: 'Space Grotesk', sans-serif; transition: all 0.3s; letter-spacing: 0.3px; }
+        .dcf-fetch-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0, 217, 255, 0.35); }
+        .dcf-stock-hero { background: var(--bg-card-hover); border-radius: 14px; padding: 24px 28px; margin-bottom: 24px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
+        .dcf-stock-name { font-family: 'Space Grotesk', sans-serif; font-size: 1.6em; font-weight: 700; color: var(--text-primary); }
+        .dcf-stock-sub { color: var(--text-muted); font-size: 0.88em; margin-top: 4px; }
+        .dcf-price-box { text-align: right; }
+        .dcf-price-label { font-size: 0.78em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; }
+        .dcf-price-val { font-family: 'Space Grotesk', sans-serif; font-size: 2em; font-weight: 700; color: var(--text-primary); }
+        .dcf-valuation-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+        .dcf-params-card { background: var(--bg-card); border-radius: 14px; padding: 26px; border: 1px solid var(--border-color); }
+        .dcf-params-card h3 { font-family: 'Space Grotesk', sans-serif; font-size: 1.05em; font-weight: 700; color: var(--accent-cyan); margin-bottom: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .dcf-param-row { margin-bottom: 18px; }
+        .dcf-param-label { display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; color: var(--text-secondary); font-weight: 600; margin-bottom: 8px; }
+        .dcf-param-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; color: var(--accent-cyan); font-size: 0.95em; }
+        .dcf-slider { width: 100%; -webkit-appearance: none; appearance: none; height: 6px; border-radius: 3px; background: var(--bg-dark); outline: none; cursor: pointer; }
+        .dcf-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-cyan); cursor: pointer; border: 2px solid var(--bg-dark); box-shadow: 0 0 6px rgba(0, 217, 255, 0.5); transition: box-shadow 0.2s; }
+        .dcf-slider::-webkit-slider-thumb:hover { box-shadow: 0 0 12px rgba(0, 217, 255, 0.8); }
+        .dcf-slider::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-cyan); cursor: pointer; border: 2px solid var(--bg-dark); }
+        .dcf-param-hint { font-size: 0.76em; color: var(--text-muted); margin-top: 4px; }
+        .dcf-years-group { display: flex; gap: 8px; }
+        .dcf-year-btn { flex: 1; padding: 9px; background: var(--bg-dark); border: 1px solid var(--border-color); border-radius: 6px; color: var(--text-secondary); font-size: 0.88em; font-weight: 600; cursor: pointer; transition: all 0.2s; text-align: center; }
+        .dcf-year-btn.active { background: var(--accent-cyan); color: var(--bg-dark); border-color: var(--accent-cyan); }
+        .dcf-results-card { background: var(--bg-card); border-radius: 14px; padding: 26px; border: 1px solid var(--border-color); }
+        .dcf-results-card h3 { font-family: 'Space Grotesk', sans-serif; font-size: 1.05em; font-weight: 700; color: var(--accent-purple); margin-bottom: 20px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .dcf-intrinsic-hero { text-align: center; padding: 24px 16px; background: var(--bg-card-hover); border-radius: 12px; margin-bottom: 20px; border: 1px solid var(--border-color); }
+        .dcf-intrinsic-label { font-size: 0.8em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .dcf-intrinsic-value { font-family: 'Space Grotesk', sans-serif; font-size: 3em; font-weight: 700; line-height: 1; }
+        .dcf-intrinsic-undervalued { color: var(--accent-green); }
+        .dcf-intrinsic-overvalued { color: var(--danger); }
+        .dcf-margin-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--bg-dark); border-radius: 8px; margin-bottom: 8px; }
+        .dcf-margin-label { font-size: 0.85em; color: var(--text-secondary); }
+        .dcf-margin-val { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 0.95em; }
+        .dcf-upside { color: var(--accent-green); }
+        .dcf-downside { color: var(--danger); }
+        .dcf-verdict-banner { padding: 14px 18px; border-radius: 10px; text-align: center; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1em; margin-bottom: 16px; letter-spacing: 0.3px; }
+        .dcf-verdict-buy { background: linear-gradient(135deg, rgba(16,185,129,0.18), rgba(6,255,165,0.1)); border: 1px solid rgba(16,185,129,0.4); color: #10b981; }
+        .dcf-verdict-sell { background: linear-gradient(135deg, rgba(239,68,68,0.18), rgba(239,68,68,0.1)); border: 1px solid rgba(239,68,68,0.4); color: #ef4444; }
+        .dcf-verdict-hold { background: linear-gradient(135deg, rgba(245,158,11,0.18), rgba(245,158,11,0.1)); border: 1px solid rgba(245,158,11,0.4); color: #f59e0b; }
+        .dcf-breakdown-bar { margin: 18px 0; }
+        .dcf-breakdown-label { font-size: 0.8em; color: var(--text-muted); font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .dcf-bar-track { height: 28px; background: var(--bg-dark); border-radius: 6px; overflow: hidden; display: flex; }
+        .dcf-bar-fcf { background: linear-gradient(90deg, var(--accent-cyan), #0891b2); display: flex; align-items: center; justify-content: center; font-size: 0.75em; font-weight: 700; color: white; transition: width 0.6s ease; white-space: nowrap; overflow: hidden; min-width: 0; }
+        .dcf-bar-tv { background: linear-gradient(90deg, var(--accent-purple), #7c3aed); display: flex; align-items: center; justify-content: center; font-size: 0.75em; font-weight: 700; color: white; transition: width 0.6s ease; white-space: nowrap; overflow: hidden; min-width: 0; }
+        .dcf-bar-legend { display: flex; gap: 16px; margin-top: 8px; }
+        .dcf-bar-legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.78em; color: var(--text-muted); }
+        .dcf-bar-legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+        .dcf-section { margin-top: 28px; }
+        .dcf-section-title { font-family: 'Space Grotesk', sans-serif; font-size: 1em; font-weight: 700; color: var(--text-primary); margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color); }
+        .dcf-proj-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+        .dcf-proj-table th { padding: 10px 12px; text-align: right; border-bottom: 2px solid var(--border-color); color: var(--accent-cyan); font-weight: 600; text-transform: uppercase; font-size: 0.78em; letter-spacing: 0.5px; }
+        .dcf-proj-table th:first-child { text-align: left; }
+        .dcf-proj-table td { padding: 9px 12px; border-bottom: 1px solid rgba(45,55,72,0.5); text-align: right; color: var(--text-secondary); }
+        .dcf-proj-table td:first-child { text-align: left; color: var(--text-primary); font-weight: 600; }
+        .dcf-proj-table tr:hover td { background: var(--bg-card-hover); }
+        .dcf-proj-table tr.tv-row td { color: var(--accent-purple); border-top: 2px solid var(--border-color); }
+        .dcf-proj-table tr.total-row td { color: var(--accent-green); font-weight: 700; font-family: 'Space Grotesk', sans-serif; border-top: 2px solid var(--border-color); }
+        .dcf-sensitivity { margin-top: 28px; }
+        .dcf-sens-table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
+        .dcf-sens-table th { padding: 8px 10px; text-align: center; border-bottom: 2px solid var(--border-color); color: var(--text-muted); font-weight: 600; font-size: 0.78em; letter-spacing: 0.5px; }
+        .dcf-sens-table th:first-child { text-align: left; color: var(--accent-purple); }
+        .dcf-sens-table td { padding: 7px 10px; text-align: center; border-bottom: 1px solid rgba(45,55,72,0.4); font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 0.88em; }
+        .dcf-sens-table td:first-child { text-align: left; color: var(--text-muted); font-weight: 700; font-family: inherit; font-size: 0.8em; }
+        .dcf-sens-undervalue { color: var(--accent-green); }
+        .dcf-sens-overvalue { color: var(--danger); }
+        .dcf-sens-near { color: var(--warning); }
+        .dcf-sens-highlight { background: rgba(0,217,255,0.08); border: 1px solid rgba(0,217,255,0.2); border-radius: 4px; }
+        .dcf-key-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+        .dcf-stat { background: var(--bg-card-hover); padding: 14px 16px; border-radius: 8px; border-left: 3px solid var(--border-color); }
+        .dcf-stat-label { font-size: 0.72em; text-transform: uppercase; color: var(--text-muted); font-weight: 600; letter-spacing: 0.5px; margin-bottom: 4px; }
+        .dcf-stat-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05em; color: var(--text-primary); }
+        .dcf-fcf-hist { display: flex; align-items: flex-end; gap: 8px; height: 70px; margin: 14px 0 6px; }
+        .dcf-fcf-bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+        .dcf-fcf-bar-inner { width: 100%; border-radius: 3px 3px 0 0; min-height: 4px; transition: height 0.4s ease; }
+        .dcf-fcf-bar-year { font-size: 0.68em; color: var(--text-muted); }
+        .dcf-fcf-positive { background: linear-gradient(180deg, var(--accent-cyan), #0891b2); }
+        .dcf-fcf-negative { background: linear-gradient(180deg, var(--danger), #dc2626); }
+        .dcf-disclaimer { margin-top: 28px; padding: 14px 18px; background: rgba(245,158,11,0.07); border: 1px solid rgba(245,158,11,0.2); border-radius: 8px; color: var(--text-muted); font-size: 0.8em; line-height: 1.6; }
+        @media (max-width: 768px) {
+            .dcf-valuation-grid { grid-template-columns: 1fr; }
+            .dcf-key-stats { grid-template-columns: 1fr 1fr; }
+            .dcf-intrinsic-value { font-size: 2.2em; }
+            .dcf-stock-hero { flex-direction: column; align-items: flex-start; }
+            .dcf-price-box { text-align: left; }
+        }
+        @media (max-width: 480px) {
+            .dcf-key-stats { grid-template-columns: 1fr; }
+        }
+        /* ===== INVESTMENT VERDICT TAB ===== */
+        .verdict-fetch-btn { width:100%;margin-top:14px;padding:14px;background:linear-gradient(135deg,var(--accent-green),var(--accent-cyan));color:#0a0e1a;border:none;border-radius:8px;font-size:1em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.3s;letter-spacing:0.3px; }
+        .verdict-fetch-btn:hover { transform:translateY(-2px);box-shadow:0 5px 20px rgba(6,255,165,0.35); }
+        .vd-hero { background:var(--bg-card-hover);border-radius:14px;padding:24px 28px;margin-bottom:22px;border:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px; }
+        .vd-name { font-family:'Space Grotesk',sans-serif;font-size:1.55em;font-weight:700;color:var(--text-primary); }
+        .vd-sub { color:var(--text-muted);font-size:0.86em;margin-top:3px; }
+        .vd-price-box { text-align:right; }
+        .vd-price-label { font-size:0.76em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px; }
+        .vd-price-val { font-family:'Space Grotesk',sans-serif;font-size:1.9em;font-weight:700;color:var(--text-primary); }
+        .vd-daily.up { color:var(--accent-green);font-weight:700;font-size:0.9em; }
+        .vd-daily.down { color:var(--danger);font-weight:700;font-size:0.9em; }
+        .vd-score-grid { display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:28px; }
+        .vd-score-card { background:var(--bg-card);border-radius:14px;padding:22px 18px;border:1px solid var(--border-color);text-align:center;position:relative;overflow:hidden;transition:transform 0.2s; }
+        .vd-score-card:hover { transform:translateY(-3px); }
+        .vd-score-card.vd-best { border-color:var(--accent-green);box-shadow:0 0 20px rgba(6,255,165,0.12); }
+        .vd-score-label { font-size:0.72em;text-transform:uppercase;letter-spacing:0.6px;font-weight:700;margin-bottom:12px; }
+        .vd-score-ring { width:80px;height:80px;margin:0 auto 12px;position:relative; }
+        .vd-score-ring svg { transform:rotate(-90deg); }
+        .vd-score-ring-num { position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:'Space Grotesk',sans-serif;font-size:1.25em;font-weight:700; }
+        .vd-verdict-badge { display:inline-block;padding:5px 14px;border-radius:20px;font-size:0.78em;font-weight:700;margin-top:8px; }
+        .vd-badge-suitable { background:rgba(6,255,165,0.12);color:var(--accent-green);border:1px solid rgba(6,255,165,0.3); }
+        .vd-badge-moderate { background:rgba(245,158,11,0.1);color:var(--warning);border:1px solid rgba(245,158,11,0.25); }
+        .vd-badge-weak { background:rgba(239,68,68,0.1);color:var(--danger);border:1px solid rgba(239,68,68,0.25); }
+        .vd-section { background:var(--bg-card);border-radius:14px;margin-bottom:14px;border:1px solid var(--border-color);overflow:hidden; }
+        .vd-section-header { display:flex;justify-content:space-between;align-items:center;padding:18px 22px;cursor:pointer;user-select:none;transition:background 0.2s; }
+        .vd-section-header:hover { background:var(--bg-card-hover); }
+        .vd-section-header-left { display:flex;align-items:center;gap:12px; }
+        .vd-section-title { font-family:'Space Grotesk',sans-serif;font-size:1.02em;font-weight:700; }
+        .vd-section-score { font-family:'Space Grotesk',sans-serif;font-size:0.88em;font-weight:700; }
+        .vd-section-chevron { color:var(--text-muted);font-size:0.85em;transition:transform 0.25s;margin-left:8px; }
+        .vd-section.open .vd-section-chevron { transform:rotate(180deg); }
+        .vd-section-body { display:none;padding:0 22px 22px; }
+        .vd-section.open .vd-section-body { display:block; }
+        .vd-metrics { display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px; }
+        .vd-metric { background:var(--bg-dark);border-radius:8px;padding:10px 12px; }
+        .vd-metric-label { font-size:0.72em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.4px;margin-bottom:4px; }
+        .vd-metric-value { font-family:'Space Grotesk',sans-serif;font-size:0.95em;font-weight:700; }
+        .vd-metric-value.green { color:var(--accent-green); }
+        .vd-metric-value.cyan { color:var(--accent-cyan); }
+        .vd-metric-value.yellow { color:var(--warning); }
+        .vd-metric-value.red { color:var(--danger); }
+        .vd-metric-value.muted { color:var(--text-muted); }
+        .vd-trade-levels { display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:14px 0; }
+        .vd-level { background:var(--bg-dark);border-radius:8px;padding:12px 14px;text-align:center; }
+        .vd-level-label { font-size:0.7em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:4px; }
+        .vd-level-val { font-family:'Space Grotesk',sans-serif;font-size:1.1em;font-weight:700; }
+        .vd-narrative { background:var(--bg-dark);border-radius:10px;padding:14px 16px;font-size:0.86em;color:var(--text-secondary);line-height:1.7;margin-top:12px; }
+        .vd-overall { background:linear-gradient(135deg,rgba(6,255,165,0.06),rgba(0,217,255,0.06));border:1px solid rgba(6,255,165,0.2);border-radius:14px;padding:26px;margin-bottom:20px;text-align:center; }
+        .vd-overall-label { font-size:0.76em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:8px; }
+        .vd-overall-verdict { font-family:'Space Grotesk',sans-serif;font-size:1.8em;font-weight:700;margin-bottom:10px; }
+        .vd-overall-reason { color:var(--text-secondary);font-size:0.88em;line-height:1.7;max-width:680px;margin:0 auto; }
+        .vd-loading-grid { display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin:20px 0; }
+        .vd-load-item { background:var(--bg-card);border-radius:10px;padding:14px 16px;display:flex;align-items:center;gap:12px;border:1px solid var(--border-color); }
+        .vd-load-icon { font-size:1.4em; }
+        .vd-load-label { font-size:0.85em;color:var(--text-secondary);font-weight:600; }
+        .vd-load-status { font-size:0.78em;margin-top:2px; }
+        .vd-load-status.done { color:var(--accent-green); }
+        .vd-load-status.loading { color:var(--warning); }
+        .vd-load-status.error { color:var(--danger); }
+        .vd-divider { height:1px;background:var(--border-color);margin:6px 0 14px; }
+        @media (max-width:768px) {
+            .vd-score-grid { grid-template-columns:1fr; }
+            .vd-metrics { grid-template-columns:1fr 1fr; }
+            .vd-trade-levels { grid-template-columns:1fr 1fr 1fr; }
+        }
     </style>
 </head>
 <body>
@@ -2768,11 +3067,13 @@ def index():
     </header>
     <main class="container">
         <div class="tabs">
-            <button class="tab active" onclick="switchTab('analysis', event)">Technical Analysis</button>
-            <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
+            <button class="tab active" onclick="switchTab('verdict', event)">Investment Verdict</button>
+            <button class="tab" onclick="switchTab('analysis', event)">Technical Analysis</button>
+            <button class="tab" onclick="switchTab('dcf', event)">DCF Valuation</button>
             <button class="tab" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
+            <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
         </div>
-        <div id="analysis-tab" class="tab-content active">
+        <div id="analysis-tab" class="tab-content">
             <div id="search-view">
                 <div class="grid">
                     <div class="card">
@@ -2862,6 +3163,85 @@ def index():
             </div>
             <div id="dividend-results"></div>
         </div>
+        <div id="dcf-tab" class="tab-content">
+            <!-- Search View -->
+            <div id="dcf-search-view">
+                <div class="grid">
+                    <div class="card">
+                        <h2>🧮 DCF Valuation</h2>
+                        <p style="color:var(--text-secondary);margin-bottom:18px;font-size:0.92em;line-height:1.7;">
+                            Estimate the intrinsic value of any NSE stock using Discounted Cash Flow analysis.
+                            Enter a symbol to fetch its financial data, then adjust the assumptions to see how intrinsic value changes in real time.
+                        </p>
+                        <input type="text" id="dcf-search" placeholder="Search stock (e.g. TCS, INFY, RELIANCE)...">
+                        <div class="suggestions" id="dcf-suggestions"></div>
+                        <button class="dcf-fetch-btn" onclick="fetchDCFData()">Fetch Financial Data &amp; Value</button>
+                    </div>
+                    <div class="card">
+                        <h2>📖 How DCF Works</h2>
+                        <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px;">
+                            <div style="background:var(--bg-dark);padding:14px 16px;border-radius:8px;">
+                                <strong style="color:var(--text-primary);font-size:0.9em;">1. Project Free Cash Flows</strong>
+                                <p style="color:var(--text-muted);font-size:0.82em;margin:5px 0 0;line-height:1.6;">Estimate how much cash the company will generate each year, growing at your chosen rate.</p>
+                            </div>
+                            <div style="background:var(--bg-dark);padding:14px 16px;border-radius:8px;">
+                                <strong style="color:var(--text-primary);font-size:0.9em;">2. Discount to Present Value</strong>
+                                <p style="color:var(--text-muted);font-size:0.82em;margin:5px 0 0;line-height:1.6;">A rupee today is worth more than a rupee tomorrow. We discount future cash using your WACC rate.</p>
+                            </div>
+                            <div style="background:var(--bg-dark);padding:14px 16px;border-radius:8px;">
+                                <strong style="color:var(--text-primary);font-size:0.9em;">3. Add Terminal Value</strong>
+                                <p style="color:var(--text-muted);font-size:0.82em;margin:5px 0 0;line-height:1.6;">Accounts for all cash flows beyond the projection period using the Gordon Growth Model.</p>
+                            </div>
+                            <div style="background:var(--bg-dark);padding:14px 16px;border-radius:8px;">
+                                <strong style="color:var(--text-primary);font-size:0.9em;">4. Calculate Intrinsic Value</strong>
+                                <p style="color:var(--text-muted);font-size:0.82em;margin:5px 0 0;line-height:1.6;">Sum all PV of FCFs + Terminal Value, subtract debt, add cash, divide by shares outstanding.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- Result View -->
+            <div id="dcf-result-view" style="display:none;">
+                <button class="back-btn" onclick="dcfGoBack()">← Back to Search</button>
+                <div id="dcf-result"></div>
+            </div>
+        </div>
+        <div id="verdict-tab" class="tab-content active">
+            <div id="verdict-search-view">
+                <div class="grid">
+                    <div class="card">
+                        <h2>🏆 Investment Verdict</h2>
+                        <p style="color:var(--text-secondary);margin-bottom:18px;font-size:0.92em;line-height:1.7;">
+                            Combines Technical signals, DCF valuation, Market Connection and Dividend metrics into one unified verdict — telling you exactly what this stock is best suited for.
+                        </p>
+                        <input type="text" id="verdict-search" placeholder="Search stock symbol (e.g. TCS, INFY, RELIANCE, HDFC)..." style="font-size:1.1em;padding:14px 18px;height:54px;">
+                        <div class="suggestions" id="verdict-suggestions"></div>
+                        <button class="verdict-fetch-btn" onclick="fetchVerdictData()">Analyse &amp; Get Verdict</button>
+                    </div>
+                    <div class="card">
+                        <h2>📋 What You Get</h2>
+                        <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px;">
+                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-cyan);">
+                                <strong style="color:var(--accent-cyan);font-size:0.88em;">⚡ Short-Term Trading</strong>
+                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Entry price, stop loss, target, timeframe and why the technical setup makes sense right now.</p>
+                            </div>
+                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-green);">
+                                <strong style="color:var(--accent-green);font-size:0.88em;">📈 Long-Term Holding</strong>
+                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">DCF intrinsic value, FCF growth, beta and market dependency to assess long-term wealth creation.</p>
+                            </div>
+                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--warning);">
+                                <strong style="color:var(--warning);font-size:0.88em;">💰 Dividend Income</strong>
+                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Yield, stability and upcoming dividend dates to evaluate as a passive income candidate.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="verdict-result-view" style="display:none;">
+                <button class="back-btn" onclick="verdictGoBack()">&#8592; Back to Search</button>
+                <div id="verdict-result"></div>
+            </div>
+        </div>
     </main>
     <script>
         const stocks = ''' + json.dumps(STOCKS, separators=(',', ':')) + ''';
@@ -2901,6 +3281,16 @@ def index():
                     if (e.key === 'Enter') analyzeRegression();
                 });
             } else if (tab === 'dividend') {
+            } else if (tab === 'dcf') {
+                setupAutocomplete('dcf-search', 'dcf-suggestions', 'dcfAutocomplete');
+                document.getElementById('dcf-search').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') fetchDCFData();
+                });
+            } else if (tab === 'verdict') {
+                setupAutocomplete('verdict-search', 'verdict-suggestions', 'verdictAutocomplete');
+                document.getElementById('verdict-search').addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') fetchVerdictData();
+                });
             }
             loadedTabs.add(tab);
         }
@@ -2927,12 +3317,14 @@ def index():
                 sug.innerHTML = filtered.map(s => {
                     const label = `${s} <span style='font-size:0.8em;color:var(--text-muted);'>${getStockName(s)}</span>`;
                     if(callbackName === 'analyzeRegression') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; analyzeRegression();">${label}</button>`;
+                    else if(callbackName === 'dcfAutocomplete') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; fetchDCFData();">${label}</button>`;
+                    else if(callbackName === 'verdictAutocomplete') return `<button onclick="document.getElementById('${inputId}').value = '${s}'; fetchVerdictData();">${label}</button>`;
                     else return `<button onclick="analyze('${s}')">${label}</button>`;
                 }).join('');
             });
         }
         function init() {
-            ensureTabLoaded('analysis');
+            ensureTabLoaded('verdict');
         }
         function analyze(symbol) {
             document.getElementById('search-view').style.display = 'none';
@@ -3790,6 +4182,629 @@ def index():
                 grid.appendChild(label);
             });
         }
+        // ===== DCF VALUATION =====
+        let dcfData = null;
+        let _dcfYears = 10;
+
+        function dcfGoBack() {
+            document.getElementById('dcf-result-view').style.display = 'none';
+            document.getElementById('dcf-search-view').style.display = 'block';
+        }
+
+        function fetchDCFData() {
+            var symbol = document.getElementById('dcf-search').value.trim().toUpperCase();
+            if (!symbol) { alert('Please enter a stock symbol'); return; }
+            document.getElementById('dcf-suggestions').innerHTML = '';
+            document.getElementById('dcf-search-view').style.display = 'none';
+            document.getElementById('dcf-result-view').style.display = 'block';
+            document.getElementById('dcf-result').innerHTML = '<div class="loading">\u23f3 Fetching financial data for ' + symbol + '...</div>';
+            fetch('/dcf-data?symbol=' + encodeURIComponent(symbol))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.error) {
+                        document.getElementById('dcf-result').innerHTML = '<div class="error">\u274c ' + data.error + '</div>';
+                        setTimeout(function() { document.getElementById('dcf-result-view').style.display = 'none'; document.getElementById('dcf-search-view').style.display = 'block'; }, 3500);
+                    } else { dcfData = data; _dcfYears = 10; renderDCFResult(data); }
+                })
+                .catch(function(e) { document.getElementById('dcf-result').innerHTML = '<div class="error">\u274c ' + e.message + '</div>'; });
+        }
+
+        function fmtCr(n) {
+            if (n === null || n === undefined || isNaN(n)) return 'N/A';
+            var abs = Math.abs(n), sign = n < 0 ? '-' : '';
+            if (abs >= 1e12) return sign + '\u20b9' + (abs / 1e12).toFixed(2) + 'L Cr';
+            if (abs >= 1e7)  return sign + '\u20b9' + (abs / 1e7).toFixed(2) + ' Cr';
+            if (abs >= 1e5)  return sign + '\u20b9' + (abs / 1e5).toFixed(2) + ' L';
+            return sign + '\u20b9' + Math.round(abs).toLocaleString('en-IN');
+        }
+
+        function runDCF(fcf, g1, g2, wacc, tg, years, debt, cash, shares) {
+            var phase1Yrs = Math.min(5, years);
+            var projections = [], currentFCF = fcf, sumPV = 0;
+            for (var yr = 1; yr <= years; yr++) {
+                var g = yr <= phase1Yrs ? g1 : g2;
+                currentFCF = currentFCF * (1 + g);
+                var pv = currentFCF / Math.pow(1 + wacc, yr);
+                projections.push({ year: yr, fcf: currentFCF, pv: pv, growth: g });
+                sumPV += pv;
+            }
+            var terminalFCF = currentFCF * (1 + tg);
+            var terminalValue = (tg < wacc) ? terminalFCF / (wacc - tg) : currentFCF * 15;
+            var terminalPV = terminalValue / Math.pow(1 + wacc, years);
+            var enterpriseValue = sumPV + terminalPV;
+            var equityValue = Math.max(enterpriseValue - debt + cash, 0);
+            var intrinsic = shares > 0 ? equityValue / shares : 0;
+            return { projections: projections, sumPV: sumPV, terminalValue: terminalValue, terminalPV: terminalPV, enterpriseValue: enterpriseValue, equityValue: equityValue, intrinsic: intrinsic };
+        }
+
+        function renderFCFHistory(history) {
+            if (!history || history.length === 0) return '';
+            var vals = history.map(function(h) { return h.fcf; });
+            var maxAbs = Math.max.apply(null, vals.map(Math.abs));
+            if (maxAbs === 0) return '';
+            var bars = history.map(function(h) {
+                var pct = Math.abs(h.fcf) / maxAbs * 100;
+                var cls = h.fcf >= 0 ? 'dcf-fcf-positive' : 'dcf-fcf-negative';
+                return '<div class="dcf-fcf-bar-wrap"><div class="dcf-fcf-bar-inner ' + cls + '" style="height:' + pct + '%;"></div><div class="dcf-fcf-bar-year">' + String(h.year).slice(-2) + '</div></div>';
+            }).join('');
+            return '<div style="background:var(--bg-card-hover);border-radius:12px;padding:18px 22px;margin-bottom:22px;border:1px solid var(--border-color);"><div style="font-size:0.78em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:10px;">Historical Free Cash Flow</div><div class="dcf-fcf-hist">' + bars + '</div></div>';
+        }
+
+        function dcfSetYears(n, btn) {
+            _dcfYears = n;
+            document.querySelectorAll('.dcf-year-btn').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            updateDCFDisplay();
+        }
+        function dcfSliderChange(el) {
+            var targetId = el.dataset.target || (el.id + '-val');
+            var display = document.getElementById(targetId);
+            if (display) display.textContent = el.value + '%';
+            updateDCFDisplay();
+        }
+
+        function renderDCFResult(data) {
+            var sugG = Math.round(data.suggested_growth_rate * 100);
+            var phase2G = Math.max(Math.round(sugG * 0.5), 5);
+            var defaultWACC = 12, defaultTG = 3;
+            var histCagr = data.historical_fcf_growth !== null ? (data.historical_fcf_growth * 100).toFixed(1) + '%' : 'N/A';
+            var mktCap = data.market_cap ? fmtCr(data.market_cap) : 'N/A';
+            var netCash = fmtCr(data.cash - data.total_debt);
+            var pe = data.pe_ratio ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
+            var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
+            var priceStr = '\u20b9' + data.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            var fcfStr = fmtCr(data.current_fcf);
+            var h = '';
+            h += '<div class="dcf-stock-hero"><div>';
+            h += '<div class="dcf-stock-name">' + (data.name || data.symbol) + '</div>';
+            h += '<div class="dcf-stock-sub">' + data.symbol + (data.sector ? ' &bull; ' + data.sector : '') + (data.industry ? ' &bull; ' + data.industry : '') + '</div>';
+            h += '</div><div class="dcf-price-box"><div class="dcf-price-label">Current Price</div><div class="dcf-price-val">' + priceStr + '</div></div></div>';
+            h += '<div class="dcf-key-stats">';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">Latest FCF</div><div class="dcf-stat-value">' + fcfStr + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-purple);"><div class="dcf-stat-label">Market Cap</div><div class="dcf-stat-value">' + mktCap + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">Net Cash</div><div class="dcf-stat-value">' + netCash + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--warning);"><div class="dcf-stat-label">P/E Ratio</div><div class="dcf-stat-value">' + pe + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--danger);"><div class="dcf-stat-label">P/B Ratio</div><div class="dcf-stat-value">' + pb + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--text-muted);"><div class="dcf-stat-label">Hist. FCF CAGR</div><div class="dcf-stat-value">' + histCagr + '</div></div>';
+            h += '</div>';
+            if (data.fcf_history && data.fcf_history.length > 1) h += renderFCFHistory(data.fcf_history);
+            h += '<div class="dcf-valuation-grid">';
+            h += '<div class="dcf-params-card"><h3>Assumptions</h3>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Projection Years</span></div>';
+            h += '<div class="dcf-years-group"><button class="dcf-year-btn" onclick="dcfSetYears(5, this)">5 Years</button><button class="dcf-year-btn active" onclick="dcfSetYears(10, this)">10 Years</button></div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Phase 1 Growth (Yr 1\u20135)</span><span class="dcf-param-value" id="dcf-g1-val">' + sugG + '%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="dcf-g1" min="0" max="50" step="0.5" value="' + sugG + '" oninput="dcfSliderChange(this)">';
+            h += '<div class="dcf-param-hint">Based on historical FCF CAGR: ' + histCagr + '. Adjust as needed.</div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Phase 2 Growth (Yr 6\u201310)</span><span class="dcf-param-value" id="dcf-g2-val">' + phase2G + '%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="dcf-g2" min="0" max="30" step="0.5" value="' + phase2G + '" oninput="dcfSliderChange(this)">';
+            h += '<div class="dcf-param-hint">Growth typically decelerates as companies mature.</div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Discount Rate / WACC</span><span class="dcf-param-value" id="dcf-wacc-val">' + defaultWACC + '%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="dcf-wacc" min="6" max="25" step="0.5" value="' + defaultWACC + '" oninput="dcfSliderChange(this)">';
+            h += '<div class="dcf-param-hint">Your required rate of return. Typically 10\u201315% for NSE stocks.</div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Terminal Growth Rate</span><span class="dcf-param-value" id="dcf-tg-val">' + defaultTG + '%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="dcf-tg" min="1" max="6" step="0.25" value="' + defaultTG + '" oninput="dcfSliderChange(this)">';
+            h += '<div class="dcf-param-hint">Perpetual growth after projection period. Should not exceed long-run GDP growth.</div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Base FCF Adjustment</span><span class="dcf-param-value" id="dcf-fcf-display">100%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="dcf-fcf-adj" min="50" max="200" step="5" value="100" data-target="dcf-fcf-display" oninput="dcfSliderChange(this)">';
+            h += '<div class="dcf-param-hint">Scale latest FCF. 100% = ' + fcfStr + ' (as reported).</div></div>';
+            h += '</div>';
+            h += '<div class="dcf-results-card"><h3>Valuation Output</h3>';
+            h += '<div class="dcf-intrinsic-hero"><div class="dcf-intrinsic-label">Intrinsic Value Per Share</div><div class="dcf-intrinsic-value" id="dcf-intrinsic-val">\u2014</div></div>';
+            h += '<div id="dcf-verdict-banner" class="dcf-verdict-banner"></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Current Market Price</span><span class="dcf-margin-val">' + priceStr + '</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Margin of Safety / Premium</span><span class="dcf-margin-val" id="dcf-mos">\u2014</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Upside / Downside</span><span class="dcf-margin-val" id="dcf-updown">\u2014</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Enterprise Value</span><span class="dcf-margin-val" id="dcf-ev">\u2014</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Terminal Value (% of EV)</span><span class="dcf-margin-val" id="dcf-tv-pct">\u2014</span></div>';
+            h += '<div class="dcf-breakdown-bar"><div class="dcf-breakdown-label">Value Breakdown: FCFs vs Terminal Value</div>';
+            h += '<div class="dcf-bar-track"><div class="dcf-bar-fcf" id="dcf-bar-fcf" style="width:40%;">FCF PVs</div><div class="dcf-bar-tv" id="dcf-bar-tv" style="width:60%;">Terminal</div></div>';
+            h += '<div class="dcf-bar-legend"><div class="dcf-bar-legend-item"><div class="dcf-bar-legend-dot" style="background:var(--accent-cyan);"></div>PV of FCFs</div><div class="dcf-bar-legend-item"><div class="dcf-bar-legend-dot" style="background:var(--accent-purple);"></div>Terminal Value</div></div>';
+            h += '</div></div>';
+            h += '</div>';
+            h += '<div class="dcf-section"><div class="dcf-section-title">Year-by-Year Free Cash Flow Projection</div><div style="overflow-x:auto;"><table class="dcf-proj-table"><thead><tr><th>Year</th><th>FCF (\u20b9 Cr)</th><th>Growth</th><th>Discount Factor</th><th>PV (\u20b9 Cr)</th></tr></thead><tbody id="dcf-proj-tbody"></tbody></table></div></div>';
+            h += '<div class="dcf-sensitivity dcf-section"><div class="dcf-section-title">Sensitivity Analysis \u2014 Intrinsic Value vs WACC &amp; Terminal Growth</div>';
+            h += '<p style="color:var(--text-muted);font-size:0.82em;margin-bottom:12px;">Green = undervalued vs current price &bull; Red = overvalued &bull; Yellow = within \u00b115%.</p>';
+            h += '<div style="overflow-x:auto;"><table class="dcf-sens-table" id="dcf-sens-table"></table></div></div>';
+            h += '<div class="dcf-disclaimer">\u26a0\ufe0f <strong>Disclaimer:</strong> DCF valuations are highly sensitive to input assumptions. Small changes in growth rate or WACC can materially affect the intrinsic value. This tool is for educational and informational purposes only and does not constitute investment advice. Always do your own due diligence.</div>';
+            document.getElementById('dcf-result').innerHTML = h;
+            updateDCFDisplay();
+        }
+
+        function updateDCFDisplay() {
+            if (!dcfData) return;
+            var g1   = parseFloat(document.getElementById('dcf-g1').value) / 100;
+            var g2   = parseFloat(document.getElementById('dcf-g2').value) / 100;
+            var wacc = parseFloat(document.getElementById('dcf-wacc').value) / 100;
+            var tg   = parseFloat(document.getElementById('dcf-tg').value) / 100;
+            var adj  = parseFloat(document.getElementById('dcf-fcf-adj').value) / 100;
+            var fcf  = dcfData.current_fcf * adj;
+            var res  = runDCF(fcf, g1, g2, wacc, tg, _dcfYears, dcfData.total_debt, dcfData.cash, dcfData.shares_outstanding);
+            var price = dcfData.current_price;
+            var intrinsic = res.intrinsic;
+            var ivEl = document.getElementById('dcf-intrinsic-val');
+            var isUnder = intrinsic > price;
+            ivEl.textContent = '\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            ivEl.className = 'dcf-intrinsic-value ' + (isUnder ? 'dcf-intrinsic-undervalued' : 'dcf-intrinsic-overvalued');
+            var mosEl = document.getElementById('dcf-mos');
+            var mos = ((intrinsic - price) / Math.max(intrinsic, 1)) * 100;
+            mosEl.textContent = isUnder ? mos.toFixed(1) + '% Margin of Safety' : Math.abs(mos).toFixed(1) + '% Premium to Fair Value';
+            mosEl.className = 'dcf-margin-val ' + (isUnder ? 'dcf-upside' : 'dcf-downside');
+            var ud = ((intrinsic - price) / price) * 100;
+            var udEl = document.getElementById('dcf-updown');
+            udEl.textContent = (ud >= 0 ? '+' : '') + ud.toFixed(1) + '%';
+            udEl.className = 'dcf-margin-val ' + (ud >= 0 ? 'dcf-upside' : 'dcf-downside');
+            document.getElementById('dcf-ev').textContent = fmtCr(res.enterpriseValue);
+            var tvPct = res.enterpriseValue > 0 ? (res.terminalPV / res.enterpriseValue * 100) : 0;
+            document.getElementById('dcf-tv-pct').textContent = tvPct.toFixed(1) + '%';
+            var fcfPct = Math.max(0, Math.min(100 - tvPct, 100));
+            var tvBar  = Math.max(0, Math.min(tvPct, 100));
+            var bFcf = document.getElementById('dcf-bar-fcf'), bTv = document.getElementById('dcf-bar-tv');
+            bFcf.style.width = fcfPct.toFixed(1) + '%'; bTv.style.width = tvBar.toFixed(1) + '%';
+            bFcf.textContent = fcfPct >= 18 ? 'FCF PVs ' + fcfPct.toFixed(0) + '%' : '';
+            bTv.textContent  = tvBar  >= 18 ? 'Terminal ' + tvBar.toFixed(0)  + '%' : '';
+            var vEl = document.getElementById('dcf-verdict-banner');
+            if (ud >= 25)       { vEl.className = 'dcf-verdict-banner dcf-verdict-buy';  vEl.textContent = '\u2705 Potentially Undervalued \u2014 Trading at a significant discount to intrinsic value'; }
+            else if (ud >= -15) { vEl.className = 'dcf-verdict-banner dcf-verdict-hold'; vEl.textContent = '\u2696\ufe0f Fairly Valued \u2014 Price is near the estimated intrinsic value'; }
+            else                { vEl.className = 'dcf-verdict-banner dcf-verdict-sell'; vEl.textContent = '\u26a0\ufe0f Potentially Overvalued \u2014 Trading at a premium to intrinsic value'; }
+            var tbody = document.getElementById('dcf-proj-tbody');
+            if (tbody) {
+                var rows = '';
+                res.projections.forEach(function(p) {
+                    rows += '<tr><td>Year ' + p.year + '</td><td>' + fmtCr(p.fcf) + '</td><td style="color:var(--text-secondary);">' + (p.growth * 100).toFixed(1) + '%</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + wacc, p.year)).toFixed(4) + '</td><td>' + fmtCr(p.pv) + '</td></tr>';
+                });
+                rows += '<tr class="tv-row"><td>Terminal Value</td><td>' + fmtCr(res.terminalValue) + '</td><td style="color:var(--text-secondary);">@TG ' + (tg*100).toFixed(2) + '%</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + wacc, _dcfYears)).toFixed(4) + '</td><td>' + fmtCr(res.terminalPV) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Enterprise Value</td><td colspan="3"></td><td>' + fmtCr(res.enterpriseValue) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Equity Value (\u2212Debt +Cash)</td><td colspan="3"></td><td>' + fmtCr(res.equityValue) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td></tr>';
+                tbody.innerHTML = rows;
+            }
+            renderDCFSensitivity(price, wacc, tg, fcf, g1, g2, _dcfYears, dcfData.total_debt, dcfData.cash, dcfData.shares_outstanding);
+        }
+
+        function renderDCFSensitivity(price, baseWACC, baseTG, fcf, g1, g2, years, debt, cash, shares) {
+            var waccSteps = [-0.04, -0.02, 0, 0.02, 0.04];
+            var tgSteps   = [0.01, 0.02, 0.03, 0.04, 0.05];
+            var tableEl = document.getElementById('dcf-sens-table');
+            if (!tableEl) return;
+            var html = '<thead><tr><th>WACC \\ Term Growth</th>';
+            tgSteps.forEach(function(tg) { html += '<th>' + (tg * 100).toFixed(0) + '%</th>'; });
+            html += '</tr></thead><tbody>';
+            waccSteps.forEach(function(dw) {
+                var w = baseWACC + dw;
+                if (w <= 0) return;
+                html += '<tr><td>WACC ' + (w * 100).toFixed(0) + '%</td>';
+                tgSteps.forEach(function(tg) {
+                    if (tg >= w) { html += '<td style="color:var(--text-muted);">N/A</td>'; return; }
+                    var r = runDCF(fcf, g1, g2, w, tg, years, debt, cash, shares);
+                    var ud = ((r.intrinsic - price) / price) * 100;
+                    var isCurrent = (Math.abs(dw) < 0.001 && Math.abs(tg - baseTG) < 0.001);
+                    var cls = ud >= 15 ? 'dcf-sens-undervalue' : ud <= -15 ? 'dcf-sens-overvalue' : 'dcf-sens-near';
+                    if (isCurrent) cls += ' dcf-sens-highlight';
+                    html += '<td class="' + cls + '">\u20b9' + Math.round(r.intrinsic).toLocaleString('en-IN') + '</td>';
+                });
+                html += '</tr>';
+            });
+            html += '</tbody>';
+            tableEl.innerHTML = html;
+        }
+
+
+        // ===== INVESTMENT VERDICT TAB =====
+        function verdictGoBack() {
+            document.getElementById('verdict-result-view').style.display = 'none';
+            document.getElementById('verdict-search-view').style.display = 'block';
+        }
+
+        function verdictScoreColor(score) {
+            if (score >= 65) return 'var(--accent-green)';
+            if (score >= 40) return 'var(--warning)';
+            return 'var(--danger)';
+        }
+        function verdictBadge(score) {
+            if (score >= 65) return ['Suitable', 'vd-badge-suitable'];
+            if (score >= 40) return ['Moderate', 'vd-badge-moderate'];
+            return ['Not Ideal', 'vd-badge-weak'];
+        }
+        function metColor(c) {
+            if (c === 'green') return 'var(--accent-green)';
+            if (c === 'cyan')  return 'var(--accent-cyan)';
+            if (c === 'yellow') return 'var(--warning)';
+            if (c === 'red')   return 'var(--danger)';
+            return 'var(--text-secondary)';
+        }
+
+        function scoreShortTerm(tech) {
+            if (!tech || tech.error || !tech.signal) return { score: 0, items: [], error: true };
+            const s = tech.signal || {};
+            const d = tech.details || {};
+            let score = 45;
+            const items = [];
+            const sig = s.signal || 'HOLD';
+            if (sig === 'BUY') { score += 20; items.push({ label: 'Signal', value: 'BUY', color: 'green' }); }
+            else if (sig === 'SELL') { score -= 20; items.push({ label: 'Signal', value: 'SELL', color: 'red' }); }
+            else { items.push({ label: 'Signal', value: 'HOLD', color: 'yellow' }); }
+            const conf = parseFloat(s.confidence) || 0;
+            if (conf >= 75) score += 10; else if (conf >= 50) score += 5;
+            items.push({ label: 'Confidence', value: conf.toFixed(0) + '%', color: conf >= 65 ? 'green' : conf >= 40 ? 'yellow' : 'red' });
+            const rsi = parseFloat(d.rsi_raw) || 50;
+            if (rsi >= 40 && rsi <= 65) score += 10; else if (rsi > 78 || rsi < 22) score -= 10;
+            items.push({ label: 'RSI', value: rsi.toFixed(0), color: rsi >= 40 && rsi <= 65 ? 'green' : rsi > 72 || rsi < 28 ? 'red' : 'yellow' });
+            if (d.macd_bullish) { score += 8; items.push({ label: 'MACD', value: 'Bullish', color: 'green' }); }
+            else { items.push({ label: 'MACD', value: 'Bearish', color: 'red' }); }
+            if (d.above_sma20 && d.above_sma50) { score += 8; items.push({ label: 'Trend', value: 'Above 20 & 50 SMA', color: 'green' }); }
+            else if (d.above_sma20) { score += 4; items.push({ label: 'Trend', value: 'Above 20 SMA', color: 'yellow' }); }
+            else { items.push({ label: 'Trend', value: 'Below SMAs', color: 'red' }); }
+            const rr = parseFloat(s.risk_reward) || 0;
+            if (rr >= 2.5) score += 10; else if (rr >= 1.5) score += 5;
+            items.push({ label: 'Risk / Reward', value: rr.toFixed(1) + 'x', color: rr >= 2 ? 'green' : rr >= 1.5 ? 'yellow' : 'red' });
+            const regime = parseFloat(s.regime_score) || 0.5;
+            if (regime >= 0.7) score += 8; else if (regime >= 0.4) score += 3; else score -= 5;
+            const mr = (s.market_regime || 'unknown').charAt(0).toUpperCase() + (s.market_regime || 'unknown').slice(1);
+            items.push({ label: 'Market Regime', value: mr, color: regime >= 0.6 ? 'green' : regime >= 0.4 ? 'yellow' : 'red' });
+            return { score: Math.max(0, Math.min(100, score)), items };
+        }
+
+        function scoreLongTerm(tech, dcfD, regr) {
+            let score = 40;
+            const items = [];
+            if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
+                const g1 = dcfD.suggested_growth_rate || 0.1;
+                const g2 = Math.max(g1 * 0.5, 0.04);
+                const res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, dcfD.total_debt || 0, dcfD.cash || 0, dcfD.shares_outstanding);
+                const up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
+                if (up >= 30) score += 25; else if (up >= 15) score += 12; else if (up >= 0) score += 5; else if (up < -20) score -= 15; else score -= 5;
+                items.push({ label: 'DCF Upside', value: (up >= 0 ? '+' : '') + up.toFixed(0) + '%', color: up >= 15 ? 'green' : up >= 0 ? 'yellow' : 'red' });
+                const pe = dcfD.pe_ratio;
+                if (pe && pe > 0) {
+                    if (pe < 15) score += 12; else if (pe < 25) score += 6; else if (pe > 50) score -= 5;
+                    items.push({ label: 'P/E Ratio', value: pe.toFixed(1) + 'x', color: pe < 20 ? 'green' : pe < 35 ? 'yellow' : 'red' });
+                }
+                const pb = dcfD.pb_ratio;
+                if (pb && pb > 0) {
+                    if (pb < 2) score += 6; else if (pb < 4) score += 3;
+                    items.push({ label: 'P/B Ratio', value: pb.toFixed(2) + 'x', color: pb < 2 ? 'green' : pb < 4 ? 'yellow' : 'red' });
+                }
+                const fcgr = dcfD.historical_fcf_growth;
+                if (fcgr !== null && fcgr !== undefined) {
+                    const pct = fcgr * 100;
+                    if (pct >= 20) score += 15; else if (pct >= 10) score += 8; else if (pct >= 0) score += 3;
+                    items.push({ label: 'FCF Growth', value: pct.toFixed(1) + '%/yr', color: pct >= 15 ? 'green' : pct >= 5 ? 'yellow' : 'red' });
+                }
+            }
+            if (regr && !regr.error && regr.beta !== undefined) {
+                const beta = regr.beta || 1;
+                if (beta < 0.7) score += 10; else if (beta < 1.0) score += 5;
+                items.push({ label: 'Beta', value: beta.toFixed(2), color: beta < 0.8 ? 'green' : beta < 1.2 ? 'yellow' : 'red' });
+                const dep = regr.dependency_score || 0.5;
+                if (dep < 0.3) score += 8; else if (dep < 0.5) score += 4;
+                items.push({ label: 'Market Dependency', value: (dep * 100).toFixed(0) + '%', color: dep < 0.35 ? 'green' : dep < 0.6 ? 'yellow' : 'red' });
+            }
+            if (tech && tech.details) {
+                const d = tech.details;
+                const bb = d.bb_position || 50;
+                if (bb < 30) { score += 5; items.push({ label: 'Bollinger Band', value: 'Oversold zone', color: 'green' }); }
+                else if (bb > 80) { score -= 5; items.push({ label: 'Bollinger Band', value: 'Overbought zone', color: 'red' }); }
+                else { items.push({ label: 'Bollinger Band', value: 'Normal zone', color: 'yellow' }); }
+            }
+            return { score: Math.max(0, Math.min(100, score)), items };
+        }
+
+        function scoreDividend(divD) {
+            const items = [];
+            if (!divD || divD.error || !divD.found || !divD.dividend_yield) {
+                return { score: 5, items: [{ label: 'Dividend', value: 'No dividend found', color: 'red' }] };
+            }
+            let score = 0;
+            const yld = parseFloat(divD.dividend_yield) || 0;
+            if (yld >= 4) score += 42; else if (yld >= 2) score += 26; else if (yld >= 0.5) score += 12;
+            items.push({ label: 'Annual Yield', value: yld.toFixed(2) + '%', color: yld >= 3 ? 'green' : yld >= 1.5 ? 'yellow' : 'red' });
+            const vol = parseFloat(divD.volatility) || 50;
+            if (vol < 22) score += 22; else if (vol < 32) score += 12; else if (vol < 42) score += 5;
+            items.push({ label: 'Price Volatility', value: vol.toFixed(1) + '%', color: vol < 25 ? 'green' : vol < 38 ? 'yellow' : 'red' });
+            if (divD.ex_dividend_date) { score += 12; items.push({ label: 'Ex-Div Date', value: divD.ex_dividend_date, color: 'cyan' }); }
+            if (divD.payment_date) { score += 8; items.push({ label: 'Payment Date', value: divD.payment_date, color: 'cyan' }); }
+            const annDiv = parseFloat(divD.annual_dividend) || 0;
+            if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: '\u20b9' + annDiv.toFixed(2), color: 'cyan' });
+            return { score: Math.max(0, Math.min(100, score)), items };
+        }
+
+        function buildScoreRing(score, color) {
+            var r = 32, circ = 2 * Math.PI * r;
+            var dash = (score / 100) * circ;
+            var gap = circ - dash;
+            return `<svg width="80" height="80" viewBox="0 0 80 80"><circle cx="40" cy="40" r="${r}" fill="none" stroke="var(--bg-dark)" stroke-width="8"/><circle cx="40" cy="40" r="${r}" fill="none" stroke="${color}" stroke-width="8" stroke-dasharray="${dash.toFixed(1)} ${gap.toFixed(1)}" stroke-linecap="round"/></svg>`;
+        }
+
+        function buildMetricsHtml(items) {
+            if (!items || items.length === 0) return '';
+            return '<div class="vd-metrics">' + items.map(function(it) {
+                return `<div class="vd-metric"><div class="vd-metric-label">${it.label}</div><div class="vd-metric-value ${it.color || 'muted'}">${it.value}</div></div>`;
+            }).join('') + '</div>';
+        }
+
+        function buildScoreGrid(stRes, ltRes, divRes) {
+            var cards = [
+                { title: '⚡ Short-Term Trading', res: stRes, color: 'var(--accent-cyan)' },
+                { title: '📈 Long-Term Holding',  res: ltRes, color: 'var(--accent-green)' },
+                { title: '💰 Dividend Income',    res: divRes, color: 'var(--warning)' }
+            ];
+            var maxScore = Math.max(stRes.score, ltRes.score, divRes.score);
+            var html = '<div class="vd-score-grid">';
+            cards.forEach(function(c) {
+                var [badgeText, badgeClass] = verdictBadge(c.res.score);
+                var isBest = (c.res.score === maxScore && c.res.score >= 55);
+                html += `<div class="vd-score-card${isBest ? ' vd-best' : ''}">
+                    <div class="vd-score-label" style="color:${c.color};">${c.title}</div>
+                    <div class="vd-score-ring">
+                        ${buildScoreRing(c.res.score, c.color)}
+                        <div class="vd-score-ring-num" style="color:${c.color};">${c.res.score}</div>
+                    </div>
+                    <div class="vd-verdict-badge ${badgeClass}">${isBest ? '&#9733; ' : ''}${badgeText}</div>
+                </div>`;
+            });
+            html += '</div>';
+            return html;
+        }
+
+        function verdictToggle(el) {
+            el.closest('.vd-section').classList.toggle('open');
+        }
+
+        function vdSectionHeader(title, titleColor, badge, bdgClass, score) {
+            return '<div class="vd-section-header" onclick="verdictToggle(this)">'
+                 + '<div class="vd-section-header-left">'
+                 + '<div class="vd-section-title" style="color:' + titleColor + ';">' + title + '</div>'
+                 + '<div class="vd-section-score ' + bdgClass + '">' + badge + ' &bull; ' + score + '/100</div>'
+                 + '</div>'
+                 + '<span class="vd-section-chevron">&#9660;</span>'
+                 + '</div>'
+                 + '<div class="vd-section-body">';
+        }
+
+        function buildSTSection(tech, stRes) {
+            var s = tech && tech.signal ? tech.signal : {};
+            var d = tech && tech.details ? tech.details : {};
+            var [badge, bdgClass] = verdictBadge(stRes.score);
+            var h = '<div class="vd-section">';
+            h += vdSectionHeader('&#9889; Short-Term Trading', 'var(--accent-cyan)', badge, bdgClass, stRes.score);
+            if (stRes.error) { h += '<p style="color:var(--text-muted);margin:0;">Technical data unavailable.</p>'; }
+            else {
+                h += buildMetricsHtml(stRes.items);
+                if (s.target || s.stop) {
+                    h += '<div class="vd-trade-levels">';
+                    h += `<div class="vd-level"><div class="vd-level-label">Entry / CMP</div><div class="vd-level-val" style="color:var(--text-primary);">${d.price || 'N/A'}</div></div>`;
+                    h += `<div class="vd-level"><div class="vd-level-label">Target</div><div class="vd-level-val" style="color:var(--accent-green);">${s.target || 'N/A'}</div></div>`;
+                    h += `<div class="vd-level"><div class="vd-level-label">Stop Loss</div><div class="vd-level-val" style="color:var(--danger);">${s.stop || 'N/A'}</div></div>`;
+                    h += '</div>';
+                }
+                if (s.setup_duration || s.days_to_target) {
+                    h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0;">';
+                    if (s.setup_duration) h += `<div style="background:var(--bg-dark);padding:6px 13px;border-radius:20px;font-size:0.8em;color:var(--text-secondary);">&#9203; ${s.setup_duration}</div>`;
+                    if (s.days_to_target) h += `<div style="background:var(--bg-dark);padding:6px 13px;border-radius:20px;font-size:0.8em;color:var(--text-secondary);">&#128197; ~${s.days_to_target} days to target</div>`;
+                    if (s.risk_reward) h += `<div style="background:var(--bg-dark);padding:6px 13px;border-radius:20px;font-size:0.8em;color:var(--accent-cyan);">R:R ${s.risk_reward}x</div>`;
+                    h += '</div>';
+                }
+                if (s.why_makes_sense) {
+                    h += `<div class="vd-narrative"><strong style="color:var(--text-primary);">Why this setup makes sense:</strong><br>${s.why_makes_sense}</div>`;
+                } else if (s.verdict_text) {
+                    h += `<div class="vd-narrative">${s.verdict_text}</div>`;
+                }
+                if (s.regime_reason_text) {
+                    h += `<div class="vd-narrative" style="margin-top:8px;border-left:3px solid var(--warning);padding-left:14px;"><strong style="color:var(--warning);">Market Regime:</strong> ${s.regime_reason_text}</div>`;
+                }
+            }
+            h += '</div></div>';
+            return h;
+        }
+
+        function buildLTSection(tech, dcfD, regr, ltRes) {
+            var [badge, bdgClass] = verdictBadge(ltRes.score);
+            var h = '<div class="vd-section">';
+            h += vdSectionHeader('&#128200; Long-Term Holding', 'var(--accent-green)', badge, bdgClass, ltRes.score);
+            h += buildMetricsHtml(ltRes.items);
+            var narrativeParts = [];
+            if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
+                var g1 = dcfD.suggested_growth_rate || 0.1;
+                var g2 = Math.max(g1 * 0.5, 0.04);
+                var res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, dcfD.total_debt || 0, dcfD.cash || 0, dcfD.shares_outstanding);
+                var up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
+                var ivStr = '\u20b9' + res.intrinsic.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;">
+                    <div class="vd-level"><div class="vd-level-label">Intrinsic Value (DCF)</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${ivStr}</div></div>
+                    <div class="vd-level"><div class="vd-level-label">Upside / Downside</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${(up >= 0 ? '+' : '') + up.toFixed(1)}%</div></div>
+                </div>`;
+                if (up >= 20) narrativeParts.push('Trading at a <strong style="color:var(--accent-green);">' + up.toFixed(0) + '% discount</strong> to its estimated intrinsic value — potentially strong margin of safety for long-term investors.');
+                else if (up >= 5) narrativeParts.push('Modestly undervalued by ~' + up.toFixed(0) + '% on DCF — reasonable entry if other fundamentals are sound.');
+                else if (up < -20) narrativeParts.push('DCF model suggests the stock is priced <strong style="color:var(--danger);">' + Math.abs(up).toFixed(0) + '% above</strong> its estimated fair value — long-term upside may be limited.');
+                else narrativeParts.push('Trading near its estimated fair value according to DCF analysis.');
+                if (dcfD.historical_fcf_growth) {
+                    var pct = (dcfD.historical_fcf_growth * 100).toFixed(1);
+                    narrativeParts.push('Historical free cash flow has grown at <strong>' + pct + '% per year</strong> — ' + (parseFloat(pct) >= 15 ? 'a strong compounding track record.' : parseFloat(pct) >= 5 ? 'moderate growth momentum.' : 'slow FCF expansion, worth monitoring.'));
+                }
+            }
+            if (regr && !regr.error) {
+                var beta = regr.beta || 1;
+                var dep = regr.dependency_score || 0.5;
+                if (beta < 0.85) narrativeParts.push('Low beta of <strong>' + beta.toFixed(2) + '</strong> means this stock tends to be defensive — it typically falls less than the market in downturns, suiting a long-term portfolio.');
+                else if (beta > 1.3) narrativeParts.push('High beta of <strong>' + beta.toFixed(2) + '</strong> — amplifies market moves. Factor in higher volatility for long-term holding.');
+                if (dep < 0.4) narrativeParts.push('Low market dependency (' + (dep * 100).toFixed(0) + '%) — provides <strong>good diversification</strong> from broad market swings.');
+                else if (dep > 0.7) narrativeParts.push('High market dependency (' + (dep * 100).toFixed(0) + '%) — performance closely tracks the Nifty 50.');
+            }
+            if (narrativeParts.length > 0) h += '<div class="vd-narrative">' + narrativeParts.join(' ') + '</div>';
+            h += '</div></div>';
+            return h;
+        }
+
+        function buildDivSection(divD, divRes) {
+            var [badge, bdgClass] = verdictBadge(divRes.score);
+            var h = '<div class="vd-section">';
+            h += vdSectionHeader('&#128176; Dividend Income', 'var(--warning)', badge, bdgClass, divRes.score);
+            h += buildMetricsHtml(divRes.items);
+            if (!divD || !divD.found || !divD.dividend_yield) {
+                h += '<div class="vd-narrative" style="color:var(--text-muted);">No dividend history found for this stock. It may be a growth-oriented company that reinvests earnings rather than paying dividends.</div>';
+            } else {
+                var yld = parseFloat(divD.dividend_yield) || 0;
+                var vol = parseFloat(divD.volatility) || 50;
+                var narrative = '';
+                if (yld >= 3) narrative += 'With a yield of <strong style="color:var(--warning);">' + yld.toFixed(2) + '%</strong>, this stock offers above-average dividend income. ';
+                else if (yld >= 1) narrative += 'Provides a modest yield of <strong>' + yld.toFixed(2) + '%</strong> — not a primary income play but contributes total return. ';
+                else narrative += 'Very low dividend yield (' + yld.toFixed(2) + '%). Primarily a capital-appreciation story, not a dividend income candidate. ';
+                if (vol < 25) narrative += 'Low price volatility (' + vol.toFixed(1) + '%) supports dividend sustainability — stable income candidate.';
+                else if (vol > 40) narrative += 'High price volatility (' + vol.toFixed(1) + '%) may offset dividend income with capital loss risk.';
+                h += '<div class="vd-narrative">' + narrative + '</div>';
+            }
+            h += '</div></div>';
+            return h;
+        }
+
+        function buildOverallVerdict(symbol, stRes, ltRes, divRes, bestFor, bestColor, tech, dcfD, regr) {
+            var scores = [stRes.score, ltRes.score, divRes.score];
+            var avgScore = (scores[0] + scores[1] + scores[2]) / 3;
+            var parts = [];
+            var maxScore = Math.max(stRes.score, ltRes.score, divRes.score);
+            if (ltRes.score >= 65 && ltRes.score === maxScore) {
+                parts.push('Strong DCF fundamentals and compounding metrics make this a candidate for <strong>patient long-term investors</strong>.');
+            } else if (stRes.score >= 65 && stRes.score === maxScore) {
+                var s = tech && tech.signal ? tech.signal : {};
+                parts.push('Technical setup favours <strong>near-term active traders</strong>' + (s.signal === 'BUY' ? ' with a clear buy signal.' : ' though signal conviction is moderate.'));
+            } else if (divRes.score >= 55 && divRes.score === maxScore) {
+                parts.push('Dividend yield and low volatility profile suits <strong>income-focused investors</strong>.');
+            } else {
+                parts.push('No single strategy shows a dominant edge right now. Consider waiting for a clearer setup or a more attractive valuation.');
+            }
+            if (stRes.score < 40 && ltRes.score < 40) parts.push('Both short and long-term scores are weak — exercise caution.');
+            if (avgScore >= 60) parts.push('Overall profile is <strong style="color:var(--accent-green);">positive</strong> across multiple dimensions.');
+            else if (avgScore < 35) parts.push('Overall profile is <strong style="color:var(--danger);">weak</strong> — high risk across dimensions.');
+            var h = `<div class="vd-overall">
+                <div class="vd-overall-label">Overall Investment Verdict for ${symbol}</div>
+                <div class="vd-overall-verdict" style="color:${bestColor};">Best For: ${bestFor}</div>
+                <div class="vd-overall-reason">${parts.join(' ')}</div>
+                <div style="margin-top:16px;display:flex;justify-content:center;gap:20px;flex-wrap:wrap;">
+                    <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Short-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(stRes.score)};">${stRes.score}</div></div>
+                    <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Long-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(ltRes.score)};">${ltRes.score}</div></div>
+                    <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Dividend</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(divRes.score)};">${divRes.score}</div></div>
+                </div>
+            </div>`;
+            return h;
+        }
+
+        function renderVerdictResult(symbol, tech, regr, dcfD, divD) {
+            var d = tech && tech.details ? tech.details : {};
+            var price = d.price || 'N/A';
+            var dailyRaw = parseFloat(d.daily_raw) || 0;
+            var daily = d.daily || '';
+            var name = (dcfD && dcfD.name) ? dcfD.name : getStockName(symbol);
+            var sector = (dcfD && dcfD.sector) ? dcfD.sector : '';
+            var stRes  = scoreShortTerm(tech);
+            var ltRes  = scoreLongTerm(tech, dcfD, regr);
+            var divRes = scoreDividend(divD);
+            var maxScore = Math.max(stRes.score, ltRes.score, divRes.score);
+            var bestFor, bestColor;
+            if (stRes.score === maxScore && stRes.score >= 55)      { bestFor = 'Short-Term Trading'; bestColor = 'var(--accent-cyan)'; }
+            else if (ltRes.score === maxScore && ltRes.score >= 55) { bestFor = 'Long-Term Holding';  bestColor = 'var(--accent-green)'; }
+            else if (divRes.score === maxScore && divRes.score >= 45){ bestFor = 'Dividend Income';   bestColor = 'var(--warning)'; }
+            else                                                     { bestFor = 'Needs Further Research'; bestColor = 'var(--text-muted)'; }
+            var h = '';
+            h += '<div class="vd-hero">';
+            h += '<div><div class="vd-name">' + name + '</div>';
+            h += '<div class="vd-sub">' + symbol + (sector ? ' &bull; ' + sector : '') + '</div></div>';
+            h += '<div class="vd-price-box"><div class="vd-price-label">Current Price</div>';
+            h += '<div class="vd-price-val">' + price + '</div>';
+            h += '<div class="vd-daily ' + (dailyRaw >= 0 ? 'up' : 'down') + '">' + daily + '</div></div>';
+            h += '</div>';
+            h += buildOverallVerdict(symbol, stRes, ltRes, divRes, bestFor, bestColor, tech, dcfD, regr);
+            h += buildScoreGrid(stRes, ltRes, divRes);
+            h += buildSTSection(tech, stRes);
+            h += buildLTSection(tech, dcfD, regr, ltRes);
+            h += buildDivSection(divD, divRes);
+            h += '<div style="margin-top:16px;padding:12px 16px;background:rgba(113,128,150,0.07);border:1px solid var(--border-color);border-radius:8px;color:var(--text-muted);font-size:0.78em;line-height:1.6;">';
+            h += '&#9888;&#65039; <strong>Disclaimer:</strong> This analysis combines multiple quantitative signals and is for educational purposes only. Scores are model-based estimates — not financial advice. Always do your own due diligence before investing.';
+            h += '</div>';
+            document.getElementById('verdict-result').innerHTML = h;
+        }
+
+        var _vd = {};  // state store for current verdict fetch
+        function verdictSetResult(key, value, statusId, ok, msg) {
+            _vd[key] = value;
+            var el = document.getElementById(statusId);
+            if (el) { el.textContent = msg; el.className = 'vd-load-status ' + (ok ? 'done' : (ok === false ? 'error' : 'loading')); }
+            if (_vd.tech !== undefined && _vd.regr !== undefined && _vd.dcf !== undefined && _vd.div !== undefined) {
+                renderVerdictResult(_vd.symbol, _vd.tech, _vd.regr, _vd.dcf, _vd.div);
+            }
+        }
+
+        function verdictPollRegression(symbol, attempt) {
+            if (_vd.symbol !== symbol) return;  // stale request
+            fetch('/regression?symbol=' + encodeURIComponent(symbol))
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (_vd.symbol !== symbol) return;
+                    if (data.status === 'computing' && attempt < 12) {
+                        var el = document.getElementById('vd-load-regr');
+                        if (el) el.textContent = '\u23f3 Computing (' + (attempt + 1) + '/12)\u2026';
+                        setTimeout(function() { verdictPollRegression(symbol, attempt + 1); }, 2000);
+                    } else {
+                        var result = (data.status === 'computing') ? null : data;
+                        verdictSetResult('regr', result, 'vd-load-regr', result ? true : null, result ? '\u2705 Done' : '\u2139\ufe0f Timed out \u2014 skipped');
+                    }
+                })
+                .catch(function(e) {
+                    if (_vd.symbol !== symbol) return;
+                    verdictSetResult('regr', null, 'vd-load-regr', false, '\u274c ' + e.message);
+                });
+        }
+
+        function fetchVerdictData() {
+            var symbol = document.getElementById('verdict-search').value.trim().toUpperCase();
+            if (!symbol) { alert('Please enter a stock symbol'); return; }
+            document.getElementById('verdict-suggestions').innerHTML = '';
+            document.getElementById('verdict-search-view').style.display = 'none';
+            document.getElementById('verdict-result-view').style.display = 'block';
+            _vd = { symbol: symbol };  // reset state, mark 4 keys as pending (undefined)
+            var loadHtml = '<div class="vd-hero"><div><div class="vd-name">' + symbol + '</div><div class="vd-sub">Fetching comprehensive analysis\u2026</div></div></div>';
+            loadHtml += '<div class="vd-loading-grid">';
+            loadHtml += '<div class="vd-load-item"><div class="vd-load-icon">&#9889;</div><div><div class="vd-load-label">Technical Analysis</div><div class="vd-load-status loading" id="vd-load-tech">\u23f3 Fetching\u2026</div></div></div>';
+            loadHtml += '<div class="vd-load-item"><div class="vd-load-icon">&#128200;</div><div><div class="vd-load-label">Market Connection</div><div class="vd-load-status loading" id="vd-load-regr">\u23f3 Computing\u2026</div></div></div>';
+            loadHtml += '<div class="vd-load-item"><div class="vd-load-icon">&#128202;</div><div><div class="vd-load-label">DCF Valuation</div><div class="vd-load-status loading" id="vd-load-dcf">\u23f3 Fetching\u2026</div></div></div>';
+            loadHtml += '<div class="vd-load-item"><div class="vd-load-icon">&#128176;</div><div><div class="vd-load-label">Dividend Data</div><div class="vd-load-status loading" id="vd-load-div">\u23f3 Fetching\u2026</div></div></div>';
+            loadHtml += '</div>';
+            document.getElementById('verdict-result').innerHTML = loadHtml;
+            fetch('/analyze?symbol=' + encodeURIComponent(symbol))
+                .then(function(r) { return r.json(); })
+                .then(function(data) { verdictSetResult('tech', data, 'vd-load-tech', !data.error, data.error ? '\u274c ' + data.error : '\u2705 Done'); })
+                .catch(function(e) { verdictSetResult('tech', null, 'vd-load-tech', false, '\u274c ' + e.message); });
+            fetch('/dcf-data?symbol=' + encodeURIComponent(symbol))
+                .then(function(r) { return r.json(); })
+                .then(function(data) { verdictSetResult('dcf', data, 'vd-load-dcf', !data.error, data.error ? '\u274c ' + data.error : '\u2705 Done'); })
+                .catch(function(e) { verdictSetResult('dcf', null, 'vd-load-dcf', false, '\u274c ' + e.message); });
+            fetch('/dividend-info?symbol=' + encodeURIComponent(symbol))
+                .then(function(r) { return r.json(); })
+                .then(function(data) { verdictSetResult('div', data, 'vd-load-div', true, data.found ? '\u2705 Done' : '\u2139\ufe0f No dividend data'); })
+                .catch(function(e) { verdictSetResult('div', null, 'vd-load-div', false, '\u274c ' + e.message); });
+            verdictPollRegression(symbol, 0);
+        }
+
+
         window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
     </script>
 </body>
@@ -4340,6 +5355,43 @@ def regime_test_route():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+DCF_CACHE = HybridTTLCache('dcf', timedelta(hours=12))
+
+@app.route('/dcf-data')
+def dcf_data_route():
+    """Fetch financial data for DCF valuation."""
+    symbol = request.args.get('symbol', '').strip()
+    if not symbol:
+        return jsonify({'error': 'No symbol provided'})
+    normalized_symbol, original = Analyzer.normalize_symbol(symbol)
+    if not normalized_symbol:
+        suggestions = []
+        symbol_upper = symbol.upper()
+        for ticker in sorted(ALL_VALID_TICKERS):
+            if symbol_upper in ticker or ticker in symbol_upper:
+                suggestions.append(ticker)
+                if len(suggestions) >= 5:
+                    break
+        if suggestions:
+            return jsonify({'error': f'Invalid symbol "{original}". Did you mean: {", ".join(suggestions)}?'})
+        return jsonify({'error': f'Invalid symbol "{original}".'})
+
+    cached = DCF_CACHE.get(normalized_symbol)
+    if cached:
+        cached['cached'] = True
+        return jsonify(cached)
+
+    try:
+        result = analyzer.dcf_valuation(normalized_symbol)
+        if not result:
+            return jsonify({'error': f'Unable to fetch financial data for {normalized_symbol}. This stock may lack sufficient published financials.'})
+        DCF_CACHE.set(normalized_symbol, result)
+        return jsonify(result)
+    except Exception as e:
+        print(f"DCF route error for {normalized_symbol}: {e}")
+        return jsonify({'error': f'DCF analysis failed: {str(e)}'})
 
 
 if __name__ == '__main__':
