@@ -2894,10 +2894,32 @@ def index():
             .container { padding: 12px; }
             .result-card { padding: 20px; }
             .plan-label { font-size: 0.85em; opacity: 0.9; }
-            .tab { font-size: 0.85em; padding: 12px 6px; }
+            header { padding: 20px 0; }
+            header h1 { font-size: 2em; }
+            header p { font-size: 0.92em; }
+            .stock-count { font-size: 0.82em; padding: 6px 12px; margin-top: 8px; }
+            .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; margin: 16px 0 0; }
+            .tabs::-webkit-scrollbar { display: none; }
+            .tab { flex: 0 0 auto; white-space: nowrap; font-size: 0.88em; padding: 12px 16px; }
+            .vd-section-body { padding: 0 14px 18px; }
+            .vd-score-card { padding: 18px 14px; }
+            .tsc-verdict { padding: 20px 18px; }
+        }
+        @media (max-width: 480px) {
+            .result-card { padding: 14px; }
+            .tsc-header { padding: 14px 14px 10px; }
+            .tsc-body { padding: 0 14px 14px; }
+            .tsc-confidence-card, .tsc-why, .tsc-regime, .tsc-calc { padding: 16px 16px; }
+            .vd-hero { padding: 18px 16px; }
+            .vd-name { font-size: 1.3em; }
+            .vd-price-val { font-size: 1.6em; }
+            .vd-section-header { padding: 14px 16px; }
+            .dcf-params-card, .dcf-results-card { padding: 18px; }
+            .dcf-stock-hero { padding: 18px 16px; }
         }
         @media (max-width: 400px) {
-            .tab { font-size: 0.78em; padding: 10px 4px; }
+            header h1 { font-size: 1.75em; }
+            .tab { font-size: 0.82em; padding: 10px 14px; }
         }
 
         /* ===== DCF VALUATION TAB STYLES ===== */
