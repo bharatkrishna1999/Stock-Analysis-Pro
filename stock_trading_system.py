@@ -2625,37 +2625,52 @@ def index():
     <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root { --bg-dark: #0F1824; --bg-card: #162033; --bg-card-hover: #1C2B42; --accent-cyan: #C9A84C; --accent-gold: #C9A84C; --accent-purple: #3D7AB5; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #1E3448; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
+        :root { --bg-dark: #0F1824; --bg-card: #162033; --bg-card-hover: #1C2B42; --accent-cyan: #387ed1; --accent-gold: #387ed1; --accent-purple: #5e6ad2; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #1E3448; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-dark); color: var(--text-primary); min-height: 100vh; line-height: 1.6; }
         .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-        header { text-align: center; padding: 60px 0 52px; border-bottom: 1px solid var(--border-color); background: linear-gradient(180deg, #0A1421 0%, var(--bg-dark) 100%); position: relative; overflow: hidden; }
-        header::before { content: ''; position: absolute; top: -60px; left: 50%; transform: translateX(-50%); width: 700px; height: 360px; background: radial-gradient(ellipse, rgba(201,168,76,0.07) 0%, transparent 68%); pointer-events: none; }
-        .header-brand { font-family: 'Space Grotesk', sans-serif; font-size: 0.78em; font-weight: 600; color: var(--accent-gold); letter-spacing: 3px; text-transform: uppercase; margin-bottom: 22px; opacity: 0.9; }
-        header h1 { font-family: 'Space Grotesk', sans-serif; font-size: 2.75em; font-weight: 700; margin-bottom: 16px; color: var(--text-primary); line-height: 1.2; letter-spacing: -0.5px; }
-        header h1 em { font-style: normal; color: var(--accent-gold); }
-        header p { color: var(--text-secondary); font-size: 1.08em; max-width: 500px; margin: 0 auto 28px; line-height: 1.65; }
-        .header-trust { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 4px; }
-        .trust-pill { padding: 5px 14px; border: 1px solid rgba(201,168,76,0.22); border-radius: 20px; font-size: 0.8em; color: var(--text-muted); font-weight: 500; background: rgba(201,168,76,0.04); letter-spacing: 0.2px; }
-        .stock-count { background: rgba(201, 168, 76, 0.08); color: var(--accent-gold); padding: 8px 16px; border-radius: 20px; display: inline-block; margin-top: 10px; font-size: 0.9em; font-weight: 600; }
-        .tabs { display: flex; gap: 0; margin: 30px 0; border-bottom: 2px solid var(--border-color); }
-        .tab { flex: 1; min-width: 0; padding: 15px 10px; background: transparent; border: none; color: var(--text-secondary); font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.3s; border-bottom: 3px solid transparent; font-family: 'Space Grotesk', sans-serif; text-align: center; }
-        .tab:hover { color: var(--accent-gold); }
-        .tab.active { color: var(--text-primary); border-bottom-color: var(--accent-gold); }
+
+        /* ===== NAVBAR ===== */
+        .navbar { position: sticky; top: 0; z-index: 100; background: var(--bg-dark); border-bottom: 1px solid var(--border-color); }
+        .navbar-inner { max-width: 1400px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; height: 60px; padding: 0 20px; }
+        .navbar-brand { font-family: 'Space Grotesk', sans-serif; font-size: 1.15em; font-weight: 700; color: var(--text-primary); text-decoration: none; letter-spacing: -0.3px; white-space: nowrap; }
+        .navbar-brand span { color: var(--accent-cyan); }
+        .nav-links { display: flex; gap: 0; height: 100%; align-items: stretch; }
+        .nav-link { display: flex; align-items: center; padding: 0 16px; background: none; border: none; border-bottom: 3px solid transparent; color: var(--text-secondary); font-size: 0.88em; font-weight: 600; cursor: pointer; transition: color 0.2s, border-color 0.2s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; }
+        .nav-link:hover { color: var(--text-primary); background: transparent !important; transform: none; border-color: transparent; border-bottom-color: rgba(56,126,209,0.4); }
+        .nav-link.active { color: var(--text-primary); border-bottom-color: var(--accent-cyan); background: transparent !important; }
+        .hamburger { display: none; background: none !important; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 10px; cursor: pointer; flex-direction: column; gap: 4px; align-items: center; }
+        .hamburger:hover { background: var(--bg-card-hover) !important; border-color: var(--border-color) !important; }
+        .hamburger span { display: block; width: 20px; height: 2px; background: var(--text-primary); border-radius: 1px; transition: all 0.3s; }
+        .hamburger.open span:nth-child(1) { transform: rotate(45deg) translate(4px, 4px); }
+        .hamburger.open span:nth-child(2) { opacity: 0; }
+        .hamburger.open span:nth-child(3) { transform: rotate(-45deg) translate(4px, -4px); }
+        .mobile-menu { display: none; position: fixed; top: 60px; left: 0; right: 0; background: var(--bg-card); border-bottom: 1px solid var(--border-color); z-index: 99; padding: 8px 0; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+        .mobile-menu.open { display: block; }
+        .mobile-menu-item { display: block; width: 100%; padding: 14px 24px; background: none; border: none; color: var(--text-secondary); font-size: 0.95em; font-weight: 600; cursor: pointer; text-align: left; transition: background 0.2s, color 0.2s; font-family: 'Space Grotesk', sans-serif; }
+        .mobile-menu-item:hover, .mobile-menu-item.active { background: var(--bg-card-hover) !important; color: var(--text-primary) !important; border-color: transparent !important; }
+        .mobile-overlay { display: none; position: fixed; top: 60px; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 98; }
+        .mobile-overlay.open { display: block; }
+        @media (max-width: 900px) { .nav-links { display: none; } .hamburger { display: flex; } }
+
+        /* ===== HERO HEADER ===== */
+        header { text-align: center; padding: 48px 0 40px; border-bottom: 1px solid var(--border-color); background: var(--bg-dark); }
+        header h1 { font-family: 'Space Grotesk', sans-serif; font-size: 2.4em; font-weight: 700; margin-bottom: 14px; color: var(--text-primary); line-height: 1.25; letter-spacing: -0.5px; }
+        header p { color: var(--text-secondary); font-size: 1.05em; max-width: 520px; margin: 0 auto; line-height: 1.65; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 40px; }
         .card { background: var(--bg-card); border-radius: 12px; padding: 25px; border: 1px solid var(--border-color); transition: all 0.3s; }
-        .card:hover { background: var(--bg-card-hover); border-color: rgba(201,168,76,0.35); }
+        .card:hover { background: var(--bg-card-hover); border-color: rgba(56,126,209,0.35); }
         .card h2 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
         #search, #regression-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
-        #search:focus, #regression-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.12); }
-        #dividend-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.12); }
+        #search:focus, #regression-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(56, 126, 209, 0.12); }
+        #dividend-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(56, 126, 209, 0.12); }
         .suggestions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 15px; max-height: 300px; overflow-y: auto; }
         .category { margin-bottom: 20px; }
         .category h3 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
         .stocks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         button { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); font-size: 0.9em; }
-        button:hover { background: var(--accent-gold); color: var(--bg-dark); border-color: var(--accent-gold); transform: translateY(-2px); }
+        button:hover { background: var(--accent-gold); color: var(--bg-dark); border-color: var(--accent-gold); }
         #result-view { display: none; }
         .loading { text-align: center; color: var(--accent-cyan); font-size: 1.3em; padding: 40px; font-family: 'Space Grotesk', sans-serif; }
         .error { background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 20px; border-radius: 8px; border-left: 4px solid var(--danger); }
@@ -2668,7 +2683,7 @@ def index():
         .signal-BUY { background: linear-gradient(135deg, #10b981, #059669); color: white; }
         .signal-SELL { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
         .signal-HOLD { background: linear-gradient(135deg, #f59e0b, #d97706); color: white; }
-        .action-banner { background: linear-gradient(135deg, #1C2B42, #243550); color: var(--text-primary); padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center; font-weight: 600; font-size: 1.2em; font-family: 'Space Grotesk', sans-serif; border: 1px solid rgba(201,168,76,0.25); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+        .action-banner { background: linear-gradient(135deg, #1C2B42, #243550); color: var(--text-primary); padding: 20px; border-radius: 10px; margin-bottom: 20px; text-align: center; font-weight: 600; font-size: 1.2em; font-family: 'Space Grotesk', sans-serif; border: 1px solid rgba(56,126,209,0.25); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
         .rec-box { background: var(--bg-card-hover); border-left: 4px solid var(--accent-green); color: var(--text-primary); padding: 20px; border-radius: 8px; margin-bottom: 25px; font-size: 1.05em; }
         .confidence-meter { margin: 25px 0; padding: 20px; background: var(--bg-card-hover); border-radius: 10px; border: 1px solid var(--border-color); }
         .confidence-label { font-size: 0.9em; color: var(--text-secondary); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
@@ -2689,8 +2704,8 @@ def index():
         .plan-item:hover { background: var(--bg-card); transform: translateX(5px); }
         .plan-label { font-weight: 700; color: var(--accent-cyan); font-family: 'Space Grotesk', sans-serif; font-size: 0.9em; }
         .plan-value { color: var(--text-primary); font-weight: 500; }
-        .back-btn { background: rgba(201,168,76,0.12); color: var(--accent-gold); padding: 12px 28px; margin-bottom: 20px; border: 1px solid rgba(201,168,76,0.3); font-weight: 600; font-size: 1em; }
-        .back-btn:hover { transform: translateY(-2px); background: rgba(201,168,76,0.18); box-shadow: 0 5px 20px rgba(0,0,0,0.3); color: var(--accent-gold); }
+        .back-btn { background: rgba(56,126,209,0.12); color: var(--accent-gold); padding: 12px 28px; margin-bottom: 20px; border: 1px solid rgba(56,126,209,0.3); font-weight: 600; font-size: 1em; }
+        .back-btn:hover { transform: translateY(-2px); background: rgba(56,126,209,0.18); box-shadow: 0 5px 20px rgba(0,0,0,0.3); color: var(--accent-gold); }
         .regression-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin: 25px 0; }
         .regression-metric { background: var(--bg-card-hover); padding: 20px; border-radius: 10px; border-left: 3px solid var(--accent-purple); }
         .regression-metric-label { font-size: 0.85em; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; font-weight: 600; letter-spacing: 0.5px; }
@@ -2738,7 +2753,7 @@ def index():
         .tsc-menu-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 12px; color: var(--text-muted); cursor: pointer; font-size: 1.1em; transition: all 0.2s; }
         .tsc-menu-btn:hover { background: rgba(255,255,255,0.1); color: var(--text-primary); }
         .tsc-body { padding: 0 28px 28px; }
-        .tsc-setup-banner { background: linear-gradient(135deg, rgba(201,168,76,0.08), rgba(61,122,181,0.08)); border: 1px solid rgba(201,168,76,0.2); color: var(--text-primary); padding: 12px 20px; border-radius: 10px; text-align: center; font-weight: 600; font-size: 0.95em; font-family: 'Space Grotesk', sans-serif; margin-bottom: 20px; }
+        .tsc-setup-banner { background: linear-gradient(135deg, rgba(56,126,209,0.08), rgba(61,122,181,0.08)); border: 1px solid rgba(56,126,209,0.2); color: var(--text-primary); padding: 12px 20px; border-radius: 10px; text-align: center; font-weight: 600; font-size: 0.95em; font-family: 'Space Grotesk', sans-serif; margin-bottom: 20px; }
         .tsc-confidence-card { background: var(--bg-card-hover); border-radius: 12px; padding: 22px 24px; margin-bottom: 20px; border: 1px solid var(--border-color); }
         .tsc-confidence-top { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
         .tsc-signal-label { font-size: 1.1em; font-weight: 700; padding: 8px 20px; border-radius: 6px; font-family: 'Space Grotesk', sans-serif; }
@@ -2867,7 +2882,7 @@ def index():
         .dividend-table tr:hover { background: var(--bg-card-hover); }
         .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 25px 0; }
         .summary-card { background: var(--bg-card-hover); padding: 22px; border-radius: 10px; text-align: center; border: 1px solid var(--border-color); transition: all 0.3s; }
-        .summary-card:hover { border-color: rgba(201,168,76,0.35); transform: translateY(-3px); }
+        .summary-card:hover { border-color: rgba(56,126,209,0.35); transform: translateY(-3px); }
         .summary-value { font-size: 1.8em; font-weight: 700; font-family: 'Space Grotesk', sans-serif; }
         .summary-label { font-size: 0.85em; color: var(--text-secondary); margin-top: 8px; }
         .optimize-btn { width: 100%; padding: 16px; background: linear-gradient(135deg, var(--accent-green), #059669); color: white; border: none; border-radius: 8px; font-size: 1.1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; letter-spacing: 0.5px; }
@@ -2875,9 +2890,9 @@ def index():
         .dividend-search-row { display: flex; gap: 10px; align-items: stretch; }
         .dividend-search-row .search-input-wrap { flex: 1; min-width: 0; position: relative; }
         .dividend-search-row .search-input-wrap input { width: 100%; padding: 12px 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 0.95em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; box-sizing: border-box; }
-        .dividend-search-row .search-input-wrap input:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.12); }
+        .dividend-search-row .search-input-wrap input:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(56, 126, 209, 0.12); }
         .search-btn { padding: 12px 22px; background: var(--accent-gold); color: var(--bg-dark); border: none; border-radius: 8px; font-size: 0.95em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; flex-shrink: 0; }
-        .search-btn:hover { opacity: 0.9; box-shadow: 0 4px 15px rgba(201, 168, 76, 0.3); }
+        .search-btn:hover { opacity: 0.9; box-shadow: 0 4px 15px rgba(56, 126, 209, 0.3); }
         .portfolio-action-btn { width: 100%; padding: 14px 20px; background: linear-gradient(135deg, #1C3A5E, #243F68); color: var(--text-primary); border: 1px solid rgba(61,122,181,0.35); border-radius: 10px; font-size: 1em; font-weight: 700; cursor: pointer; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; display: flex; align-items: center; justify-content: center; gap: 8px; letter-spacing: 0.3px; margin-top: 6px; }
         .portfolio-action-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(0,0,0,0.35); }
         .portfolio-action-btn:active { transform: translateY(0); }
@@ -2899,15 +2914,9 @@ def index():
             .container { padding: 12px; }
             .result-card { padding: 20px; }
             .plan-label { font-size: 0.85em; opacity: 0.9; }
-            header { padding: 32px 0 28px; }
-            header h1 { font-size: 1.85em; }
+            header { padding: 28px 0 24px; }
+            header h1 { font-size: 1.7em; }
             header p { font-size: 0.92em; }
-            .header-brand { font-size: 0.7em; margin-bottom: 14px; }
-            .trust-pill { font-size: 0.75em; padding: 4px 11px; }
-            .stock-count { font-size: 0.82em; padding: 6px 12px; margin-top: 8px; }
-            .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; margin: 16px 0 0; }
-            .tabs::-webkit-scrollbar { display: none; }
-            .tab { flex: 0 0 auto; white-space: nowrap; font-size: 0.88em; padding: 12px 16px; }
             .vd-section-body { padding: 0 14px 18px; }
             .vd-score-card { padding: 18px 14px; }
             .tsc-verdict { padding: 20px 18px; }
@@ -2925,13 +2934,12 @@ def index():
             .dcf-stock-hero { padding: 18px 16px; }
         }
         @media (max-width: 400px) {
-            header h1 { font-size: 1.75em; }
-            .tab { font-size: 0.82em; padding: 10px 14px; }
+            header h1 { font-size: 1.5em; }
         }
 
         /* ===== DCF VALUATION TAB STYLES ===== */
         #dcf-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
-        #dcf-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(201, 168, 76, 0.12); }
+        #dcf-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(56, 126, 209, 0.12); }
         .dcf-fetch-btn { width: 100%; margin-top: 14px; padding: 14px; background: linear-gradient(135deg, #1C3A5E, #243F68); color: var(--text-primary); border: 1px solid rgba(61,122,181,0.35); border-radius: 8px; font-size: 1em; font-weight: 700; cursor: pointer; font-family: 'Space Grotesk', sans-serif; transition: all 0.3s; letter-spacing: 0.3px; }
         .dcf-fetch-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0,0,0,0.35); }
         .dcf-stock-hero { background: var(--bg-card-hover); border-radius: 14px; padding: 24px 28px; margin-bottom: 24px; border: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
@@ -2947,8 +2955,8 @@ def index():
         .dcf-param-label { display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; color: var(--text-secondary); font-weight: 600; margin-bottom: 8px; }
         .dcf-param-value { font-family: 'Space Grotesk', sans-serif; font-weight: 700; color: var(--accent-cyan); font-size: 0.95em; }
         .dcf-slider { width: 100%; -webkit-appearance: none; appearance: none; height: 6px; border-radius: 3px; background: var(--bg-dark); outline: none; cursor: pointer; }
-        .dcf-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-gold); cursor: pointer; border: 2px solid var(--bg-dark); box-shadow: 0 0 6px rgba(201, 168, 76, 0.4); transition: box-shadow 0.2s; }
-        .dcf-slider::-webkit-slider-thumb:hover { box-shadow: 0 0 12px rgba(201, 168, 76, 0.65); }
+        .dcf-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-gold); cursor: pointer; border: 2px solid var(--bg-dark); box-shadow: 0 0 6px rgba(56, 126, 209, 0.4); transition: box-shadow 0.2s; }
+        .dcf-slider::-webkit-slider-thumb:hover { box-shadow: 0 0 12px rgba(56, 126, 209, 0.65); }
         .dcf-slider::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--accent-cyan); cursor: pointer; border: 2px solid var(--bg-dark); }
         .dcf-param-hint { font-size: 0.76em; color: var(--text-muted); margin-top: 4px; }
         .dcf-years-group { display: flex; gap: 8px; }
@@ -3087,38 +3095,46 @@ def index():
     </style>
 </head>
 <body>
+    <nav class="navbar">
+        <div class="navbar-inner">
+            <a class="navbar-brand" href="/">Stock Analysis <span>Pro</span></a>
+            <div class="nav-links">
+                <button class="nav-link active" data-tab="verdict" onclick="switchTab('verdict', event)">Investment Verdict</button>
+                <button class="nav-link" data-tab="analysis" onclick="switchTab('analysis', event)">Technical Analysis</button>
+                <button class="nav-link" data-tab="dcf" onclick="switchTab('dcf', event)">DCF Valuation</button>
+                <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
+                <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
+            </div>
+            <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+    <div class="mobile-overlay" id="mobile-overlay" onclick="closeMobileMenu()"></div>
+    <div class="mobile-menu" id="mobile-menu">
+        <button class="mobile-menu-item active" data-tab="verdict" onclick="switchTab('verdict', event); closeMobileMenu()">Investment Verdict</button>
+        <button class="mobile-menu-item" data-tab="analysis" onclick="switchTab('analysis', event); closeMobileMenu()">Technical Analysis</button>
+        <button class="mobile-menu-item" data-tab="dcf" onclick="switchTab('dcf', event); closeMobileMenu()">DCF Valuation</button>
+        <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
+        <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
+    </div>
     <header>
         <div class="container">
-            <div class="header-brand">Stock Analysis Pro</div>
-            <h1>Know exactly what to <em>buy, hold,</em><br>or sell — before you invest.</h1>
-            <p>Institutional-quality analysis on 500+ NSE stocks. Clear signals, fair value, dividend income, and market risk — all explained simply.</p>
-            <div class="header-trust">
-                <div class="trust-pill">500+ NSE Stocks</div>
-                <div class="trust-pill">Buy / Hold / Sell Signals</div>
-                <div class="trust-pill">Fair Value Estimates</div>
-                <div class="trust-pill">Dividend Income Optimizer</div>
-                <div class="trust-pill">Market Risk Analysis</div>
-            </div>
+            <h1>Smart analysis for<br>every NSE stock.</h1>
+            <p>500+ stocks. Buy, hold, or sell signals with fair value estimates, dividend analysis, and market risk — explained simply.</p>
         </div>
     </header>
     <main class="container">
-        <div class="tabs">
-            <button class="tab active" onclick="switchTab('verdict', event)">Investment Verdict</button>
-            <button class="tab" onclick="switchTab('analysis', event)">Technical Analysis</button>
-            <button class="tab" onclick="switchTab('dcf', event)">DCF Valuation</button>
-            <button class="tab" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
-            <button class="tab" onclick="switchTab('regression', event)">Market Connection</button>
-        </div>
         <div id="analysis-tab" class="tab-content">
             <div id="search-view">
                 <div class="grid">
                     <div class="card">
-                        <h2>🔍 Search Any NSE Stock</h2>
+                        <h2>Search Any NSE Stock</h2>
                         <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
                         <div class="suggestions" id="suggestions"></div>
                     </div>
                     <div class="card">
-                        <h2>📊 Browse by Sector</h2>
+                        <h2>Browse by Sector</h2>
                         <div id="categories" style="max-height: 500px; overflow-y: auto;"></div>
                     </div>
                 </div>
@@ -3130,7 +3146,7 @@ def index():
         </div>
         <div id="regression-tab" class="tab-content">
             <div class="card">
-                <h2>📈 Market Connection Analysis</h2>
+                <h2>Market Connection Analysis</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 20px;">Find out how closely any NSE stock is tied to the Nifty 50, including hidden connections that simple charts don't show</p>
                 <input type="text" id="regression-search" placeholder="Enter stock symbol (e.g., TCS, INFY, RELIANCE)">
                 <div class="suggestions" id="regression-suggestions"></div>
@@ -3204,7 +3220,7 @@ def index():
             <div id="dcf-search-view">
                 <div class="grid">
                     <div class="card">
-                        <h2>🧮 DCF Valuation</h2>
+                        <h2>DCF Valuation</h2>
                         <p style="color:var(--text-secondary);margin-bottom:18px;font-size:0.92em;line-height:1.7;">
                             Estimate the intrinsic value of any NSE stock using Discounted Cash Flow analysis.
                             Enter a symbol to fetch its financial data, then adjust the assumptions to see how intrinsic value changes in real time.
@@ -3214,7 +3230,7 @@ def index():
                         <button class="dcf-fetch-btn" onclick="fetchDCFData()">Fetch Financial Data &amp; Value</button>
                     </div>
                     <div class="card">
-                        <h2>📖 How DCF Works</h2>
+                        <h2>How DCF Works</h2>
                         <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px;">
                             <div style="background:var(--bg-dark);padding:14px 16px;border-radius:8px;">
                                 <strong style="color:var(--text-primary);font-size:0.9em;">1. Project Free Cash Flows</strong>
@@ -3246,7 +3262,7 @@ def index():
             <div id="verdict-search-view">
                 <div class="grid">
                     <div class="card">
-                        <h2>🏆 Investment Verdict</h2>
+                        <h2>Investment Verdict</h2>
                         <p style="color:var(--text-secondary);margin-bottom:18px;font-size:0.92em;line-height:1.7;">
                             Combines Technical signals, DCF valuation, Market Connection and Dividend metrics into one unified verdict — telling you exactly what this stock is best suited for.
                         </p>
@@ -3255,18 +3271,18 @@ def index():
                         <button class="verdict-fetch-btn" onclick="fetchVerdictData()">Analyse &amp; Get Verdict</button>
                     </div>
                     <div class="card">
-                        <h2>📋 What You Get</h2>
+                        <h2>What You Get</h2>
                         <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px;">
                             <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-cyan);">
-                                <strong style="color:var(--accent-cyan);font-size:0.88em;">⚡ Short-Term Trading</strong>
+                                <strong style="color:var(--accent-cyan);font-size:0.88em;">Short-Term Trading</strong>
                                 <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Entry price, stop loss, target, timeframe and why the technical setup makes sense right now.</p>
                             </div>
                             <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-green);">
-                                <strong style="color:var(--accent-green);font-size:0.88em;">📈 Long-Term Holding</strong>
+                                <strong style="color:var(--accent-green);font-size:0.88em;">Long-Term Holding</strong>
                                 <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">DCF intrinsic value, FCF growth, beta and market dependency to assess long-term wealth creation.</p>
                             </div>
                             <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--warning);">
-                                <strong style="color:var(--warning);font-size:0.88em;">💰 Dividend Income</strong>
+                                <strong style="color:var(--warning);font-size:0.88em;">Dividend Income</strong>
                                 <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Yield, stability and upcoming dividend dates to evaluate as a passive income candidate.</p>
                             </div>
                         </div>
@@ -3332,11 +3348,26 @@ def index():
         }
         function switchTab(tab, event) {
             currentTab = tab;
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            // Update desktop nav links
+            document.querySelectorAll('.nav-link').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.nav-link[data-tab="' + tab + '"]').forEach(t => t.classList.add('active'));
+            // Update mobile menu items
+            document.querySelectorAll('.mobile-menu-item').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.mobile-menu-item[data-tab="' + tab + '"]').forEach(t => t.classList.add('active'));
+            // Update tab content
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-            event.target.classList.add('active');
             document.getElementById(tab + '-tab').classList.add('active');
             ensureTabLoaded(tab);
+        }
+        function toggleMobileMenu() {
+            document.getElementById('hamburger').classList.toggle('open');
+            document.getElementById('mobile-menu').classList.toggle('open');
+            document.getElementById('mobile-overlay').classList.toggle('open');
+        }
+        function closeMobileMenu() {
+            document.getElementById('hamburger').classList.remove('open');
+            document.getElementById('mobile-menu').classList.remove('open');
+            document.getElementById('mobile-overlay').classList.remove('open');
         }
         function setupAutocomplete(inputId, suggestionId, callbackName) {
             const input = document.getElementById(inputId);
@@ -3732,7 +3763,7 @@ def index():
             poll();
         }
         function showRegressionResult(data, symbol) {
-            const marketInfo = data.market_source ? `<div style="background: rgba(201, 168, 76, 0.07); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-gold);"><strong>Market Benchmark:</strong> ${data.market_source} ${data.market_source !== 'Nifty 50 Index' ? '<br><small style="color: var(--text-muted);">Note: Using alternative benchmark due to Nifty 50 data availability.</small>' : ''}</div>` : '';
+            const marketInfo = data.market_source ? `<div style="background: rgba(56, 126, 209, 0.07); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-gold);"><strong>Market Benchmark:</strong> ${data.market_source} ${data.market_source !== 'Nifty 50 Index' ? '<br><small style="color: var(--text-muted);">Note: Using alternative benchmark due to Nifty 50 data availability.</small>' : ''}</div>` : '';
             const scorePercent = (data.dependency_score * 100).toFixed(1);
             const compositePercent = (data.composite_score * 100).toFixed(1);
             const cs = data.composite_score;
