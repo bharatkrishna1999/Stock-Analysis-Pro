@@ -3480,7 +3480,7 @@ def index():
             html += buildCuratedGroup(main);
             html += buildCuratedGroup(complement);
             // Nifty 50 as a bonus
-            var niftyGroup = { title: 'Nifty 50 Stocks to Explore', desc: 'India\'s largest companies by market cap — a good starting point for any investor', stocks: nifty50List.slice(0, 15) };
+            var niftyGroup = { title: 'Nifty 50 Stocks to Explore', desc: 'Largest companies by market cap — a good starting point for any investor', stocks: nifty50List.slice(0, 15) };
             html += buildCuratedGroup(niftyGroup);
             html += '<button class="curated-close-btn" onclick="closeCuratedModal(null)">&#10005; Close</button>';
             html += '</div></div>';
@@ -3493,7 +3493,7 @@ def index():
             h += '<div style="color:var(--text-muted);font-size:0.78em;margin-bottom:8px;">' + grp.desc + '</div>';
             h += '<div class="curated-stocks">';
             grp.stocks.forEach(function(s) {
-                h += '<button class="curated-stock-btn" onclick="launchVerdictFromCurated(\'' + s + '\')">' + s + '</button>';
+                h += '<button class="curated-stock-btn" onclick="launchVerdictFromCurated(\\'' + s + '\\')">' + s + '</button>';
             });
             h += '</div></div>';
             return h;
