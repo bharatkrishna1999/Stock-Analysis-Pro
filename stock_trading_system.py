@@ -3429,6 +3429,12 @@ def index():
             try { localStorage.setItem('stockProProfile', JSON.stringify(investorProfile)); } catch(e) {}
         }
         function setPref(key, val, el) {
+            if (el.classList.contains('active')) {
+                el.classList.remove('active');
+                investorProfile[key] = null;
+                saveProfile();
+                return;
+            }
             investorProfile[key] = val;
             saveProfile();
             el.closest('.pref-group').querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
