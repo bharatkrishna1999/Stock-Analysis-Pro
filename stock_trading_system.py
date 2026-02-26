@@ -3184,6 +3184,19 @@ def index():
         .curated-stock-btn { background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:20px;padding:6px 14px;font-size:0.83em;cursor:pointer;transition:all 0.2s;font-family:'Space Grotesk',sans-serif;font-weight:600; }
         .curated-stock-btn:hover { border-color:var(--accent-cyan);color:var(--accent-cyan);background:rgba(56,126,209,0.1); }
         .curated-close-btn { width:100%;padding:10px;background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:10px;font-size:0.88em;cursor:pointer;margin-top:16px;font-family:'Inter',sans-serif; }
+        /* Live scan rows */
+        .scan-row { display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--bg-dark);border:1px solid var(--border-color);border-radius:10px;margin-bottom:8px;transition:border-color 0.2s,background 0.2s; }
+        .scan-row:hover { border-color:var(--accent-cyan);background:rgba(56,126,209,0.06); }
+        .scan-rank { font-family:'Space Grotesk',sans-serif;font-size:0.82em;font-weight:700;color:var(--text-muted);min-width:22px;text-align:center; }
+        .scan-info { flex:1;min-width:0; }
+        .scan-name { font-family:'Space Grotesk',sans-serif;font-size:0.92em;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+        .scan-symbol { font-size:0.74em;color:var(--text-muted); }
+        .scan-scores { display:flex;gap:10px; }
+        .scan-score-item { text-align:center;min-width:32px; }
+        .scan-score-label { display:block;font-size:0.62em;text-transform:uppercase;color:var(--text-muted);letter-spacing:0.3px; }
+        .scan-score-item span:last-child { font-family:'Space Grotesk',sans-serif;font-size:0.88em;font-weight:700; }
+        .scan-main-score { font-family:'Space Grotesk',sans-serif;font-size:1.4em;font-weight:700;min-width:40px;text-align:right; }
+        @media (max-width:480px) { .scan-scores { display:none; } .scan-main-score { font-size:1.2em; } }
         /* Profile badge on verdict overall */
         .profile-match-badge { display:inline-block;margin-top:10px;padding:4px 12px;border-radius:20px;font-size:0.78em;font-weight:700;background:rgba(56,126,209,0.15);color:var(--accent-cyan);border:1px solid rgba(56,126,209,0.3); }
         @media (max-width:768px) {
@@ -3454,62 +3467,132 @@ def index():
             });
         }
 
-        // ===== CURATED STOCKS BY PROFILE =====
-        var CURATED = {
-            short_low:  { title: 'Low-Risk Short-Term', desc: 'Large-cap liquid stocks with strong technical setups and low beta', stocks: ['TCS','INFY','HDFCBANK','RELIANCE','WIPRO','ICICIBANK','AXISBANK','HINDUNILVR','ITC','NESTLEIND'] },
-            short_med:  { title: 'Medium-Risk Short-Term', desc: 'Mid/large-cap stocks with momentum and active trading volumes', stocks: ['TATAMOTORS','BAJFINANCE','MARUTI','ADANIPORTS','LT','SUNPHARMA','SBILIFE','HCLTECH','TATACONSUM','ONGC'] },
-            short_high: { title: 'High-Risk Short-Term', desc: 'Volatile stocks with high reward potential for active traders', stocks: ['ADANIENT','TATASTEEL','JSWSTEEL','SAIL','PNB','BANKBARODA','NHPC','IRCTC','ZOMATO','PAYTM'] },
-            long_low:   { title: 'Long-Term Defensive', desc: 'Blue-chip companies with consistent earnings, low volatility, and strong moats', stocks: ['NESTLEIND','HINDUNILVR','MARICO','PIDILITIND','BRITANNIA','ASIANPAINT','DMART','BAJAJFINSV','HDFC','TCS'] },
-            long_med:   { title: 'Long-Term Compounders', desc: 'Growth companies with strong fundamentals for 3–5 year horizons', stocks: ['INFY','RELIANCE','BAJFINANCE','TITAN','LTIM','HDFCBANK','ICICIBANK','KOTAKBANK','DRREDDY','SUNPHARMA'] },
-            long_high:  { title: 'Long-Term High-Growth', desc: 'High-growth businesses for investors who can tolerate 40–50% drawdowns', stocks: ['ZOMATO','PAYTM','NYKAA','POLICYBZR','IRCTC','TANLA','CDSL','ANGELONE','BSE','SYNGENE'] },
-            income_any: { title: 'Dividend Income Stocks', desc: 'Stocks with consistent dividend payouts and stable cash flows', stocks: ['COALINDIA','POWERGRID','NTPC','IOC','BPCL','ONGC','HINDPETRO','GAIL','RECLTD','PFC'] },
-            balanced:   { title: 'Balanced Portfolio Candidates', desc: 'Mix of stability and growth — suited for a diversified long-term portfolio', stocks: ['TCS','INFY','HDFCBANK','RELIANCE','HINDUNILVR','SUNPHARMA','MARUTI','LT','ITC','BAJFINANCE'] },
-        };
-        function getCuratedKey() {
-            var h = investorProfile.horizon, r = investorProfile.risk, g = investorProfile.goal;
-            if (g === 'income') return 'income_any';
-            if (g === 'balanced') return 'balanced';
-            if (h === 'short') return 'short_' + r;
-            return 'long_' + r;
+        // ===== LIVE STOCK SCANNER BY PROFILE =====
+        var _scanAbort = null;
+        function getProfileLabels() {
+            return {
+                horizon: { short: 'Short-Term', medium: 'Medium-Term', long: 'Long-Term' }[investorProfile.horizon] || 'Any Horizon',
+                risk: { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' }[investorProfile.risk] || 'Any Risk',
+                goal: { growth: 'Capital Growth', income: 'Dividend Income', balanced: 'Balanced' }[investorProfile.goal] || 'Any Goal'
+            };
+        }
+        function getRelevantScore(stScore, ltScore, divScore) {
+            var g = investorProfile.goal, h = investorProfile.horizon;
+            if (g === 'income') return divScore;
+            if (g === 'balanced') return Math.round((stScore + ltScore + divScore) / 3);
+            if (h === 'short') return stScore;
+            if (h === 'medium') return Math.round((stScore + ltScore) / 2);
+            return ltScore;
+        }
+        function getRelevantLabel() {
+            var g = investorProfile.goal, h = investorProfile.horizon;
+            if (g === 'income') return 'Dividend';
+            if (g === 'balanced') return 'Balanced';
+            if (h === 'short') return 'Short-Term';
+            if (h === 'medium') return 'Medium-Term';
+            return 'Long-Term';
+        }
+        function passesRiskFilter(stRes, ltRes, dcfD, regr) {
+            var r = investorProfile.risk;
+            if (!r) return true;
+            if (r === 'low') {
+                if (dcfD && dcfD.pb_ratio && dcfD.pb_ratio > 8) return false;
+                if (regr && regr.beta && regr.beta > 1.5) return false;
+            }
+            return true;
         }
         function showCuratedStocks() {
-            var key = getCuratedKey();
-            var main = CURATED[key] || CURATED['balanced'];
-            // Also show a complementary group
-            var complementKey = (investorProfile.goal === 'income') ? 'long_low' : 'income_any';
-            var complement = CURATED[complementKey];
-            var profileLabel = {
-                horizon: { short: 'Short-Term', medium: 'Medium-Term', long: 'Long-Term' }[investorProfile.horizon],
-                risk: { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' }[investorProfile.risk],
-                goal: { growth: 'Capital Growth', income: 'Dividend Income', balanced: 'Balanced' }[investorProfile.goal]
-            };
+            if (_scanAbort) { _scanAbort = true; }
+            _scanAbort = false;
+            var labels = getProfileLabels();
+            var relLabel = getRelevantLabel();
+            var scanList = nifty50List.slice(0, 25);
+            var total = scanList.length;
             var html = '<div class="curated-modal" id="curated-modal" onclick="closeCuratedModal(event)">';
             html += '<div class="curated-modal-box">';
-            html += '<div class="curated-modal-title">&#128269; Stock Suggestions for Your Profile</div>';
-            html += '<div class="curated-modal-sub">Based on: <strong style="color:var(--accent-cyan);">' + profileLabel.horizon + ' · ' + profileLabel.risk + ' · ' + profileLabel.goal + '</strong><br>Click any stock to run a full Investment Verdict analysis.</div>';
-            html += buildCuratedGroup(main);
-            html += buildCuratedGroup(complement);
-            // Nifty 50 as a bonus
-            var niftyGroup = { title: 'Nifty 50 Stocks to Explore', desc: 'Largest companies by market cap — a good starting point for any investor', stocks: nifty50List.slice(0, 15) };
-            html += buildCuratedGroup(niftyGroup);
+            html += '<div class="curated-modal-title">&#128269; Live Stock Scanner</div>';
+            html += '<div class="curated-modal-sub">Scanning <strong>' + total + ' Nifty 50 stocks</strong> and ranking by <strong style="color:var(--accent-cyan);">' + labels.horizon + ' &middot; ' + labels.risk + ' &middot; ' + labels.goal + '</strong> score.<br>Results appear as each stock is analysed — best matches rise to the top.</div>';
+            html += '<div id="scan-progress-bar" style="background:var(--bg-dark);border-radius:8px;height:6px;margin-bottom:16px;overflow:hidden;"><div id="scan-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.3s;border-radius:8px;"></div></div>';
+            html += '<div id="scan-status" style="font-size:0.78em;color:var(--text-muted);margin-bottom:12px;">Scanning 0/' + total + ' &mdash; please wait&hellip;</div>';
+            html += '<div id="scan-results"></div>';
             html += '<button class="curated-close-btn" onclick="closeCuratedModal(null)">&#10005; Close</button>';
             html += '</div></div>';
             document.body.insertAdjacentHTML('beforeend', html);
+            // Fire scans with limited concurrency (5 at a time)
+            var results = [];
+            var completed = 0;
+            var queue = scanList.slice();
+            var active = 0;
+            var MAX_CONCURRENT = 5;
+            function launchNext() {
+                while (active < MAX_CONCURRENT && queue.length > 0 && !_scanAbort) {
+                    var sym = queue.shift();
+                    active++;
+                    scanOneStock(sym).then(function(res) {
+                        active--;
+                        completed++;
+                        if (_scanAbort) return;
+                        if (res) results.push(res);
+                        results.sort(function(a, b) { return b.relevantScore - a.relevantScore; });
+                        renderScanResults(results, completed, total, relLabel);
+                        launchNext();
+                    });
+                }
+            }
+            launchNext();
         }
-        function buildCuratedGroup(grp) {
-            if (!grp) return '';
-            var h = '<div class="curated-group">';
-            h += '<div class="curated-group-title">' + grp.title + '</div>';
-            h += '<div style="color:var(--text-muted);font-size:0.78em;margin-bottom:8px;">' + grp.desc + '</div>';
-            h += '<div class="curated-stocks">';
-            grp.stocks.forEach(function(s) {
-                h += '<button class="curated-stock-btn" onclick="launchVerdictFromCurated(\\'' + s + '\\')">' + s + '</button>';
+        function scanOneStock(symbol) {
+            return Promise.all([
+                fetch('/analyze?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;}),
+                fetch('/dcf-data?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;}),
+                fetch('/dividend-info?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;})
+            ]).then(function(data) {
+                var tech = data[0], dcfD = data[1], divD = data[2];
+                if (!tech || tech.error) return null;
+                var stRes = scoreShortTerm(tech);
+                var ltRes = scoreLongTerm(tech, dcfD, null);
+                var divRes = scoreDividend(divD);
+                var relevantScore = getRelevantScore(stRes.score, ltRes.score, divRes.score);
+                if (!passesRiskFilter(stRes, ltRes, dcfD, null)) relevantScore = Math.round(relevantScore * 0.6);
+                var name = (dcfD && dcfD.name) ? dcfD.name : getStockName(symbol);
+                var bestLabel, bestColor;
+                var mx = Math.max(stRes.score, ltRes.score, divRes.score);
+                if (stRes.score === mx) { bestLabel = 'Short-Term'; bestColor = 'var(--accent-cyan)'; }
+                else if (ltRes.score === mx) { bestLabel = 'Long-Term'; bestColor = 'var(--accent-green)'; }
+                else { bestLabel = 'Dividend'; bestColor = 'var(--warning)'; }
+                return { symbol: symbol, name: name, stScore: stRes.score, ltScore: ltRes.score, divScore: divRes.score, relevantScore: relevantScore, bestLabel: bestLabel, bestColor: bestColor };
+            }).catch(function() { return null; });
+        }
+        function renderScanResults(results, completed, total, relLabel) {
+            var pct = Math.round((completed / total) * 100);
+            var fillEl = document.getElementById('scan-progress-fill');
+            var statusEl = document.getElementById('scan-status');
+            var resEl = document.getElementById('scan-results');
+            if (!resEl) return;
+            if (fillEl) fillEl.style.width = pct + '%';
+            if (statusEl) statusEl.innerHTML = completed < total
+                ? 'Scanning ' + completed + '/' + total + ' &mdash; results update live&hellip;'
+                : '&#9989; Scan complete &mdash; ' + results.length + ' stocks ranked by <strong>' + relLabel + '</strong> score';
+            var h = '';
+            results.forEach(function(r, i) {
+                var scoreColor = r.relevantScore >= 65 ? 'var(--accent-green)' : r.relevantScore >= 40 ? 'var(--warning)' : 'var(--danger)';
+                h += '<div class="scan-row" onclick="launchVerdictFromCurated(\\'' + r.symbol + '\\')" style="cursor:pointer;">';
+                h += '<div class="scan-rank">' + (i + 1) + '</div>';
+                h += '<div class="scan-info"><div class="scan-name">' + r.name + '</div><div class="scan-symbol">' + r.symbol + ' &middot; Best for: <span style="color:' + r.bestColor + ';">' + r.bestLabel + '</span></div></div>';
+                h += '<div class="scan-scores">';
+                h += '<div class="scan-score-item"><span class="scan-score-label">ST</span><span style="color:' + verdictScoreColor(r.stScore) + ';">' + r.stScore + '</span></div>';
+                h += '<div class="scan-score-item"><span class="scan-score-label">LT</span><span style="color:' + verdictScoreColor(r.ltScore) + ';">' + r.ltScore + '</span></div>';
+                h += '<div class="scan-score-item"><span class="scan-score-label">Div</span><span style="color:' + verdictScoreColor(r.divScore) + ';">' + r.divScore + '</span></div>';
+                h += '</div>';
+                h += '<div class="scan-main-score" style="color:' + scoreColor + ';">' + r.relevantScore + '</div>';
+                h += '</div>';
             });
-            h += '</div></div>';
-            return h;
+            if (results.length === 0 && completed > 0) h = '<div style="text-align:center;padding:20px;color:var(--text-muted);">No matching stocks found so far&hellip;</div>';
+            resEl.innerHTML = h;
         }
         function closeCuratedModal(event) {
             if (event && event.target.id !== 'curated-modal') return;
+            _scanAbort = true;
             var el = document.getElementById('curated-modal');
             if (el) el.remove();
         }
