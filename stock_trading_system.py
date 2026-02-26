@@ -3501,88 +3501,124 @@ def index():
             }
             return true;
         }
-        // --- Profile-based pre-filter thresholds ---
-        var DRAWDOWN_LIMITS = { low: 10, medium: 20, high: 100 };
-        function applyPrefilter(pf) {
-            var risk = investorProfile.risk || 'medium';
-            var horizon = investorProfile.horizon || 'long';
-            var goal = investorProfile.goal || 'growth';
-            var ddLimit = DRAWDOWN_LIMITS[risk] !== undefined ? DRAWDOWN_LIMITS[risk] : 20;
-            return allTickers.filter(function(sym) {
-                var d = pf[sym];
-                if (!d) return false;                          // no price data → skip
-                if (d.drawdown > ddLimit) return false;        // drawdown filter
-                if (horizon === 'long' && !d.uptrend) return false;  // LT needs uptrend
-                if (goal === 'growth' && d.momentum < -5) return false; // growth: drop obvious losers
-                return true;
-            });
-        }
+        var _prefilterES = null;  // active EventSource for prefilter stream
         function showCuratedStocks() {
-            if (_scanAbort) { _scanAbort = true; }
+            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
             _scanAbort = false;
             var labels = getProfileLabels();
             var relLabel = getRelevantLabel();
-            var universe = allTickers.slice();
-            // Build modal shell with a two-stage progress display
+            var universeTotal = allTickers.length;
+            // Modal shell — single progress bar shared across both pipeline stages
             var html = '<div class="curated-modal" id="curated-modal" onclick="closeCuratedModal(event)">';
             html += '<div class="curated-modal-box">';
             html += '<div class="curated-modal-title">&#128269; Live Stock Scanner</div>';
-            html += '<div class="curated-modal-sub" id="scan-sub">Stage 1 of 2 &mdash; Pre-filtering <strong>' + universe.length + ' NSE stocks</strong> by <strong style="color:var(--accent-cyan);">' + labels.risk + ' drawdown &middot; ' + labels.horizon + ' trend</strong>&hellip;</div>';
-            html += '<div id="scan-progress-bar" style="background:var(--bg-dark);border-radius:8px;height:6px;margin-bottom:16px;overflow:hidden;"><div id="scan-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.4s;border-radius:8px;"></div></div>';
-            html += '<div id="scan-status" style="font-size:0.78em;color:var(--text-muted);margin-bottom:12px;">Fetching price data for all stocks&hellip;</div>';
+            html += '<div class="curated-modal-sub" id="scan-sub">Filtering <strong>' + universeTotal + ' NSE stocks</strong> by <strong style="color:var(--accent-cyan);">' + labels.risk + ' risk &middot; ' + labels.horizon + ' horizon &middot; ' + labels.goal + '</strong>&hellip;</div>';
+            html += '<div id="scan-progress-bar" style="background:var(--bg-dark);border-radius:8px;height:6px;margin-bottom:16px;overflow:hidden;">';
+            html += '<div id="scan-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.3s;border-radius:8px;"></div></div>';
+            html += '<div id="scan-status" style="font-size:0.78em;color:var(--text-muted);margin-bottom:12px;">Connecting&hellip;</div>';
             html += '<div id="scan-results"></div>';
             html += '<button class="curated-close-btn" onclick="closeCuratedModal(null)">&#10005; Close</button>';
             html += '</div></div>';
             document.body.insertAdjacentHTML('beforeend', html);
             function setStatus(msg) { var el = document.getElementById('scan-status'); if (el) el.innerHTML = msg; }
-            function setFill(pct) { var el = document.getElementById('scan-progress-fill'); if (el) el.style.width = pct + '%'; }
-            function setSub(msg) { var el = document.getElementById('scan-sub'); if (el) el.innerHTML = msg; }
-            // --- Stage 1: single batch prefilter call ---
-            setFill(5);
-            fetch('/batch-prefilter', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ symbols: universe })
-            })
-            .then(function(r) { return r.json(); })
-            .catch(function() { return {}; })
-            .then(function(pf) {
-                if (_scanAbort) return;
-                var scanList = applyPrefilter(pf);
-                var eliminated = universe.length - scanList.length;
-                setFill(15);
-                setSub('Stage 2 of 2 &mdash; Deep scanning <strong>' + scanList.length + ' qualifying stocks</strong> (eliminated ' + eliminated + ') ranked by <strong style="color:var(--accent-cyan);">' + labels.horizon + ' &middot; ' + labels.risk + ' &middot; ' + labels.goal + '</strong> score');
-                if (scanList.length === 0) {
-                    setStatus('No stocks passed the pre-filter. Try relaxing your risk/horizon settings.');
-                    setFill(100);
-                    return;
-                }
-                // --- Stage 2: full analysis on survivors ---
-                var results = [];
-                var completed = 0;
-                var total = scanList.length;
-                var queue = scanList.slice();
-                var active = 0;
-                var MAX_CONCURRENT = 5;  // keep server load low (0.1 CPU core)
-                function launchNext() {
-                    while (active < MAX_CONCURRENT && queue.length > 0 && !_scanAbort) {
-                        var sym = queue.shift();
-                        active++;
-                        scanOneStock(sym).then(function(res) {
-                            active--;
-                            completed++;
-                            if (_scanAbort) return;
-                            if (res) results.push(res);
-                            results.sort(function(a, b) { return b.relevantScore - a.relevantScore; });
-                            // Progress bar: 15% baseline + up to 85% for stage 2
-                            setFill(15 + Math.round((completed / total) * 85));
-                            renderScanResults(results, completed, total, relLabel);
-                            launchNext();
-                        });
+            function setFill(pct)   { var el = document.getElementById('scan-progress-fill'); if (el) el.style.width = pct + '%'; }
+            function setSub(msg)    { var el = document.getElementById('scan-sub'); if (el) el.innerHTML = msg; }
+            // --- Pipeline state (stages run concurrently) ---
+            var deepResults = [];
+            var deepCompleted = 0;
+            var deepTotal = 0;      // grows as prefilter passes more stocks
+            var deepQueue = [];
+            var deepActive = 0;
+            var MAX_CONCURRENT = 5;
+            var pfChecked = 0;
+            var pfPassed = 0;
+            var pfDone = false;
+            function updateStatus() {
+                var bar = pfDone
+                    ? Math.round((deepCompleted / Math.max(deepTotal, 1)) * 100)
+                    : Math.min(60, Math.round((pfChecked / universeTotal) * 60));
+                setFill(bar);
+                if (!pfDone) {
+                    setStatus('Filtering ' + pfChecked + '/' + universeTotal + ' &mdash; <span style="color:var(--accent-green);">' + pfPassed + ' passed</span>, deep-scanning ' + deepCompleted + '/' + deepTotal + '&hellip;');
+                } else {
+                    if (deepCompleted >= deepTotal && deepTotal > 0) {
+                        setFill(100);
+                        setStatus('&#9989; Done &mdash; ' + deepResults.length + ' stocks ranked by <strong>' + relLabel + '</strong> score');
+                    } else {
+                        setStatus('Pre-filter done &mdash; deep scanning ' + deepCompleted + '/' + deepTotal + '&hellip;');
                     }
                 }
-                launchNext();
-            });
+            }
+            function launchDeepNext() {
+                while (deepActive < MAX_CONCURRENT && deepQueue.length > 0 && !_scanAbort) {
+                    var sym = deepQueue.shift();
+                    deepActive++;
+                    scanOneStock(sym).then(function(res) {
+                        deepActive--;
+                        deepCompleted++;
+                        if (_scanAbort) return;
+                        if (res) deepResults.push(res);
+                        deepResults.sort(function(a, b) { return b.relevantScore - a.relevantScore; });
+                        if (pfDone) {
+                            var pct = 60 + Math.round((deepCompleted / Math.max(deepTotal, 1)) * 40);
+                            setFill(pct);
+                        }
+                        renderScanResults(deepResults, deepCompleted, deepTotal, relLabel);
+                        updateStatus();
+                        launchDeepNext();
+                    });
+                }
+            }
+            // --- Stage 1: SSE prefilter stream (concurrent with Stage 2) ---
+            var risk    = investorProfile.risk    || 'medium';
+            var horizon = investorProfile.horizon || 'long';
+            var goal    = investorProfile.goal    || 'growth';
+            var esUrl = '/prefilter-stream?risk=' + encodeURIComponent(risk) +
+                        '&horizon=' + encodeURIComponent(horizon) +
+                        '&goal=' + encodeURIComponent(goal);
+            var es = new EventSource(esUrl);
+            _prefilterES = es;
+            es.onmessage = function(evt) {
+                if (_scanAbort) { es.close(); _prefilterES = null; return; }
+                var d = JSON.parse(evt.data);
+                if (d.type === 'meta') {
+                    setSub('Filtering <strong>' + d.total + ' NSE stocks</strong> &mdash; qualifying ones deep-scanned immediately&hellip;');
+                } else if (d.type === 'pass') {
+                    pfPassed++;
+                    deepTotal++;
+                    deepQueue.push(d.symbol);
+                    launchDeepNext();   // start deep scan immediately, don't wait
+                    updateStatus();
+                } else if (d.type === 'progress') {
+                    pfChecked = d.checked;
+                    pfPassed  = d.passed;
+                    updateStatus();
+                } else if (d.type === 'done') {
+                    pfDone    = true;
+                    pfChecked = d.checked;
+                    pfPassed  = d.passed;
+                    es.close();
+                    _prefilterES = null;
+                    if (deepTotal === 0) {
+                        setStatus('No stocks passed the filter. Try relaxing your risk or horizon settings.');
+                        setFill(100);
+                    } else {
+                        setSub('Pre-filter done: <strong>' + pfPassed + '</strong> of ' + pfChecked + ' stocks qualified &mdash; deep-scanning by <strong style="color:var(--accent-cyan);">' + labels.horizon + ' &middot; ' + labels.risk + ' &middot; ' + labels.goal + '</strong> score');
+                        updateStatus();
+                    }
+                }
+            };
+            es.onerror = function() {
+                es.close();
+                _prefilterES = null;
+                if (!pfDone) {
+                    pfDone = true;
+                    if (deepTotal === 0) {
+                        setStatus('Pre-filter stream error. Try again.');
+                        setFill(100);
+                    }
+                }
+            };
         }
         function scanOneStock(symbol) {
             return Promise.all([
@@ -3636,6 +3672,7 @@ def index():
         function closeCuratedModal(event) {
             if (event && event.target.id !== 'curated-modal') return;
             _scanAbort = true;
+            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
             var el = document.getElementById('curated-modal');
             if (el) el.remove();
         }
@@ -5875,91 +5912,107 @@ def dcf_data_route():
         return jsonify({'error': f'DCF analysis failed: {str(e)}'})
 
 
-@app.route('/batch-prefilter', methods=['POST'])
-def batch_prefilter_route():
+@app.route('/prefilter-stream')
+def prefilter_stream_route():
     """
-    Fast pre-filter endpoint for the live scanner.
-    Accepts a JSON list of NSE symbols (without .NS), downloads 6-month
-    OHLCV data in one yf.download() batch call, and returns lightweight
-    metrics (drawdown, uptrend, volume trend) for each symbol so the
-    frontend can eliminate irrelevant stocks before running full analysis.
-    """
-    body = request.get_json(silent=True) or {}
-    symbols_raw = body.get('symbols', [])
-    if not symbols_raw:
-        return jsonify({})
+    SSE streaming prefilter for the live scanner.
+    Processes the NSE universe in mini-batches of 25 using yf.download(),
+    applies profile-based filters server-side, and streams only the passing
+    symbols to the browser immediately — no bulk memory accumulation.
 
-    # Normalise to .NS tickers
+    Query params: risk (low|medium|high), horizon (short|medium|long),
+                  goal (growth|income|balanced)
+
+    Events:
+      {"type":"progress", "checked":25, "total":292, "passed":8}
+      {"type":"pass",     "symbol":"RELIANCE", "drawdown":4.1, "uptrend":true, "momentum":1.2}
+      {"type":"done",     "checked":292, "passed":45}
+    """
+    risk    = request.args.get('risk',    'medium')
+    horizon = request.args.get('horizon', 'long')
+    goal    = request.args.get('goal',    'growth')
+
+    dd_limit = {'low': 10, 'medium': 20, 'high': 100}.get(risk, 20)
+    need_uptrend = (horizon == 'long')
+    need_momentum = (goal == 'growth')
+
+    symbols_raw = list(ALL_VALID_TICKERS)
+    total = len(symbols_raw)
+    CHUNK = 25  # mini-batch size — keeps peak RAM low
+
     def to_ns(s):
         s = s.strip().upper()
         return s if s.endswith('.NS') else s + '.NS'
 
-    ns_syms = [to_ns(s) for s in symbols_raw]
-    sym_map = {to_ns(s): s.strip().upper() for s in symbols_raw}  # ns -> plain
+    def generate():
+        checked = 0
+        passed  = 0
+        yield f"data: {json.dumps({'type': 'meta', 'total': total})}\n\n"
 
-    # threads=False keeps CPU usage low on constrained servers (0.1 core).
-    # 3-month period is sufficient for drawdown/trend signals and keeps
-    # the in-memory DataFrame small (~8-12 MB for 292 tickers).
-    try:
-        raw = yf.download(
-            tickers=ns_syms,
-            period='3mo',
-            interval='1d',
-            group_by='ticker',
-            progress=False,
-            threads=False,
-            auto_adjust=True,
-        )
-    except Exception as e:
-        print(f"[batch-prefilter] yf.download failed: {e}")
-        return jsonify({})
+        for i in range(0, total, CHUNK):
+            chunk_plain = symbols_raw[i:i + CHUNK]
+            chunk_ns    = [to_ns(s) for s in chunk_plain]
+            ns_to_plain = {to_ns(s): s for s in chunk_plain}
 
-    results = {}
-    for ns_sym in ns_syms:
-        plain = sym_map[ns_sym]
-        try:
-            # When multiple tickers are downloaded, the DataFrame is multi-level
-            if len(ns_syms) == 1:
-                df = raw
-            else:
-                df = raw[ns_sym] if ns_sym in raw.columns.get_level_values(0) else None
-            if df is None or df.empty or len(df) < 10:
+            try:
+                raw = yf.download(
+                    tickers=chunk_ns,
+                    period='3mo',
+                    interval='1d',
+                    group_by='ticker',
+                    progress=False,
+                    threads=False,   # single-threaded: gentle on 0.1 CPU core
+                    auto_adjust=True,
+                )
+            except Exception:
+                checked += len(chunk_plain)
+                yield f"data: {json.dumps({'type': 'progress', 'checked': checked, 'total': total, 'passed': passed})}\n\n"
                 continue
 
-            close = df['Close'].dropna()
-            high  = df['High'].dropna()
-            vol   = df['Volume'].dropna()
-            if len(close) < 10:
-                continue
+            for ns_sym in chunk_ns:
+                plain = ns_to_plain[ns_sym]
+                checked += 1
+                try:
+                    df = raw if len(chunk_ns) == 1 else (
+                        raw[ns_sym] if ns_sym in raw.columns.get_level_values(0) else None
+                    )
+                    if df is None or df.empty or len(df) < 10:
+                        continue
 
-            current   = float(close.iloc[-1])
-            peak      = float(high.max())          # 6-month peak as drawdown proxy
-            drawdown  = round((peak - current) / peak * 100, 1) if peak > 0 else 100.0
+                    close = df['Close'].dropna()
+                    if len(close) < 10:
+                        continue
 
-            # Uptrend: current price above its 50-day (or all-available) MA
-            window = min(50, len(close))
-            ma     = float(close.rolling(window).mean().iloc[-1])
-            uptrend = bool(current > ma)
+                    current  = float(close.iloc[-1])
+                    peak     = float(df['High'].dropna().max())
+                    drawdown = round((peak - current) / peak * 100, 1) if peak > 0 else 100.0
 
-            # Momentum: last 10 days vs prior 10 days price change
-            mom = float(close.iloc[-1] / close.iloc[-10] - 1) if len(close) >= 10 else 0.0
+                    window  = min(50, len(close))
+                    ma      = float(close.rolling(window).mean().iloc[-1])
+                    uptrend = bool(current > ma)
 
-            # Volume trend: recent 10-day avg vs prior 20-day avg
-            vol_recent = float(vol.iloc[-10:].mean()) if len(vol) >= 10 else 0.0
-            vol_prev   = float(vol.iloc[-30:-10].mean()) if len(vol) >= 30 else vol_recent
-            vol_surge  = bool(vol_recent > vol_prev * 1.1)
+                    mom = round(float(close.iloc[-1] / close.iloc[-10] - 1) * 100, 2) if len(close) >= 10 else 0.0
 
-            results[plain] = {
-                'drawdown':  drawdown,
-                'uptrend':   uptrend,
-                'momentum':  round(mom * 100, 2),  # % gain last 10 days
-                'vol_surge': vol_surge,
-                'price':     round(current, 2),
-            }
-        except Exception:
-            continue
+                    # Apply profile filters — only emit stocks that pass
+                    if drawdown > dd_limit:
+                        continue
+                    if need_uptrend and not uptrend:
+                        continue
+                    if need_momentum and mom < -5:
+                        continue
 
-    return jsonify(results)
+                    passed += 1
+                    yield f"data: {json.dumps({'type': 'pass', 'symbol': plain, 'drawdown': drawdown, 'uptrend': uptrend, 'momentum': mom})}\n\n"
+
+                except Exception:
+                    continue
+
+            # Progress heartbeat after each mini-batch
+            yield f"data: {json.dumps({'type': 'progress', 'checked': checked, 'total': total, 'passed': passed})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'done', 'checked': checked, 'passed': passed})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
 if __name__ == '__main__':
