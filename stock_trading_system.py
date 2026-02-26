@@ -3184,6 +3184,14 @@ def index():
         .curated-stock-btn { background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:20px;padding:6px 14px;font-size:0.83em;cursor:pointer;transition:all 0.2s;font-family:'Space Grotesk',sans-serif;font-weight:600; }
         .curated-stock-btn:hover { border-color:var(--accent-cyan);color:var(--accent-cyan);background:rgba(56,126,209,0.1); }
         .curated-close-btn { width:100%;padding:10px;background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:10px;font-size:0.88em;cursor:pointer;margin-top:16px;font-family:'Inter',sans-serif; }
+        /* Scanner tab */
+        .scanner-start-btn { width:100%;margin-top:18px;padding:11px;background:rgba(56,126,209,0.12);border:1px solid rgba(56,126,209,0.35);color:var(--accent-cyan);border-radius:10px;font-size:0.9em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s; }
+        .scanner-start-btn:hover { background:rgba(56,126,209,0.22); }
+        .scanner-stop-btn { width:100%;margin-top:8px;padding:9px;background:rgba(220,53,69,0.1);border:1px solid rgba(220,53,69,0.3);color:var(--danger);border-radius:10px;font-size:0.85em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s;display:none; }
+        .scanner-stop-btn:hover { background:rgba(220,53,69,0.2); }
+        .sc-stat-row { display:flex;flex-wrap:wrap;gap:16px;margin-bottom:14px;font-size:0.82em;color:var(--text-muted); }
+        .sc-stat-row span { display:flex;align-items:center;gap:4px; }
+        .sc-stat-row strong { color:var(--text-primary); }
         /* Live scan rows */
         .scan-row { display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--bg-dark);border:1px solid var(--border-color);border-radius:10px;margin-bottom:8px;transition:border-color 0.2s,background 0.2s; }
         .scan-row:hover { border-color:var(--accent-cyan);background:rgba(56,126,209,0.06); }
@@ -3217,6 +3225,7 @@ def index():
                 <button class="nav-link" data-tab="dcf" onclick="switchTab('dcf', event)">DCF Valuation</button>
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
+                <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
             </div>
             <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
                 <span></span><span></span><span></span>
@@ -3230,6 +3239,7 @@ def index():
         <button class="mobile-menu-item" data-tab="dcf" onclick="switchTab('dcf', event); closeMobileMenu()">DCF Valuation</button>
         <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
+        <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
     </div>
     <header>
         <div class="container">
@@ -3413,6 +3423,43 @@ def index():
                 <div id="verdict-result"></div>
             </div>
         </div>
+        <div id="scanner-tab" class="tab-content">
+            <div class="grid" style="align-items:start;">
+                <div class="card">
+                    <h2>&#128269; Live Stock Scanner</h2>
+                    <p style="color:var(--text-secondary);font-size:0.87em;line-height:1.6;margin-bottom:4px;">Scans all 292 NSE stocks and ranks them by your investor profile. Results stay here when you click a stock and come back.</p>
+                    <div class="pref-label">Investment Horizon</div>
+                    <div class="pref-group" id="sc-pref-horizon">
+                        <button class="pref-btn" data-value="short" onclick="setPref('horizon','short',this)">Short-term</button>
+                        <button class="pref-btn" data-value="medium" onclick="setPref('horizon','medium',this)">Medium-term</button>
+                        <button class="pref-btn" data-value="long" onclick="setPref('horizon','long',this)">Long-term</button>
+                    </div>
+                    <div class="pref-label">Risk Tolerance</div>
+                    <div class="pref-group" id="sc-pref-risk">
+                        <button class="pref-btn" data-value="low" onclick="setPref('risk','low',this)">Low Risk</button>
+                        <button class="pref-btn" data-value="medium" onclick="setPref('risk','medium',this)">Medium Risk</button>
+                        <button class="pref-btn" data-value="high" onclick="setPref('risk','high',this)">High Risk</button>
+                    </div>
+                    <div class="pref-label">Investment Goal</div>
+                    <div class="pref-group" id="sc-pref-goal">
+                        <button class="pref-btn" data-value="growth" onclick="setPref('goal','growth',this)">Capital Growth</button>
+                        <button class="pref-btn" data-value="income" onclick="setPref('goal','income',this)">Dividend Income</button>
+                        <button class="pref-btn" data-value="balanced" onclick="setPref('goal','balanced',this)">Balanced</button>
+                    </div>
+                    <button class="scanner-start-btn" id="scanner-start-btn" onclick="startScanInTab()">&#128269; Scan NSE Universe</button>
+                    <button class="scanner-stop-btn" id="scanner-stop-btn" onclick="stopScanInTab()">&#9632; Stop Scan</button>
+                </div>
+                <div class="card" id="sc-status-card" style="display:none;">
+                    <div id="sc-sub" style="font-size:0.88em;color:var(--text-muted);margin-bottom:12px;line-height:1.5;"></div>
+                    <div style="background:var(--bg-dark);border-radius:8px;height:6px;overflow:hidden;margin-bottom:10px;">
+                        <div id="sc-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.35s;border-radius:8px;"></div>
+                    </div>
+                    <div id="sc-status-text" style="font-size:0.78em;color:var(--text-muted);margin-bottom:10px;"></div>
+                    <div class="sc-stat-row" id="sc-stat-row"></div>
+                </div>
+            </div>
+            <div id="scanner-results-area" style="margin-top:18px;"></div>
+        </div>
     </main>
     <script>
         const stocks = ''' + json.dumps(STOCKS, separators=(',', ':')) + ''';
@@ -3459,10 +3506,13 @@ def index():
         }
         function updateProfileUI() {
             ['horizon', 'risk', 'goal'].forEach(function(key) {
-                var grp = document.getElementById('pref-' + key);
-                if (!grp) return;
-                grp.querySelectorAll('.pref-btn').forEach(function(b) {
-                    b.classList.toggle('active', b.dataset.value === investorProfile[key]);
+                // Sync both verdict-tab profile group and scanner-tab profile group
+                ['pref-' + key, 'sc-pref-' + key].forEach(function(id) {
+                    var grp = document.getElementById(id);
+                    if (!grp) return;
+                    grp.querySelectorAll('.pref-btn').forEach(function(b) {
+                        b.classList.toggle('active', b.dataset.value === investorProfile[key]);
+                    });
                 });
             });
         }
@@ -3501,53 +3551,99 @@ def index():
             }
             return true;
         }
-        var _prefilterES = null;  // active EventSource for prefilter stream
+        // ===== SCANNER TAB — persistent, no popup =====
+        var _prefilterES = null;
+        var _scanRunning = false;
+
         function showCuratedStocks() {
+            // "Get Stock Suggestions" button in verdict tab → navigate to Scanner tab
+            switchTab('scanner');
+            if (!_scanRunning) startScanInTab();
+        }
+        function startScanInTab() {
             if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
             _scanAbort = false;
-            var labels = getProfileLabels();
+            _scanRunning = true;
+            var labels   = getProfileLabels();
             var relLabel = getRelevantLabel();
             var universeTotal = allTickers.length;
-            // Modal shell — single progress bar shared across both pipeline stages
-            var html = '<div class="curated-modal" id="curated-modal" onclick="closeCuratedModal(event)">';
-            html += '<div class="curated-modal-box">';
-            html += '<div class="curated-modal-title">&#128269; Live Stock Scanner</div>';
-            html += '<div class="curated-modal-sub" id="scan-sub">Filtering <strong>' + universeTotal + ' NSE stocks</strong> by <strong style="color:var(--accent-cyan);">' + labels.risk + ' risk &middot; ' + labels.horizon + ' horizon &middot; ' + labels.goal + '</strong>&hellip;</div>';
-            html += '<div id="scan-progress-bar" style="background:var(--bg-dark);border-radius:8px;height:6px;margin-bottom:16px;overflow:hidden;">';
-            html += '<div id="scan-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.3s;border-radius:8px;"></div></div>';
-            html += '<div id="scan-status" style="font-size:0.78em;color:var(--text-muted);margin-bottom:12px;">Connecting&hellip;</div>';
-            html += '<div id="scan-results"></div>';
-            html += '<button class="curated-close-btn" onclick="closeCuratedModal(null)">&#10005; Close</button>';
-            html += '</div></div>';
-            document.body.insertAdjacentHTML('beforeend', html);
-            function setStatus(msg) { var el = document.getElementById('scan-status'); if (el) el.innerHTML = msg; }
-            function setFill(pct)   { var el = document.getElementById('scan-progress-fill'); if (el) el.style.width = pct + '%'; }
-            function setSub(msg)    { var el = document.getElementById('scan-sub'); if (el) el.innerHTML = msg; }
-            // --- Pipeline state (stages run concurrently) ---
-            var deepResults = [];
+            // Show status card, toggle buttons
+            var statusCard = document.getElementById('sc-status-card');
+            if (statusCard) statusCard.style.display = '';
+            var startBtn = document.getElementById('scanner-start-btn');
+            var stopBtn  = document.getElementById('scanner-stop-btn');
+            if (startBtn) startBtn.style.display = 'none';
+            if (stopBtn)  stopBtn.style.display  = '';
+            // Helper refs
+            function setSub(msg)  { var el = document.getElementById('sc-sub');         if (el) el.innerHTML  = msg; }
+            function setFill(pct) { var el = document.getElementById('sc-progress-fill');if (el) el.style.width = pct + '%'; }
+            function setStatus(msg){ var el = document.getElementById('sc-status-text'); if (el) el.innerHTML  = msg; }
+            function setStats(chk, passed, deepDone, deepTot) {
+                var el = document.getElementById('sc-stat-row');
+                if (!el) return;
+                el.innerHTML = '<span>Checked <strong>' + chk + '/' + universeTotal + '</strong></span>'
+                             + '<span style="color:var(--accent-green);">&#9679; ' + passed + ' qualified</span>'
+                             + '<span>Deep-scanned <strong>' + deepDone + '/' + deepTot + '</strong></span>';
+            }
+            setSub('Filtering <strong>' + universeTotal + ' NSE stocks</strong> by <strong style="color:var(--accent-cyan);">'
+                   + labels.risk + ' risk &middot; ' + labels.horizon + ' horizon &middot; ' + labels.goal + '</strong>');
+            setFill(0);
+            setStatus('Connecting to data stream&hellip;');
+            // Clear previous results
+            var resEl = document.getElementById('scanner-results-area');
+            if (resEl) resEl.innerHTML = '';
+            // Pipeline state
+            var deepResults   = [];
             var deepCompleted = 0;
-            var deepTotal = 0;      // grows as prefilter passes more stocks
-            var deepQueue = [];
-            var deepActive = 0;
+            var deepTotal     = 0;
+            var deepQueue     = [];
+            var deepActive    = 0;
             var MAX_CONCURRENT = 5;
             var pfChecked = 0;
-            var pfPassed = 0;
-            var pfDone = false;
-            function updateStatus() {
+            var pfPassed  = 0;
+            var pfDone    = false;
+            function finishScan() {
+                _scanRunning = false;
+                if (startBtn) startBtn.style.display = '';
+                if (stopBtn)  stopBtn.style.display  = 'none';
+                if (startBtn) startBtn.textContent = '&#128269; Re-scan with Current Profile';
+            }
+            function updateProgress() {
                 var bar = pfDone
-                    ? Math.round((deepCompleted / Math.max(deepTotal, 1)) * 100)
-                    : Math.min(60, Math.round((pfChecked / universeTotal) * 60));
+                    ? 60 + Math.round((deepCompleted / Math.max(deepTotal, 1)) * 40)
+                    : Math.min(55, Math.round((pfChecked / universeTotal) * 55));
                 setFill(bar);
+                setStats(pfChecked, pfPassed, deepCompleted, deepTotal);
                 if (!pfDone) {
-                    setStatus('Filtering ' + pfChecked + '/' + universeTotal + ' &mdash; <span style="color:var(--accent-green);">' + pfPassed + ' passed</span>, deep-scanning ' + deepCompleted + '/' + deepTotal + '&hellip;');
+                    setStatus('Filtering stocks&hellip;');
+                } else if (deepCompleted < deepTotal) {
+                    setStatus('Pre-filter done &mdash; deep scanning remaining stocks&hellip;');
                 } else {
-                    if (deepCompleted >= deepTotal && deepTotal > 0) {
-                        setFill(100);
-                        setStatus('&#9989; Done &mdash; ' + deepResults.length + ' stocks ranked by <strong>' + relLabel + '</strong> score');
-                    } else {
-                        setStatus('Pre-filter done &mdash; deep scanning ' + deepCompleted + '/' + deepTotal + '&hellip;');
-                    }
+                    setFill(100);
+                    setStatus('&#9989; Complete &mdash; <strong>' + deepResults.length + '</strong> stocks ranked by <strong>' + relLabel + '</strong> score');
+                    finishScan();
                 }
+            }
+            function renderTabResults() {
+                if (!resEl) return;
+                var h = '';
+                deepResults.forEach(function(r, i) {
+                    var scoreColor = r.relevantScore >= 65 ? 'var(--accent-green)' : r.relevantScore >= 40 ? 'var(--warning)' : 'var(--danger)';
+                    h += '<div class="scan-row" onclick="openScannerStock(\\'' + r.symbol + '\\')" style="cursor:pointer;">';
+                    h += '<div class="scan-rank">' + (i + 1) + '</div>';
+                    h += '<div class="scan-info"><div class="scan-name">' + r.name + '</div>';
+                    h += '<div class="scan-symbol">' + r.symbol + ' &middot; Best for: <span style="color:' + r.bestColor + ';">' + r.bestLabel + '</span></div></div>';
+                    h += '<div class="scan-scores">';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">ST</span><span style="color:' + verdictScoreColor(r.stScore) + ';">' + r.stScore + '</span></div>';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">LT</span><span style="color:' + verdictScoreColor(r.ltScore) + ';">' + r.ltScore + '</span></div>';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">Div</span><span style="color:' + verdictScoreColor(r.divScore) + ';">' + r.divScore + '</span></div>';
+                    h += '</div>';
+                    h += '<div class="scan-main-score" style="color:' + scoreColor + ';">' + r.relevantScore + '</div>';
+                    h += '</div>';
+                });
+                if (deepResults.length === 0 && pfDone && deepTotal === 0)
+                    h = '<div style="text-align:center;padding:32px;color:var(--text-muted);">No stocks passed the filter. Try relaxing your risk or horizon settings.</div>';
+                resEl.innerHTML = h;
             }
             function launchDeepNext() {
                 while (deepActive < MAX_CONCURRENT && deepQueue.length > 0 && !_scanAbort) {
@@ -3559,66 +3655,63 @@ def index():
                         if (_scanAbort) return;
                         if (res) deepResults.push(res);
                         deepResults.sort(function(a, b) { return b.relevantScore - a.relevantScore; });
-                        if (pfDone) {
-                            var pct = 60 + Math.round((deepCompleted / Math.max(deepTotal, 1)) * 40);
-                            setFill(pct);
-                        }
-                        renderScanResults(deepResults, deepCompleted, deepTotal, relLabel);
-                        updateStatus();
+                        renderTabResults();
+                        updateProgress();
                         launchDeepNext();
                     });
                 }
             }
-            // --- Stage 1: SSE prefilter stream (concurrent with Stage 2) ---
+            // SSE prefilter stream
             var risk    = investorProfile.risk    || 'medium';
             var horizon = investorProfile.horizon || 'long';
             var goal    = investorProfile.goal    || 'growth';
-            var esUrl = '/prefilter-stream?risk=' + encodeURIComponent(risk) +
-                        '&horizon=' + encodeURIComponent(horizon) +
-                        '&goal=' + encodeURIComponent(goal);
-            var es = new EventSource(esUrl);
+            var es = new EventSource('/prefilter-stream?risk=' + encodeURIComponent(risk)
+                                    + '&horizon=' + encodeURIComponent(horizon)
+                                    + '&goal=' + encodeURIComponent(goal));
             _prefilterES = es;
             es.onmessage = function(evt) {
                 if (_scanAbort) { es.close(); _prefilterES = null; return; }
                 var d = JSON.parse(evt.data);
-                if (d.type === 'meta') {
-                    setSub('Filtering <strong>' + d.total + ' NSE stocks</strong> &mdash; qualifying ones deep-scanned immediately&hellip;');
-                } else if (d.type === 'pass') {
+                if (d.type === 'pass') {
                     pfPassed++;
                     deepTotal++;
                     deepQueue.push(d.symbol);
-                    launchDeepNext();   // start deep scan immediately, don't wait
-                    updateStatus();
+                    launchDeepNext();
+                    updateProgress();
                 } else if (d.type === 'progress') {
                     pfChecked = d.checked;
-                    pfPassed  = d.passed;
-                    updateStatus();
+                    updateProgress();
                 } else if (d.type === 'done') {
                     pfDone    = true;
                     pfChecked = d.checked;
                     pfPassed  = d.passed;
                     es.close();
                     _prefilterES = null;
-                    if (deepTotal === 0) {
-                        setStatus('No stocks passed the filter. Try relaxing your risk or horizon settings.');
-                        setFill(100);
-                    } else {
-                        setSub('Pre-filter done: <strong>' + pfPassed + '</strong> of ' + pfChecked + ' stocks qualified &mdash; deep-scanning by <strong style="color:var(--accent-cyan);">' + labels.horizon + ' &middot; ' + labels.risk + ' &middot; ' + labels.goal + '</strong> score');
-                        updateStatus();
-                    }
+                    updateProgress();
+                    if (deepTotal === 0) { renderTabResults(); finishScan(); }
                 }
             };
             es.onerror = function() {
-                es.close();
-                _prefilterES = null;
-                if (!pfDone) {
-                    pfDone = true;
-                    if (deepTotal === 0) {
-                        setStatus('Pre-filter stream error. Try again.');
-                        setFill(100);
-                    }
-                }
+                es.close(); _prefilterES = null;
+                if (!pfDone) { pfDone = true; updateProgress(); if (deepTotal === 0) finishScan(); }
             };
+        }
+        function stopScanInTab() {
+            _scanAbort = true;
+            _scanRunning = false;
+            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
+            var startBtn = document.getElementById('scanner-start-btn');
+            var stopBtn  = document.getElementById('scanner-stop-btn');
+            if (startBtn) { startBtn.style.display = ''; startBtn.textContent = '&#128269; Re-scan with Current Profile'; }
+            if (stopBtn)  stopBtn.style.display = 'none';
+            var el = document.getElementById('sc-status-text');
+            if (el) el.innerHTML = 'Scan stopped. Click Re-scan to start again.';
+        }
+        function openScannerStock(symbol) {
+            // Navigate to verdict tab — scanner results persist when user returns
+            switchTab('verdict');
+            document.getElementById('verdict-search').value = symbol;
+            fetchVerdictData();
         }
         function scanOneStock(symbol) {
             return Promise.all([
@@ -3634,53 +3727,11 @@ def index():
                 var relevantScore = getRelevantScore(stRes.score, ltRes.score, divRes.score);
                 if (!passesRiskFilter(stRes, ltRes, dcfD, null)) relevantScore = Math.round(relevantScore * 0.6);
                 var name = (dcfD && dcfD.name) ? dcfD.name : getStockName(symbol);
-                var bestLabel, bestColor;
                 var mx = Math.max(stRes.score, ltRes.score, divRes.score);
-                if (stRes.score === mx) { bestLabel = 'Short-Term'; bestColor = 'var(--accent-cyan)'; }
-                else if (ltRes.score === mx) { bestLabel = 'Long-Term'; bestColor = 'var(--accent-green)'; }
-                else { bestLabel = 'Dividend'; bestColor = 'var(--warning)'; }
+                var bestLabel = stRes.score === mx ? 'Short-Term' : ltRes.score === mx ? 'Long-Term' : 'Dividend';
+                var bestColor = stRes.score === mx ? 'var(--accent-cyan)' : ltRes.score === mx ? 'var(--accent-green)' : 'var(--warning)';
                 return { symbol: symbol, name: name, stScore: stRes.score, ltScore: ltRes.score, divScore: divRes.score, relevantScore: relevantScore, bestLabel: bestLabel, bestColor: bestColor };
             }).catch(function() { return null; });
-        }
-        function renderScanResults(results, completed, total, relLabel) {
-            var pct = Math.round((completed / total) * 100);
-            var fillEl = document.getElementById('scan-progress-fill');
-            var statusEl = document.getElementById('scan-status');
-            var resEl = document.getElementById('scan-results');
-            if (!resEl) return;
-            if (fillEl) fillEl.style.width = pct + '%';
-            if (statusEl) statusEl.innerHTML = completed < total
-                ? 'Scanning ' + completed + '/' + total + ' &mdash; results update live&hellip;'
-                : '&#9989; Scan complete &mdash; ' + results.length + ' stocks ranked by <strong>' + relLabel + '</strong> score';
-            var h = '';
-            results.forEach(function(r, i) {
-                var scoreColor = r.relevantScore >= 65 ? 'var(--accent-green)' : r.relevantScore >= 40 ? 'var(--warning)' : 'var(--danger)';
-                h += '<div class="scan-row" onclick="launchVerdictFromCurated(\\'' + r.symbol + '\\')" style="cursor:pointer;">';
-                h += '<div class="scan-rank">' + (i + 1) + '</div>';
-                h += '<div class="scan-info"><div class="scan-name">' + r.name + '</div><div class="scan-symbol">' + r.symbol + ' &middot; Best for: <span style="color:' + r.bestColor + ';">' + r.bestLabel + '</span></div></div>';
-                h += '<div class="scan-scores">';
-                h += '<div class="scan-score-item"><span class="scan-score-label">ST</span><span style="color:' + verdictScoreColor(r.stScore) + ';">' + r.stScore + '</span></div>';
-                h += '<div class="scan-score-item"><span class="scan-score-label">LT</span><span style="color:' + verdictScoreColor(r.ltScore) + ';">' + r.ltScore + '</span></div>';
-                h += '<div class="scan-score-item"><span class="scan-score-label">Div</span><span style="color:' + verdictScoreColor(r.divScore) + ';">' + r.divScore + '</span></div>';
-                h += '</div>';
-                h += '<div class="scan-main-score" style="color:' + scoreColor + ';">' + r.relevantScore + '</div>';
-                h += '</div>';
-            });
-            if (results.length === 0 && completed > 0) h = '<div style="text-align:center;padding:20px;color:var(--text-muted);">No matching stocks found so far&hellip;</div>';
-            resEl.innerHTML = h;
-        }
-        function closeCuratedModal(event) {
-            if (event && event.target.id !== 'curated-modal') return;
-            _scanAbort = true;
-            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
-            var el = document.getElementById('curated-modal');
-            if (el) el.remove();
-        }
-        function launchVerdictFromCurated(symbol) {
-            closeCuratedModal(null);
-            switchTab('verdict');
-            document.getElementById('verdict-search').value = symbol;
-            fetchVerdictData();
         }
 
         let currentTab = 'analysis';
