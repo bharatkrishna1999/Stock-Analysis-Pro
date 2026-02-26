@@ -3506,24 +3506,24 @@ def index():
             _scanAbort = false;
             var labels = getProfileLabels();
             var relLabel = getRelevantLabel();
-            var scanList = nifty50List.slice(0, 25);
+            var scanList = allTickers.slice();
             var total = scanList.length;
             var html = '<div class="curated-modal" id="curated-modal" onclick="closeCuratedModal(event)">';
             html += '<div class="curated-modal-box">';
             html += '<div class="curated-modal-title">&#128269; Live Stock Scanner</div>';
-            html += '<div class="curated-modal-sub">Scanning <strong>' + total + ' Nifty 50 stocks</strong> and ranking by <strong style="color:var(--accent-cyan);">' + labels.horizon + ' &middot; ' + labels.risk + ' &middot; ' + labels.goal + '</strong> score.<br>Results appear as each stock is analysed — best matches rise to the top.</div>';
+            html += '<div class="curated-modal-sub">Scanning <strong>' + total + ' NSE stocks</strong> and ranking by <strong style="color:var(--accent-cyan);">' + labels.horizon + ' &middot; ' + labels.risk + ' &middot; ' + labels.goal + '</strong> score.<br>Results appear as each stock is analysed — best matches rise to the top.</div>';
             html += '<div id="scan-progress-bar" style="background:var(--bg-dark);border-radius:8px;height:6px;margin-bottom:16px;overflow:hidden;"><div id="scan-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.3s;border-radius:8px;"></div></div>';
             html += '<div id="scan-status" style="font-size:0.78em;color:var(--text-muted);margin-bottom:12px;">Scanning 0/' + total + ' &mdash; please wait&hellip;</div>';
             html += '<div id="scan-results"></div>';
             html += '<button class="curated-close-btn" onclick="closeCuratedModal(null)">&#10005; Close</button>';
             html += '</div></div>';
             document.body.insertAdjacentHTML('beforeend', html);
-            // Fire scans with limited concurrency (5 at a time)
+            // Fire scans with limited concurrency (8 at a time)
             var results = [];
             var completed = 0;
             var queue = scanList.slice();
             var active = 0;
-            var MAX_CONCURRENT = 5;
+            var MAX_CONCURRENT = 8;
             function launchNext() {
                 while (active < MAX_CONCURRENT && queue.length > 0 && !_scanAbort) {
                     var sym = queue.shift();
