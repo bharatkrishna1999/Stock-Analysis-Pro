@@ -2562,6 +2562,71 @@ class Analyzer:
             except Exception:
                 pass
 
+            # --- Compute RoCE (Return on Capital Employed) ---
+            roce = None
+            margin_trend = []
+            try:
+                income_stmt = ticker_obj.income_stmt
+                if income_stmt is not None and not income_stmt.empty:
+                    ebit_val = None
+                    for row_name in ['EBIT', 'Operating Income', 'Operating Income Or Loss']:
+                        if row_name in income_stmt.index:
+                            v = income_stmt.loc[row_name].iloc[0]
+                            if pd.notna(v):
+                                ebit_val = float(v)
+                                break
+                    if ebit_val is not None and balance_sheet is not None and not balance_sheet.empty:
+                        total_assets = None
+                        curr_liabilities = None
+                        for row_name in ['Total Assets']:
+                            if row_name in balance_sheet.index:
+                                v = balance_sheet.loc[row_name].iloc[0]
+                                if pd.notna(v):
+                                    total_assets = float(v)
+                                    break
+                        for row_name in ['Current Liabilities', 'Total Current Liabilities']:
+                            if row_name in balance_sheet.index:
+                                v = balance_sheet.loc[row_name].iloc[0]
+                                if pd.notna(v):
+                                    curr_liabilities = float(v)
+                                    break
+                        if total_assets and total_assets > 0:
+                            cap_employed = total_assets - (curr_liabilities or 0)
+                            if cap_employed > 0:
+                                roce = round(ebit_val / cap_employed, 4)
+                    # --- Margin and Revenue trend (all available years) ---
+                    revenue_row = None
+                    op_income_row = None
+                    net_income_row = None
+                    for r in ['Total Revenue', 'Revenue', 'Net Revenue']:
+                        if r in income_stmt.index:
+                            revenue_row = income_stmt.loc[r]
+                            break
+                    for r in ['Operating Income', 'EBIT', 'Operating Income Or Loss']:
+                        if r in income_stmt.index:
+                            op_income_row = income_stmt.loc[r]
+                            break
+                    for r in ['Net Income', 'Net Income From Continuing Operations']:
+                        if r in income_stmt.index:
+                            net_income_row = income_stmt.loc[r]
+                            break
+                    if revenue_row is not None:
+                        for col in revenue_row.dropna().index:
+                            yr = col.year if hasattr(col, 'year') else int(str(col)[:4])
+                            rev = float(revenue_row[col]) if pd.notna(revenue_row[col]) else None
+                            op = float(op_income_row[col]) if (op_income_row is not None and col in op_income_row.index and pd.notna(op_income_row[col])) else None
+                            net = float(net_income_row[col]) if (net_income_row is not None and col in net_income_row.index and pd.notna(net_income_row[col])) else None
+                            if rev and rev > 0:
+                                margin_trend.append({
+                                    'year': yr,
+                                    'revenue': int(round(rev)),
+                                    'op_margin': round(op / rev * 100, 1) if op is not None else None,
+                                    'net_margin': round(net / rev * 100, 1) if net is not None else None,
+                                })
+                        margin_trend.sort(key=lambda x: x['year'])
+            except Exception:
+                pass
+
             # Suggested growth rate: clamp historical CAGR to [3%, 40%]
             if historical_growth is not None:
                 suggested_growth = min(max(float(historical_growth), 0.03), 0.40)
@@ -2587,6 +2652,8 @@ class Analyzer:
                 'pb_ratio': info.get('priceToBook'),
                 'ev_ebitda': info.get('enterpriseToEbitda'),
                 'roe': info.get('returnOnEquity'),
+                'roce': roce,
+                'margin_trend': margin_trend,
                 'fcf_history': fcf_history,
             }
         except Exception as e:
@@ -3087,10 +3154,64 @@ def index():
         .vd-load-status.loading { color:var(--warning); }
         .vd-load-status.error { color:var(--danger); }
         .vd-divider { height:1px;background:var(--border-color);margin:6px 0 14px; }
+        /* Investor Profile */
+        .pref-group { display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;margin-bottom:4px; }
+        .pref-btn { background:var(--bg-dark);color:var(--text-secondary);border:1px solid var(--border-color);border-radius:20px;padding:6px 14px;font-size:0.82em;font-weight:600;cursor:pointer;transition:all 0.2s;font-family:'Inter',sans-serif; }
+        .pref-btn:hover { border-color:var(--accent-cyan);color:var(--text-primary); }
+        .pref-btn.active { background:rgba(56,126,209,0.15);border-color:var(--accent-cyan);color:var(--accent-cyan); }
+        .pref-label { font-size:0.75em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin-top:14px;margin-bottom:2px; }
+        .suggest-stocks-btn { width:100%;margin-top:18px;padding:11px;background:rgba(56,126,209,0.12);border:1px solid rgba(56,126,209,0.35);color:var(--accent-cyan);border-radius:10px;font-size:0.9em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s; }
+        .suggest-stocks-btn:hover { background:rgba(56,126,209,0.22); }
+        /* Trend indicators */
+        .trend-section-title { font-size:0.75em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin:16px 0 8px; }
+        .trend-row { display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:8px;background:var(--bg-dark);margin-bottom:6px; }
+        .trend-label { font-size:0.78em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.4px;min-width:130px; }
+        .trend-values { font-size:0.8em;color:var(--text-secondary);font-family:'Space Grotesk',sans-serif;flex:1; }
+        .trend-arrow { font-size:1em;font-weight:700;min-width:20px;text-align:right; }
+        .trend-arrow.up { color:var(--accent-green); }
+        .trend-arrow.down { color:var(--danger); }
+        .trend-arrow.flat { color:var(--warning); }
+        /* Score card clickable */
+        .vd-score-card { cursor:pointer; }
+        /* Curated stocks modal */
+        .curated-modal { position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:16px; }
+        .curated-modal-box { background:var(--bg-card);border-radius:16px;border:1px solid var(--border-color);padding:26px;max-width:680px;width:100%;max-height:82vh;overflow-y:auto; }
+        .curated-modal-title { font-family:'Space Grotesk',sans-serif;font-size:1.2em;font-weight:700;margin-bottom:4px; }
+        .curated-modal-sub { color:var(--text-muted);font-size:0.83em;margin-bottom:18px;line-height:1.5; }
+        .curated-group { margin-bottom:18px; }
+        .curated-group-title { font-size:0.74em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border-color); }
+        .curated-stocks { display:flex;flex-wrap:wrap;gap:8px; }
+        .curated-stock-btn { background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:20px;padding:6px 14px;font-size:0.83em;cursor:pointer;transition:all 0.2s;font-family:'Space Grotesk',sans-serif;font-weight:600; }
+        .curated-stock-btn:hover { border-color:var(--accent-cyan);color:var(--accent-cyan);background:rgba(56,126,209,0.1); }
+        .curated-close-btn { width:100%;padding:10px;background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:10px;font-size:0.88em;cursor:pointer;margin-top:16px;font-family:'Inter',sans-serif; }
+        /* Scanner tab */
+        .scanner-start-btn { width:100%;margin-top:18px;padding:11px;background:rgba(56,126,209,0.12);border:1px solid rgba(56,126,209,0.35);color:var(--accent-cyan);border-radius:10px;font-size:0.9em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s; }
+        .scanner-start-btn:hover { background:rgba(56,126,209,0.22); }
+        .scanner-stop-btn { width:100%;margin-top:8px;padding:9px;background:rgba(220,53,69,0.1);border:1px solid rgba(220,53,69,0.3);color:var(--danger);border-radius:10px;font-size:0.85em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s;display:none; }
+        .scanner-stop-btn:hover { background:rgba(220,53,69,0.2); }
+        .sc-stat-row { display:flex;flex-wrap:wrap;gap:16px;margin-bottom:14px;font-size:0.82em;color:var(--text-muted); }
+        .sc-stat-row span { display:flex;align-items:center;gap:4px; }
+        .sc-stat-row strong { color:var(--text-primary); }
+        /* Live scan rows */
+        .scan-row { display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--bg-dark);border:1px solid var(--border-color);border-radius:10px;margin-bottom:8px;transition:border-color 0.2s,background 0.2s; }
+        .scan-row:hover { border-color:var(--accent-cyan);background:rgba(56,126,209,0.06); }
+        .scan-rank { font-family:'Space Grotesk',sans-serif;font-size:0.82em;font-weight:700;color:var(--text-muted);min-width:22px;text-align:center; }
+        .scan-info { flex:1;min-width:0; }
+        .scan-name { font-family:'Space Grotesk',sans-serif;font-size:0.92em;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+        .scan-symbol { font-size:0.74em;color:var(--text-muted); }
+        .scan-scores { display:flex;gap:10px; }
+        .scan-score-item { text-align:center;min-width:32px; }
+        .scan-score-label { display:block;font-size:0.62em;text-transform:uppercase;color:var(--text-muted);letter-spacing:0.3px; }
+        .scan-score-item span:last-child { font-family:'Space Grotesk',sans-serif;font-size:0.88em;font-weight:700; }
+        .scan-main-score { font-family:'Space Grotesk',sans-serif;font-size:1.4em;font-weight:700;min-width:40px;text-align:right; }
+        @media (max-width:480px) { .scan-scores { display:none; } .scan-main-score { font-size:1.2em; } }
+        /* Profile badge on verdict overall */
+        .profile-match-badge { display:inline-block;margin-top:10px;padding:4px 12px;border-radius:20px;font-size:0.78em;font-weight:700;background:rgba(56,126,209,0.15);color:var(--accent-cyan);border:1px solid rgba(56,126,209,0.3); }
         @media (max-width:768px) {
             .vd-score-grid { grid-template-columns:1fr; }
             .vd-metrics { grid-template-columns:1fr 1fr; }
             .vd-trade-levels { grid-template-columns:1fr 1fr 1fr; }
+            .trend-label { min-width:100px; }
         }
     </style>
 </head>
@@ -3104,6 +3225,7 @@ def index():
                 <button class="nav-link" data-tab="dcf" onclick="switchTab('dcf', event)">DCF Valuation</button>
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
+                <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
             </div>
             <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
                 <span></span><span></span><span></span>
@@ -3117,6 +3239,7 @@ def index():
         <button class="mobile-menu-item" data-tab="dcf" onclick="switchTab('dcf', event); closeMobileMenu()">DCF Valuation</button>
         <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
+        <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
     </div>
     <header>
         <div class="container">
@@ -3271,21 +3394,27 @@ def index():
                         <button class="verdict-fetch-btn" onclick="fetchVerdictData()">Analyse &amp; Get Verdict</button>
                     </div>
                     <div class="card">
-                        <h2>What You Get</h2>
-                        <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px;">
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-cyan);">
-                                <strong style="color:var(--accent-cyan);font-size:0.88em;">Short-Term Trading</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Entry price, stop loss, target, timeframe and why the technical setup makes sense right now.</p>
-                            </div>
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-green);">
-                                <strong style="color:var(--accent-green);font-size:0.88em;">Long-Term Holding</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">DCF intrinsic value, FCF growth, beta and market dependency to assess long-term wealth creation.</p>
-                            </div>
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--warning);">
-                                <strong style="color:var(--warning);font-size:0.88em;">Dividend Income</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Yield, stability and upcoming dividend dates to evaluate as a passive income candidate.</p>
-                            </div>
+                        <h2>Your Investor Profile</h2>
+                        <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:4px;line-height:1.6;">Tell us your goals — we'll personalise the verdict and surface stocks that match your style.</p>
+                        <div class="pref-label">Investment Horizon</div>
+                        <div class="pref-group" id="pref-horizon">
+                            <button class="pref-btn" data-value="short" onclick="setPref('horizon','short',this)">Short-Term (weeks)</button>
+                            <button class="pref-btn" data-value="medium" onclick="setPref('horizon','medium',this)">Medium (months)</button>
+                            <button class="pref-btn active" data-value="long" onclick="setPref('horizon','long',this)">Long-Term (years)</button>
                         </div>
+                        <div class="pref-label">Risk Tolerance</div>
+                        <div class="pref-group" id="pref-risk">
+                            <button class="pref-btn" data-value="low" onclick="setPref('risk','low',this)">Low (&lt;10% drawdown)</button>
+                            <button class="pref-btn active" data-value="medium" onclick="setPref('risk','medium',this)">Medium (up to 30%)</button>
+                            <button class="pref-btn" data-value="high" onclick="setPref('risk','high',this)">High (40–50%+ ok)</button>
+                        </div>
+                        <div class="pref-label">Primary Goal</div>
+                        <div class="pref-group" id="pref-goal">
+                            <button class="pref-btn active" data-value="growth" onclick="setPref('goal','growth',this)">Capital Growth</button>
+                            <button class="pref-btn" data-value="income" onclick="setPref('goal','income',this)">Dividend Income</button>
+                            <button class="pref-btn" data-value="balanced" onclick="setPref('goal','balanced',this)">Balanced</button>
+                        </div>
+                        <button class="suggest-stocks-btn" onclick="showCuratedStocks()">&#128269; Get Stock Suggestions for My Profile</button>
                     </div>
                 </div>
             </div>
@@ -3293,6 +3422,43 @@ def index():
                 <button class="back-btn" onclick="verdictGoBack()">&#8592; Back to Search</button>
                 <div id="verdict-result"></div>
             </div>
+        </div>
+        <div id="scanner-tab" class="tab-content">
+            <div class="grid" style="align-items:start;">
+                <div class="card">
+                    <h2>&#128269; Live Stock Scanner</h2>
+                    <p style="color:var(--text-secondary);font-size:0.87em;line-height:1.6;margin-bottom:4px;">Scans all 292 NSE stocks and ranks them by your investor profile. Results stay here when you click a stock and come back.</p>
+                    <div class="pref-label">Investment Horizon</div>
+                    <div class="pref-group" id="sc-pref-horizon">
+                        <button class="pref-btn" data-value="short" onclick="setPref('horizon','short',this)">Short-term</button>
+                        <button class="pref-btn" data-value="medium" onclick="setPref('horizon','medium',this)">Medium-term</button>
+                        <button class="pref-btn" data-value="long" onclick="setPref('horizon','long',this)">Long-term</button>
+                    </div>
+                    <div class="pref-label">Risk Tolerance</div>
+                    <div class="pref-group" id="sc-pref-risk">
+                        <button class="pref-btn" data-value="low" onclick="setPref('risk','low',this)">Low Risk</button>
+                        <button class="pref-btn" data-value="medium" onclick="setPref('risk','medium',this)">Medium Risk</button>
+                        <button class="pref-btn" data-value="high" onclick="setPref('risk','high',this)">High Risk</button>
+                    </div>
+                    <div class="pref-label">Investment Goal</div>
+                    <div class="pref-group" id="sc-pref-goal">
+                        <button class="pref-btn" data-value="growth" onclick="setPref('goal','growth',this)">Capital Growth</button>
+                        <button class="pref-btn" data-value="income" onclick="setPref('goal','income',this)">Dividend Income</button>
+                        <button class="pref-btn" data-value="balanced" onclick="setPref('goal','balanced',this)">Balanced</button>
+                    </div>
+                    <button class="scanner-start-btn" id="scanner-start-btn" onclick="startScanInTab()">&#128269; Scan NSE Universe</button>
+                    <button class="scanner-stop-btn" id="scanner-stop-btn" onclick="stopScanInTab()">&#9632; Stop Scan</button>
+                </div>
+                <div class="card" id="sc-status-card" style="display:none;">
+                    <div id="sc-sub" style="font-size:0.88em;color:var(--text-muted);margin-bottom:12px;line-height:1.5;"></div>
+                    <div style="background:var(--bg-dark);border-radius:8px;height:6px;overflow:hidden;margin-bottom:10px;">
+                        <div id="sc-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.35s;border-radius:8px;"></div>
+                    </div>
+                    <div id="sc-status-text" style="font-size:0.78em;color:var(--text-muted);margin-bottom:10px;"></div>
+                    <div class="sc-stat-row" id="sc-stat-row"></div>
+                </div>
+            </div>
+            <div id="scanner-results-area" style="margin-top:18px;"></div>
         </div>
     </main>
     <script>
@@ -3312,6 +3478,262 @@ def index():
             return "";
         }
         const allTickers = [...new Set(Object.values(stocks).flat())];
+
+        // ===== INVESTOR PROFILE =====
+        var investorProfile = { horizon: 'long', risk: 'medium', goal: 'growth' };
+        function loadProfile() {
+            try {
+                var p = JSON.parse(localStorage.getItem('stockProProfile'));
+                if (p && typeof p === 'object') investorProfile = { horizon: p.horizon || null, risk: p.risk || null, goal: p.goal || null };
+            } catch(e) {}
+            updateProfileUI();
+        }
+        function saveProfile() {
+            try { localStorage.setItem('stockProProfile', JSON.stringify(investorProfile)); } catch(e) {}
+        }
+        function setPref(key, val, el) {
+            var grp = el.closest('.pref-group');
+            if (investorProfile[key] === val) {
+                investorProfile[key] = null;
+                saveProfile();
+                grp.querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
+                return;
+            }
+            investorProfile[key] = val;
+            saveProfile();
+            grp.querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
+            el.classList.add('active');
+        }
+        function updateProfileUI() {
+            ['horizon', 'risk', 'goal'].forEach(function(key) {
+                // Sync both verdict-tab profile group and scanner-tab profile group
+                ['pref-' + key, 'sc-pref-' + key].forEach(function(id) {
+                    var grp = document.getElementById(id);
+                    if (!grp) return;
+                    grp.querySelectorAll('.pref-btn').forEach(function(b) {
+                        b.classList.toggle('active', b.dataset.value === investorProfile[key]);
+                    });
+                });
+            });
+        }
+
+        // ===== LIVE STOCK SCANNER BY PROFILE =====
+        var _scanAbort = null;
+        function getProfileLabels() {
+            return {
+                horizon: { short: 'Short-Term', medium: 'Medium-Term', long: 'Long-Term' }[investorProfile.horizon] || 'Any Horizon',
+                risk: { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' }[investorProfile.risk] || 'Any Risk',
+                goal: { growth: 'Capital Growth', income: 'Dividend Income', balanced: 'Balanced' }[investorProfile.goal] || 'Any Goal'
+            };
+        }
+        function getRelevantScore(stScore, ltScore, divScore) {
+            var g = investorProfile.goal, h = investorProfile.horizon;
+            if (g === 'income') return divScore;
+            if (g === 'balanced') return Math.round((stScore + ltScore + divScore) / 3);
+            if (h === 'short') return stScore;
+            if (h === 'medium') return Math.round((stScore + ltScore) / 2);
+            return ltScore;
+        }
+        function getRelevantLabel() {
+            var g = investorProfile.goal, h = investorProfile.horizon;
+            if (g === 'income') return 'Dividend';
+            if (g === 'balanced') return 'Balanced';
+            if (h === 'short') return 'Short-Term';
+            if (h === 'medium') return 'Medium-Term';
+            return 'Long-Term';
+        }
+        function passesRiskFilter(stRes, ltRes, dcfD, regr) {
+            var r = investorProfile.risk;
+            if (!r) return true;
+            if (r === 'low') {
+                if (dcfD && dcfD.pb_ratio && dcfD.pb_ratio > 8) return false;
+                if (regr && regr.beta && regr.beta > 1.5) return false;
+            }
+            return true;
+        }
+        // ===== SCANNER TAB — persistent, no popup =====
+        var _prefilterES = null;
+        var _scanRunning = false;
+
+        function showCuratedStocks() {
+            // "Get Stock Suggestions" button in verdict tab → navigate to Scanner tab
+            switchTab('scanner');
+            if (!_scanRunning) startScanInTab();
+        }
+        function startScanInTab() {
+            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
+            _scanAbort = false;
+            _scanRunning = true;
+            var labels   = getProfileLabels();
+            var relLabel = getRelevantLabel();
+            var universeTotal = allTickers.length;
+            // Show status card, toggle buttons
+            var statusCard = document.getElementById('sc-status-card');
+            if (statusCard) statusCard.style.display = '';
+            var startBtn = document.getElementById('scanner-start-btn');
+            var stopBtn  = document.getElementById('scanner-stop-btn');
+            if (startBtn) startBtn.style.display = 'none';
+            if (stopBtn)  stopBtn.style.display  = '';
+            // Helper refs
+            function setSub(msg)  { var el = document.getElementById('sc-sub');         if (el) el.innerHTML  = msg; }
+            function setFill(pct) { var el = document.getElementById('sc-progress-fill');if (el) el.style.width = pct + '%'; }
+            function setStatus(msg){ var el = document.getElementById('sc-status-text'); if (el) el.innerHTML  = msg; }
+            function setStats(chk, passed, deepDone, deepTot) {
+                var el = document.getElementById('sc-stat-row');
+                if (!el) return;
+                el.innerHTML = '<span>Checked <strong>' + chk + '/' + universeTotal + '</strong></span>'
+                             + '<span style="color:var(--accent-green);">&#9679; ' + passed + ' qualified</span>'
+                             + '<span>Deep-scanned <strong>' + deepDone + '/' + deepTot + '</strong></span>';
+            }
+            setSub('Filtering <strong>' + universeTotal + ' NSE stocks</strong> by <strong style="color:var(--accent-cyan);">'
+                   + labels.risk + ' risk &middot; ' + labels.horizon + ' horizon &middot; ' + labels.goal + '</strong>');
+            setFill(0);
+            setStatus('Connecting to data stream&hellip;');
+            // Clear previous results
+            var resEl = document.getElementById('scanner-results-area');
+            if (resEl) resEl.innerHTML = '';
+            // Pipeline state
+            var deepResults   = [];
+            var deepCompleted = 0;
+            var deepTotal     = 0;
+            var deepQueue     = [];
+            var deepActive    = 0;
+            var MAX_CONCURRENT = 5;
+            var pfChecked = 0;
+            var pfPassed  = 0;
+            var pfDone    = false;
+            function finishScan() {
+                _scanRunning = false;
+                if (startBtn) startBtn.style.display = '';
+                if (stopBtn)  stopBtn.style.display  = 'none';
+                if (startBtn) startBtn.textContent = '&#128269; Re-scan with Current Profile';
+            }
+            function updateProgress() {
+                var bar = pfDone
+                    ? 60 + Math.round((deepCompleted / Math.max(deepTotal, 1)) * 40)
+                    : Math.min(55, Math.round((pfChecked / universeTotal) * 55));
+                setFill(bar);
+                setStats(pfChecked, pfPassed, deepCompleted, deepTotal);
+                if (!pfDone) {
+                    setStatus('Filtering stocks&hellip;');
+                } else if (deepCompleted < deepTotal) {
+                    setStatus('Pre-filter done &mdash; deep scanning remaining stocks&hellip;');
+                } else {
+                    setFill(100);
+                    setStatus('&#9989; Complete &mdash; <strong>' + deepResults.length + '</strong> stocks ranked by <strong>' + relLabel + '</strong> score');
+                    finishScan();
+                }
+            }
+            function renderTabResults() {
+                if (!resEl) return;
+                var h = '';
+                deepResults.forEach(function(r, i) {
+                    var scoreColor = r.relevantScore >= 65 ? 'var(--accent-green)' : r.relevantScore >= 40 ? 'var(--warning)' : 'var(--danger)';
+                    h += '<div class="scan-row" onclick="openScannerStock(\\'' + r.symbol + '\\')" style="cursor:pointer;">';
+                    h += '<div class="scan-rank">' + (i + 1) + '</div>';
+                    h += '<div class="scan-info"><div class="scan-name">' + r.name + '</div>';
+                    h += '<div class="scan-symbol">' + r.symbol + ' &middot; Best for: <span style="color:' + r.bestColor + ';">' + r.bestLabel + '</span></div></div>';
+                    h += '<div class="scan-scores">';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">ST</span><span style="color:' + verdictScoreColor(r.stScore) + ';">' + r.stScore + '</span></div>';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">LT</span><span style="color:' + verdictScoreColor(r.ltScore) + ';">' + r.ltScore + '</span></div>';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">Div</span><span style="color:' + verdictScoreColor(r.divScore) + ';">' + r.divScore + '</span></div>';
+                    h += '</div>';
+                    h += '<div class="scan-main-score" style="color:' + scoreColor + ';">' + r.relevantScore + '</div>';
+                    h += '</div>';
+                });
+                if (deepResults.length === 0 && pfDone && deepTotal === 0)
+                    h = '<div style="text-align:center;padding:32px;color:var(--text-muted);">No stocks passed the filter. Try relaxing your risk or horizon settings.</div>';
+                resEl.innerHTML = h;
+            }
+            function launchDeepNext() {
+                while (deepActive < MAX_CONCURRENT && deepQueue.length > 0 && !_scanAbort) {
+                    var sym = deepQueue.shift();
+                    deepActive++;
+                    scanOneStock(sym).then(function(res) {
+                        deepActive--;
+                        deepCompleted++;
+                        if (_scanAbort) return;
+                        if (res) deepResults.push(res);
+                        deepResults.sort(function(a, b) { return b.relevantScore - a.relevantScore; });
+                        renderTabResults();
+                        updateProgress();
+                        launchDeepNext();
+                    });
+                }
+            }
+            // SSE prefilter stream
+            var risk    = investorProfile.risk    || 'medium';
+            var horizon = investorProfile.horizon || 'long';
+            var goal    = investorProfile.goal    || 'growth';
+            var es = new EventSource('/prefilter-stream?risk=' + encodeURIComponent(risk)
+                                    + '&horizon=' + encodeURIComponent(horizon)
+                                    + '&goal=' + encodeURIComponent(goal));
+            _prefilterES = es;
+            es.onmessage = function(evt) {
+                if (_scanAbort) { es.close(); _prefilterES = null; return; }
+                var d = JSON.parse(evt.data);
+                if (d.type === 'pass') {
+                    pfPassed++;
+                    deepTotal++;
+                    deepQueue.push(d.symbol);
+                    launchDeepNext();
+                    updateProgress();
+                } else if (d.type === 'progress') {
+                    pfChecked = d.checked;
+                    updateProgress();
+                } else if (d.type === 'done') {
+                    pfDone    = true;
+                    pfChecked = d.checked;
+                    pfPassed  = d.passed;
+                    es.close();
+                    _prefilterES = null;
+                    updateProgress();
+                    if (deepTotal === 0) { renderTabResults(); finishScan(); }
+                }
+            };
+            es.onerror = function() {
+                es.close(); _prefilterES = null;
+                if (!pfDone) { pfDone = true; updateProgress(); if (deepTotal === 0) finishScan(); }
+            };
+        }
+        function stopScanInTab() {
+            _scanAbort = true;
+            _scanRunning = false;
+            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
+            var startBtn = document.getElementById('scanner-start-btn');
+            var stopBtn  = document.getElementById('scanner-stop-btn');
+            if (startBtn) { startBtn.style.display = ''; startBtn.textContent = '&#128269; Re-scan with Current Profile'; }
+            if (stopBtn)  stopBtn.style.display = 'none';
+            var el = document.getElementById('sc-status-text');
+            if (el) el.innerHTML = 'Scan stopped. Click Re-scan to start again.';
+        }
+        function openScannerStock(symbol) {
+            // Navigate to verdict tab — scanner results persist when user returns
+            switchTab('verdict');
+            document.getElementById('verdict-search').value = symbol;
+            fetchVerdictData();
+        }
+        function scanOneStock(symbol) {
+            return Promise.all([
+                fetch('/analyze?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;}),
+                fetch('/dcf-data?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;}),
+                fetch('/dividend-info?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;})
+            ]).then(function(data) {
+                var tech = data[0], dcfD = data[1], divD = data[2];
+                if (!tech || tech.error) return null;
+                var stRes = scoreShortTerm(tech);
+                var ltRes = scoreLongTerm(tech, dcfD, null);
+                var divRes = scoreDividend(divD);
+                var relevantScore = getRelevantScore(stRes.score, ltRes.score, divRes.score);
+                if (!passesRiskFilter(stRes, ltRes, dcfD, null)) relevantScore = Math.round(relevantScore * 0.6);
+                var name = (dcfD && dcfD.name) ? dcfD.name : getStockName(symbol);
+                var mx = Math.max(stRes.score, ltRes.score, divRes.score);
+                var bestLabel = stRes.score === mx ? 'Short-Term' : ltRes.score === mx ? 'Long-Term' : 'Dividend';
+                var bestColor = stRes.score === mx ? 'var(--accent-cyan)' : ltRes.score === mx ? 'var(--accent-green)' : 'var(--warning)';
+                return { symbol: symbol, name: name, stScore: stRes.score, ltScore: ltRes.score, divScore: divRes.score, relevantScore: relevantScore, bestLabel: bestLabel, bestColor: bestColor };
+            }).catch(function() { return null; });
+        }
+
         let currentTab = 'analysis';
         let loadedTabs = new Set();
         function ensureTabLoaded(tab) {
@@ -4339,6 +4761,8 @@ def index():
             var netCash = fmtCr(data.cash - data.total_debt);
             var pe = data.pe_ratio ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
             var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
+            var roce = data.roce ? (data.roce * 100).toFixed(1) + '%' : 'N/A';
+            var roe = data.roe ? (data.roe * 100).toFixed(1) + '%' : 'N/A';
             var priceStr = '\u20b9' + data.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
             var fcfStr = fmtCr(data.current_fcf);
             var h = '';
@@ -4353,6 +4777,8 @@ def index():
             h += '<div class="dcf-stat" style="border-left-color:var(--warning);"><div class="dcf-stat-label">P/E Ratio</div><div class="dcf-stat-value">' + pe + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--danger);"><div class="dcf-stat-label">P/B Ratio</div><div class="dcf-stat-value">' + pb + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--text-muted);"><div class="dcf-stat-label">Hist. FCF CAGR</div><div class="dcf-stat-value">' + histCagr + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">RoCE</div><div class="dcf-stat-value" style="color:' + (data.roce ? (data.roce*100>=20?'var(--accent-green)':data.roce*100>=12?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roce + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">RoE</div><div class="dcf-stat-value" style="color:' + (data.roe ? (data.roe*100>=15?'var(--accent-green)':data.roe*100>=8?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roe + '</div></div>';
             h += '</div>';
             if (data.fcf_history && data.fcf_history.length > 1) h += renderFCFHistory(data.fcf_history);
             h += '<div class="dcf-valuation-grid">';
@@ -4557,6 +4983,18 @@ def index():
                     if (pct >= 20) score += 15; else if (pct >= 10) score += 8; else if (pct >= 0) score += 3;
                     items.push({ label: 'FCF Growth', value: pct.toFixed(1) + '%/yr', color: pct >= 15 ? 'green' : pct >= 5 ? 'yellow' : 'red' });
                 }
+                const roce = dcfD.roce;
+                if (roce !== null && roce !== undefined) {
+                    const rocePct = roce * 100;
+                    if (rocePct >= 20) score += 12; else if (rocePct >= 12) score += 6; else if (rocePct >= 0) score += 2; else score -= 4;
+                    items.push({ label: 'RoCE', value: rocePct.toFixed(1) + '%', color: rocePct >= 20 ? 'green' : rocePct >= 12 ? 'yellow' : 'red' });
+                }
+                const roe = dcfD.roe;
+                if (roe !== null && roe !== undefined) {
+                    const roePct = roe * 100;
+                    if (roePct >= 15) score += 8; else if (roePct >= 8) score += 4; else if (roePct < 0) score -= 5;
+                    items.push({ label: 'RoE', value: roePct.toFixed(1) + '%', color: roePct >= 15 ? 'green' : roePct >= 8 ? 'yellow' : 'red' });
+                }
             }
             if (regr && !regr.error && regr.beta !== undefined) {
                 const beta = regr.beta || 1;
@@ -4611,26 +5049,34 @@ def index():
 
         function buildScoreGrid(stRes, ltRes, divRes) {
             var cards = [
-                { title: '⚡ Short-Term Trading', res: stRes, color: 'var(--accent-cyan)' },
-                { title: '📈 Long-Term Holding',  res: ltRes, color: 'var(--accent-green)' },
-                { title: '💰 Dividend Income',    res: divRes, color: 'var(--warning)' }
+                { title: '⚡ Short-Term Trading', res: stRes, color: 'var(--accent-cyan)',   sectionId: 'vd-st-section' },
+                { title: '📈 Long-Term Holding',  res: ltRes, color: 'var(--accent-green)',  sectionId: 'vd-lt-section' },
+                { title: '💰 Dividend Income',    res: divRes, color: 'var(--warning)',       sectionId: 'vd-div-section' }
             ];
             var maxScore = Math.max(stRes.score, ltRes.score, divRes.score);
             var html = '<div class="vd-score-grid">';
             cards.forEach(function(c) {
                 var [badgeText, badgeClass] = verdictBadge(c.res.score);
                 var isBest = (c.res.score === maxScore && c.res.score >= 55);
-                html += `<div class="vd-score-card${isBest ? ' vd-best' : ''}">
+                html += `<div class="vd-score-card${isBest ? ' vd-best' : ''}" title="Click to expand details" onclick="scrollToVdSection('${c.sectionId}')">
                     <div class="vd-score-label" style="color:${c.color};">${c.title}</div>
                     <div class="vd-score-ring">
                         ${buildScoreRing(c.res.score, c.color)}
                         <div class="vd-score-ring-num" style="color:${c.color};">${c.res.score}</div>
                     </div>
                     <div class="vd-verdict-badge ${badgeClass}">${isBest ? '&#9733; ' : ''}${badgeText}</div>
+                    <div style="font-size:0.72em;color:var(--text-muted);margin-top:6px;">Tap to expand &#8595;</div>
                 </div>`;
             });
             html += '</div>';
             return html;
+        }
+
+        function scrollToVdSection(id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (!el.classList.contains('open')) el.classList.add('open');
+            setTimeout(function() { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
         }
 
         function verdictToggle(el) {
@@ -4652,7 +5098,7 @@ def index():
             var s = tech && tech.signal ? tech.signal : {};
             var d = tech && tech.details ? tech.details : {};
             var [badge, bdgClass] = verdictBadge(stRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-st-section">';
             h += vdSectionHeader('&#9889; Short-Term Trading', 'var(--accent-cyan)', badge, bdgClass, stRes.score);
             if (stRes.error) { h += '<p style="color:var(--text-muted);margin:0;">Technical data unavailable.</p>'; }
             else {
@@ -4686,7 +5132,7 @@ def index():
 
         function buildLTSection(tech, dcfD, regr, ltRes) {
             var [badge, bdgClass] = verdictBadge(ltRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-lt-section">';
             h += vdSectionHeader('&#128200; Long-Term Holding', 'var(--accent-green)', badge, bdgClass, ltRes.score);
             h += buildMetricsHtml(ltRes.items);
             var narrativeParts = [];
@@ -4718,13 +5164,53 @@ def index():
                 else if (dep > 0.7) narrativeParts.push('High market dependency (' + (dep * 100).toFixed(0) + '%) — performance closely tracks the Nifty 50.');
             }
             if (narrativeParts.length > 0) h += '<div class="vd-narrative">' + narrativeParts.join(' ') + '</div>';
+            // --- Trend section ---
+            if (dcfD && dcfD.margin_trend && dcfD.margin_trend.length >= 2) {
+                h += buildTrendSection(dcfD.margin_trend);
+            }
             h += '</div></div>';
+            return h;
+        }
+
+        function buildTrendSection(trend) {
+            if (!trend || trend.length < 2) return '';
+            var h = '<div class="trend-section-title">&#128200; Key Trends</div>';
+            // Operating margin trend
+            var opMargins = trend.filter(function(t){ return t.op_margin !== null && t.op_margin !== undefined; });
+            if (opMargins.length >= 2) {
+                var first = opMargins[0].op_margin, last = opMargins[opMargins.length-1].op_margin;
+                var diff = last - first;
+                var arrowClass = diff > 1 ? 'up' : diff < -1 ? 'down' : 'flat';
+                var arrowSymbol = diff > 1 ? '&#8593;' : diff < -1 ? '&#8595;' : '&#8594;';
+                var valStr = opMargins.map(function(t){ return t.year + ': ' + t.op_margin + '%'; }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Operating Margin</span><span class="trend-values">' + valStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + '</span></div>';
+            }
+            // Net margin trend
+            var netMargins = trend.filter(function(t){ return t.net_margin !== null && t.net_margin !== undefined; });
+            if (netMargins.length >= 2) {
+                var first = netMargins[0].net_margin, last = netMargins[netMargins.length-1].net_margin;
+                var diff = last - first;
+                var arrowClass = diff > 1 ? 'up' : diff < -1 ? 'down' : 'flat';
+                var arrowSymbol = diff > 1 ? '&#8593;' : diff < -1 ? '&#8595;' : '&#8594;';
+                var valStr = netMargins.map(function(t){ return t.year + ': ' + t.net_margin + '%'; }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Net Profit Margin</span><span class="trend-values">' + valStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + '</span></div>';
+            }
+            // Revenue trend
+            var revs = trend.filter(function(t){ return t.revenue > 0; });
+            if (revs.length >= 2) {
+                var revFirst = revs[0].revenue, revLast = revs[revs.length-1].revenue;
+                var revGrowth = ((revLast / revFirst) - 1) * 100;
+                var arrowClass = revGrowth > 5 ? 'up' : revGrowth < -5 ? 'down' : 'flat';
+                var arrowSymbol = revGrowth > 5 ? '&#8593;' : revGrowth < -5 ? '&#8595;' : '&#8594;';
+                var revStr = revs.map(function(t){ return t.year + ': ' + fmtCr(t.revenue); }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Revenue</span><span class="trend-values">' + revStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + ' ' + revGrowth.toFixed(0) + '%</span></div>';
+            }
             return h;
         }
 
         function buildDivSection(divD, divRes) {
             var [badge, bdgClass] = verdictBadge(divRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-div-section">';
             h += vdSectionHeader('&#128176; Dividend Income', 'var(--warning)', badge, bdgClass, divRes.score);
             h += buildMetricsHtml(divRes.items);
             if (!divD || !divD.found || !divD.dividend_yield) {
@@ -4762,10 +5248,26 @@ def index():
             if (stRes.score < 40 && ltRes.score < 40) parts.push('Both short and long-term scores are weak — exercise caution.');
             if (avgScore >= 60) parts.push('Overall profile is <strong style="color:var(--accent-green);">positive</strong> across multiple dimensions.');
             else if (avgScore < 35) parts.push('Overall profile is <strong style="color:var(--danger);">weak</strong> — high risk across dimensions.');
+            // Personalised note based on investor profile
+            var profileNote = '';
+            var ph = investorProfile.horizon, pr = investorProfile.risk, pg = investorProfile.goal;
+            var profileScoreMap = { short: stRes.score, medium: Math.round((stRes.score + ltRes.score) / 2), long: ltRes.score };
+            var relevantScore = profileScoreMap[ph] || ltRes.score;
+            if (pg === 'income') relevantScore = divRes.score;
+            if (pg === 'balanced') relevantScore = Math.round(avgScore);
+            var profileLabels = { short: 'short-term trader', medium: 'medium-term investor', long: 'long-term investor' };
+            var riskLabels = { low: 'low-risk', medium: 'moderate-risk', high: 'high-risk' };
+            profileNote = 'For your profile (<strong style="color:var(--accent-cyan);">' + riskLabels[pr] + ' ' + profileLabels[ph] + '</strong>): ';
+            if (relevantScore >= 65) profileNote += 'this stock <strong style="color:var(--accent-green);">aligns well</strong> with your investment style.';
+            else if (relevantScore >= 45) profileNote += 'this stock is a <strong style="color:var(--warning);">partial fit</strong> — review the detailed sections before deciding.';
+            else profileNote += 'this stock <strong style="color:var(--danger);">may not align</strong> with your current profile. Consider exploring alternatives.';
+            // Risk warning for high-risk takers
+            if (pr === 'low' && (dcfD && dcfD.pb_ratio && dcfD.pb_ratio > 5)) profileNote += ' Note: high P/B may signal elevated risk for conservative investors.';
             var h = `<div class="vd-overall">
                 <div class="vd-overall-label">Overall Investment Verdict for ${symbol}</div>
                 <div class="vd-overall-verdict" style="color:${bestColor};">Best For: ${bestFor}</div>
                 <div class="vd-overall-reason">${parts.join(' ')}</div>
+                <div class="vd-overall-reason" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);">${profileNote}</div>
                 <div style="margin-top:16px;display:flex;justify-content:center;gap:20px;flex-wrap:wrap;">
                     <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Short-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(stRes.score)};">${stRes.score}</div></div>
                     <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Long-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(ltRes.score)};">${ltRes.score}</div></div>
@@ -4872,7 +5374,7 @@ def index():
         }
 
 
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); loadProfile(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
     </script>
 </body>
 </html>'''
@@ -5459,6 +5961,109 @@ def dcf_data_route():
     except Exception as e:
         print(f"DCF route error for {normalized_symbol}: {e}")
         return jsonify({'error': f'DCF analysis failed: {str(e)}'})
+
+
+@app.route('/prefilter-stream')
+def prefilter_stream_route():
+    """
+    SSE streaming prefilter for the live scanner.
+    Processes the NSE universe in mini-batches of 25 using yf.download(),
+    applies profile-based filters server-side, and streams only the passing
+    symbols to the browser immediately — no bulk memory accumulation.
+
+    Query params: risk (low|medium|high), horizon (short|medium|long),
+                  goal (growth|income|balanced)
+
+    Events:
+      {"type":"progress", "checked":25, "total":292, "passed":8}
+      {"type":"pass",     "symbol":"RELIANCE", "drawdown":4.1, "uptrend":true, "momentum":1.2}
+      {"type":"done",     "checked":292, "passed":45}
+    """
+    risk    = request.args.get('risk',    'medium')
+    horizon = request.args.get('horizon', 'long')
+    goal    = request.args.get('goal',    'growth')
+
+    dd_limit = {'low': 10, 'medium': 20, 'high': 100}.get(risk, 20)
+    need_uptrend = (horizon == 'long')
+    need_momentum = (goal == 'growth')
+
+    symbols_raw = list(ALL_VALID_TICKERS)
+    total = len(symbols_raw)
+    CHUNK = 25  # mini-batch size — keeps peak RAM low
+
+    def to_ns(s):
+        s = s.strip().upper()
+        return s if s.endswith('.NS') else s + '.NS'
+
+    def generate():
+        checked = 0
+        passed  = 0
+        yield f"data: {json.dumps({'type': 'meta', 'total': total})}\n\n"
+
+        for i in range(0, total, CHUNK):
+            chunk_plain = symbols_raw[i:i + CHUNK]
+            chunk_ns    = [to_ns(s) for s in chunk_plain]
+            ns_to_plain = {to_ns(s): s for s in chunk_plain}
+
+            try:
+                raw = yf.download(
+                    tickers=chunk_ns,
+                    period='3mo',
+                    interval='1d',
+                    group_by='ticker',
+                    progress=False,
+                    threads=False,   # single-threaded: gentle on 0.1 CPU core
+                    auto_adjust=True,
+                )
+            except Exception:
+                checked += len(chunk_plain)
+                yield f"data: {json.dumps({'type': 'progress', 'checked': checked, 'total': total, 'passed': passed})}\n\n"
+                continue
+
+            for ns_sym in chunk_ns:
+                plain = ns_to_plain[ns_sym]
+                checked += 1
+                try:
+                    df = raw if len(chunk_ns) == 1 else (
+                        raw[ns_sym] if ns_sym in raw.columns.get_level_values(0) else None
+                    )
+                    if df is None or df.empty or len(df) < 10:
+                        continue
+
+                    close = df['Close'].dropna()
+                    if len(close) < 10:
+                        continue
+
+                    current  = float(close.iloc[-1])
+                    peak     = float(df['High'].dropna().max())
+                    drawdown = round((peak - current) / peak * 100, 1) if peak > 0 else 100.0
+
+                    window  = min(50, len(close))
+                    ma      = float(close.rolling(window).mean().iloc[-1])
+                    uptrend = bool(current > ma)
+
+                    mom = round(float(close.iloc[-1] / close.iloc[-10] - 1) * 100, 2) if len(close) >= 10 else 0.0
+
+                    # Apply profile filters — only emit stocks that pass
+                    if drawdown > dd_limit:
+                        continue
+                    if need_uptrend and not uptrend:
+                        continue
+                    if need_momentum and mom < -5:
+                        continue
+
+                    passed += 1
+                    yield f"data: {json.dumps({'type': 'pass', 'symbol': plain, 'drawdown': drawdown, 'uptrend': uptrend, 'momentum': mom})}\n\n"
+
+                except Exception:
+                    continue
+
+            # Progress heartbeat after each mini-batch
+            yield f"data: {json.dumps({'type': 'progress', 'checked': checked, 'total': total, 'passed': passed})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'done', 'checked': checked, 'passed': passed})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
 if __name__ == '__main__':
