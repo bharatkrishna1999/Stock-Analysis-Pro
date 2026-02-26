@@ -3422,22 +3422,26 @@ def index():
         // ===== INVESTOR PROFILE =====
         var investorProfile = { horizon: 'long', risk: 'medium', goal: 'growth' };
         function loadProfile() {
-            try { var p = JSON.parse(localStorage.getItem('stockProProfile')); if (p && p.horizon) investorProfile = p; } catch(e) {}
+            try {
+                var p = JSON.parse(localStorage.getItem('stockProProfile'));
+                if (p && typeof p === 'object') investorProfile = { horizon: p.horizon || null, risk: p.risk || null, goal: p.goal || null };
+            } catch(e) {}
             updateProfileUI();
         }
         function saveProfile() {
             try { localStorage.setItem('stockProProfile', JSON.stringify(investorProfile)); } catch(e) {}
         }
         function setPref(key, val, el) {
-            if (el.classList.contains('active')) {
-                el.classList.remove('active');
+            var grp = el.closest('.pref-group');
+            if (investorProfile[key] === val) {
                 investorProfile[key] = null;
                 saveProfile();
+                grp.querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
                 return;
             }
             investorProfile[key] = val;
             saveProfile();
-            el.closest('.pref-group').querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
+            grp.querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
             el.classList.add('active');
         }
         function updateProfileUI() {
