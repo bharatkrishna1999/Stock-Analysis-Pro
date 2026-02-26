@@ -2562,6 +2562,71 @@ class Analyzer:
             except Exception:
                 pass
 
+            # --- Compute RoCE (Return on Capital Employed) ---
+            roce = None
+            margin_trend = []
+            try:
+                income_stmt = ticker_obj.income_stmt
+                if income_stmt is not None and not income_stmt.empty:
+                    ebit_val = None
+                    for row_name in ['EBIT', 'Operating Income', 'Operating Income Or Loss']:
+                        if row_name in income_stmt.index:
+                            v = income_stmt.loc[row_name].iloc[0]
+                            if pd.notna(v):
+                                ebit_val = float(v)
+                                break
+                    if ebit_val is not None and balance_sheet is not None and not balance_sheet.empty:
+                        total_assets = None
+                        curr_liabilities = None
+                        for row_name in ['Total Assets']:
+                            if row_name in balance_sheet.index:
+                                v = balance_sheet.loc[row_name].iloc[0]
+                                if pd.notna(v):
+                                    total_assets = float(v)
+                                    break
+                        for row_name in ['Current Liabilities', 'Total Current Liabilities']:
+                            if row_name in balance_sheet.index:
+                                v = balance_sheet.loc[row_name].iloc[0]
+                                if pd.notna(v):
+                                    curr_liabilities = float(v)
+                                    break
+                        if total_assets and total_assets > 0:
+                            cap_employed = total_assets - (curr_liabilities or 0)
+                            if cap_employed > 0:
+                                roce = round(ebit_val / cap_employed, 4)
+                    # --- Margin and Revenue trend (all available years) ---
+                    revenue_row = None
+                    op_income_row = None
+                    net_income_row = None
+                    for r in ['Total Revenue', 'Revenue', 'Net Revenue']:
+                        if r in income_stmt.index:
+                            revenue_row = income_stmt.loc[r]
+                            break
+                    for r in ['Operating Income', 'EBIT', 'Operating Income Or Loss']:
+                        if r in income_stmt.index:
+                            op_income_row = income_stmt.loc[r]
+                            break
+                    for r in ['Net Income', 'Net Income From Continuing Operations']:
+                        if r in income_stmt.index:
+                            net_income_row = income_stmt.loc[r]
+                            break
+                    if revenue_row is not None:
+                        for col in revenue_row.dropna().index:
+                            yr = col.year if hasattr(col, 'year') else int(str(col)[:4])
+                            rev = float(revenue_row[col]) if pd.notna(revenue_row[col]) else None
+                            op = float(op_income_row[col]) if (op_income_row is not None and col in op_income_row.index and pd.notna(op_income_row[col])) else None
+                            net = float(net_income_row[col]) if (net_income_row is not None and col in net_income_row.index and pd.notna(net_income_row[col])) else None
+                            if rev and rev > 0:
+                                margin_trend.append({
+                                    'year': yr,
+                                    'revenue': int(round(rev)),
+                                    'op_margin': round(op / rev * 100, 1) if op is not None else None,
+                                    'net_margin': round(net / rev * 100, 1) if net is not None else None,
+                                })
+                        margin_trend.sort(key=lambda x: x['year'])
+            except Exception:
+                pass
+
             # Suggested growth rate: clamp historical CAGR to [3%, 40%]
             if historical_growth is not None:
                 suggested_growth = min(max(float(historical_growth), 0.03), 0.40)
@@ -2587,6 +2652,8 @@ class Analyzer:
                 'pb_ratio': info.get('priceToBook'),
                 'ev_ebitda': info.get('enterpriseToEbitda'),
                 'roe': info.get('returnOnEquity'),
+                'roce': roce,
+                'margin_trend': margin_trend,
                 'fcf_history': fcf_history,
             }
         except Exception as e:
@@ -3087,10 +3154,43 @@ def index():
         .vd-load-status.loading { color:var(--warning); }
         .vd-load-status.error { color:var(--danger); }
         .vd-divider { height:1px;background:var(--border-color);margin:6px 0 14px; }
+        /* Investor Profile */
+        .pref-group { display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;margin-bottom:4px; }
+        .pref-btn { background:var(--bg-dark);color:var(--text-secondary);border:1px solid var(--border-color);border-radius:20px;padding:6px 14px;font-size:0.82em;font-weight:600;cursor:pointer;transition:all 0.2s;font-family:'Inter',sans-serif; }
+        .pref-btn:hover { border-color:var(--accent-cyan);color:var(--text-primary); }
+        .pref-btn.active { background:rgba(56,126,209,0.15);border-color:var(--accent-cyan);color:var(--accent-cyan); }
+        .pref-label { font-size:0.75em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin-top:14px;margin-bottom:2px; }
+        .suggest-stocks-btn { width:100%;margin-top:18px;padding:11px;background:rgba(56,126,209,0.12);border:1px solid rgba(56,126,209,0.35);color:var(--accent-cyan);border-radius:10px;font-size:0.9em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s; }
+        .suggest-stocks-btn:hover { background:rgba(56,126,209,0.22); }
+        /* Trend indicators */
+        .trend-section-title { font-size:0.75em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin:16px 0 8px; }
+        .trend-row { display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:8px;background:var(--bg-dark);margin-bottom:6px; }
+        .trend-label { font-size:0.78em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.4px;min-width:130px; }
+        .trend-values { font-size:0.8em;color:var(--text-secondary);font-family:'Space Grotesk',sans-serif;flex:1; }
+        .trend-arrow { font-size:1em;font-weight:700;min-width:20px;text-align:right; }
+        .trend-arrow.up { color:var(--accent-green); }
+        .trend-arrow.down { color:var(--danger); }
+        .trend-arrow.flat { color:var(--warning); }
+        /* Score card clickable */
+        .vd-score-card { cursor:pointer; }
+        /* Curated stocks modal */
+        .curated-modal { position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:16px; }
+        .curated-modal-box { background:var(--bg-card);border-radius:16px;border:1px solid var(--border-color);padding:26px;max-width:680px;width:100%;max-height:82vh;overflow-y:auto; }
+        .curated-modal-title { font-family:'Space Grotesk',sans-serif;font-size:1.2em;font-weight:700;margin-bottom:4px; }
+        .curated-modal-sub { color:var(--text-muted);font-size:0.83em;margin-bottom:18px;line-height:1.5; }
+        .curated-group { margin-bottom:18px; }
+        .curated-group-title { font-size:0.74em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border-color); }
+        .curated-stocks { display:flex;flex-wrap:wrap;gap:8px; }
+        .curated-stock-btn { background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:20px;padding:6px 14px;font-size:0.83em;cursor:pointer;transition:all 0.2s;font-family:'Space Grotesk',sans-serif;font-weight:600; }
+        .curated-stock-btn:hover { border-color:var(--accent-cyan);color:var(--accent-cyan);background:rgba(56,126,209,0.1); }
+        .curated-close-btn { width:100%;padding:10px;background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:10px;font-size:0.88em;cursor:pointer;margin-top:16px;font-family:'Inter',sans-serif; }
+        /* Profile badge on verdict overall */
+        .profile-match-badge { display:inline-block;margin-top:10px;padding:4px 12px;border-radius:20px;font-size:0.78em;font-weight:700;background:rgba(56,126,209,0.15);color:var(--accent-cyan);border:1px solid rgba(56,126,209,0.3); }
         @media (max-width:768px) {
             .vd-score-grid { grid-template-columns:1fr; }
             .vd-metrics { grid-template-columns:1fr 1fr; }
             .vd-trade-levels { grid-template-columns:1fr 1fr 1fr; }
+            .trend-label { min-width:100px; }
         }
     </style>
 </head>
@@ -3271,21 +3371,27 @@ def index():
                         <button class="verdict-fetch-btn" onclick="fetchVerdictData()">Analyse &amp; Get Verdict</button>
                     </div>
                     <div class="card">
-                        <h2>What You Get</h2>
-                        <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px;">
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-cyan);">
-                                <strong style="color:var(--accent-cyan);font-size:0.88em;">Short-Term Trading</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Entry price, stop loss, target, timeframe and why the technical setup makes sense right now.</p>
-                            </div>
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-green);">
-                                <strong style="color:var(--accent-green);font-size:0.88em;">Long-Term Holding</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">DCF intrinsic value, FCF growth, beta and market dependency to assess long-term wealth creation.</p>
-                            </div>
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--warning);">
-                                <strong style="color:var(--warning);font-size:0.88em;">Dividend Income</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Yield, stability and upcoming dividend dates to evaluate as a passive income candidate.</p>
-                            </div>
+                        <h2>Your Investor Profile</h2>
+                        <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:4px;line-height:1.6;">Tell us your goals — we'll personalise the verdict and surface stocks that match your style.</p>
+                        <div class="pref-label">Investment Horizon</div>
+                        <div class="pref-group" id="pref-horizon">
+                            <button class="pref-btn" data-value="short" onclick="setPref('horizon','short',this)">Short-Term (weeks)</button>
+                            <button class="pref-btn" data-value="medium" onclick="setPref('horizon','medium',this)">Medium (months)</button>
+                            <button class="pref-btn active" data-value="long" onclick="setPref('horizon','long',this)">Long-Term (years)</button>
                         </div>
+                        <div class="pref-label">Risk Tolerance</div>
+                        <div class="pref-group" id="pref-risk">
+                            <button class="pref-btn" data-value="low" onclick="setPref('risk','low',this)">Low (&lt;10% drawdown)</button>
+                            <button class="pref-btn active" data-value="medium" onclick="setPref('risk','medium',this)">Medium (up to 30%)</button>
+                            <button class="pref-btn" data-value="high" onclick="setPref('risk','high',this)">High (40–50%+ ok)</button>
+                        </div>
+                        <div class="pref-label">Primary Goal</div>
+                        <div class="pref-group" id="pref-goal">
+                            <button class="pref-btn active" data-value="growth" onclick="setPref('goal','growth',this)">Capital Growth</button>
+                            <button class="pref-btn" data-value="income" onclick="setPref('goal','income',this)">Dividend Income</button>
+                            <button class="pref-btn" data-value="balanced" onclick="setPref('goal','balanced',this)">Balanced</button>
+                        </div>
+                        <button class="suggest-stocks-btn" onclick="showCuratedStocks()">&#128269; Get Stock Suggestions for My Profile</button>
                     </div>
                 </div>
             </div>
@@ -3312,6 +3418,98 @@ def index():
             return "";
         }
         const allTickers = [...new Set(Object.values(stocks).flat())];
+
+        // ===== INVESTOR PROFILE =====
+        var investorProfile = { horizon: 'long', risk: 'medium', goal: 'growth' };
+        function loadProfile() {
+            try { var p = JSON.parse(localStorage.getItem('stockProProfile')); if (p && p.horizon) investorProfile = p; } catch(e) {}
+            updateProfileUI();
+        }
+        function saveProfile() {
+            try { localStorage.setItem('stockProProfile', JSON.stringify(investorProfile)); } catch(e) {}
+        }
+        function setPref(key, val, el) {
+            investorProfile[key] = val;
+            saveProfile();
+            el.closest('.pref-group').querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
+            el.classList.add('active');
+        }
+        function updateProfileUI() {
+            ['horizon', 'risk', 'goal'].forEach(function(key) {
+                var grp = document.getElementById('pref-' + key);
+                if (!grp) return;
+                grp.querySelectorAll('.pref-btn').forEach(function(b) {
+                    b.classList.toggle('active', b.dataset.value === investorProfile[key]);
+                });
+            });
+        }
+
+        // ===== CURATED STOCKS BY PROFILE =====
+        var CURATED = {
+            short_low:  { title: 'Low-Risk Short-Term', desc: 'Large-cap liquid stocks with strong technical setups and low beta', stocks: ['TCS','INFY','HDFCBANK','RELIANCE','WIPRO','ICICIBANK','AXISBANK','HINDUNILVR','ITC','NESTLEIND'] },
+            short_med:  { title: 'Medium-Risk Short-Term', desc: 'Mid/large-cap stocks with momentum and active trading volumes', stocks: ['TATAMOTORS','BAJFINANCE','MARUTI','ADANIPORTS','LT','SUNPHARMA','SBILIFE','HCLTECH','TATACONSUM','ONGC'] },
+            short_high: { title: 'High-Risk Short-Term', desc: 'Volatile stocks with high reward potential for active traders', stocks: ['ADANIENT','TATASTEEL','JSWSTEEL','SAIL','PNB','BANKBARODA','NHPC','IRCTC','ZOMATO','PAYTM'] },
+            long_low:   { title: 'Long-Term Defensive', desc: 'Blue-chip companies with consistent earnings, low volatility, and strong moats', stocks: ['NESTLEIND','HINDUNILVR','MARICO','PIDILITIND','BRITANNIA','ASIANPAINT','DMART','BAJAJFINSV','HDFC','TCS'] },
+            long_med:   { title: 'Long-Term Compounders', desc: 'Growth companies with strong fundamentals for 3–5 year horizons', stocks: ['INFY','RELIANCE','BAJFINANCE','TITAN','LTIM','HDFCBANK','ICICIBANK','KOTAKBANK','DRREDDY','SUNPHARMA'] },
+            long_high:  { title: 'Long-Term High-Growth', desc: 'High-growth businesses for investors who can tolerate 40–50% drawdowns', stocks: ['ZOMATO','PAYTM','NYKAA','POLICYBZR','IRCTC','TANLA','CDSL','ANGELONE','BSE','SYNGENE'] },
+            income_any: { title: 'Dividend Income Stocks', desc: 'Stocks with consistent dividend payouts and stable cash flows', stocks: ['COALINDIA','POWERGRID','NTPC','IOC','BPCL','ONGC','HINDPETRO','GAIL','RECLTD','PFC'] },
+            balanced:   { title: 'Balanced Portfolio Candidates', desc: 'Mix of stability and growth — suited for a diversified long-term portfolio', stocks: ['TCS','INFY','HDFCBANK','RELIANCE','HINDUNILVR','SUNPHARMA','MARUTI','LT','ITC','BAJFINANCE'] },
+        };
+        function getCuratedKey() {
+            var h = investorProfile.horizon, r = investorProfile.risk, g = investorProfile.goal;
+            if (g === 'income') return 'income_any';
+            if (g === 'balanced') return 'balanced';
+            if (h === 'short') return 'short_' + r;
+            return 'long_' + r;
+        }
+        function showCuratedStocks() {
+            var key = getCuratedKey();
+            var main = CURATED[key] || CURATED['balanced'];
+            // Also show a complementary group
+            var complementKey = (investorProfile.goal === 'income') ? 'long_low' : 'income_any';
+            var complement = CURATED[complementKey];
+            var profileLabel = {
+                horizon: { short: 'Short-Term', medium: 'Medium-Term', long: 'Long-Term' }[investorProfile.horizon],
+                risk: { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' }[investorProfile.risk],
+                goal: { growth: 'Capital Growth', income: 'Dividend Income', balanced: 'Balanced' }[investorProfile.goal]
+            };
+            var html = '<div class="curated-modal" id="curated-modal" onclick="closeCuratedModal(event)">';
+            html += '<div class="curated-modal-box">';
+            html += '<div class="curated-modal-title">&#128269; Stock Suggestions for Your Profile</div>';
+            html += '<div class="curated-modal-sub">Based on: <strong style="color:var(--accent-cyan);">' + profileLabel.horizon + ' · ' + profileLabel.risk + ' · ' + profileLabel.goal + '</strong><br>Click any stock to run a full Investment Verdict analysis.</div>';
+            html += buildCuratedGroup(main);
+            html += buildCuratedGroup(complement);
+            // Nifty 50 as a bonus
+            var niftyGroup = { title: 'Nifty 50 Stocks to Explore', desc: 'India\'s largest companies by market cap — a good starting point for any investor', stocks: nifty50List.slice(0, 15) };
+            html += buildCuratedGroup(niftyGroup);
+            html += '<button class="curated-close-btn" onclick="closeCuratedModal(null)">&#10005; Close</button>';
+            html += '</div></div>';
+            document.body.insertAdjacentHTML('beforeend', html);
+        }
+        function buildCuratedGroup(grp) {
+            if (!grp) return '';
+            var h = '<div class="curated-group">';
+            h += '<div class="curated-group-title">' + grp.title + '</div>';
+            h += '<div style="color:var(--text-muted);font-size:0.78em;margin-bottom:8px;">' + grp.desc + '</div>';
+            h += '<div class="curated-stocks">';
+            grp.stocks.forEach(function(s) {
+                h += '<button class="curated-stock-btn" onclick="launchVerdictFromCurated(\'' + s + '\')">' + s + '</button>';
+            });
+            h += '</div></div>';
+            return h;
+        }
+        function closeCuratedModal(event) {
+            if (event && event.target.id !== 'curated-modal') return;
+            var el = document.getElementById('curated-modal');
+            if (el) el.remove();
+        }
+        function launchVerdictFromCurated(symbol) {
+            closeCuratedModal(null);
+            switchTab('verdict');
+            document.getElementById('verdict-search').value = symbol;
+            fetchVerdictData();
+        }
+
         let currentTab = 'analysis';
         let loadedTabs = new Set();
         function ensureTabLoaded(tab) {
@@ -4339,6 +4537,8 @@ def index():
             var netCash = fmtCr(data.cash - data.total_debt);
             var pe = data.pe_ratio ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
             var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
+            var roce = data.roce ? (data.roce * 100).toFixed(1) + '%' : 'N/A';
+            var roe = data.roe ? (data.roe * 100).toFixed(1) + '%' : 'N/A';
             var priceStr = '\u20b9' + data.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
             var fcfStr = fmtCr(data.current_fcf);
             var h = '';
@@ -4353,6 +4553,8 @@ def index():
             h += '<div class="dcf-stat" style="border-left-color:var(--warning);"><div class="dcf-stat-label">P/E Ratio</div><div class="dcf-stat-value">' + pe + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--danger);"><div class="dcf-stat-label">P/B Ratio</div><div class="dcf-stat-value">' + pb + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--text-muted);"><div class="dcf-stat-label">Hist. FCF CAGR</div><div class="dcf-stat-value">' + histCagr + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">RoCE</div><div class="dcf-stat-value" style="color:' + (data.roce ? (data.roce*100>=20?'var(--accent-green)':data.roce*100>=12?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roce + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">RoE</div><div class="dcf-stat-value" style="color:' + (data.roe ? (data.roe*100>=15?'var(--accent-green)':data.roe*100>=8?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roe + '</div></div>';
             h += '</div>';
             if (data.fcf_history && data.fcf_history.length > 1) h += renderFCFHistory(data.fcf_history);
             h += '<div class="dcf-valuation-grid">';
@@ -4557,6 +4759,18 @@ def index():
                     if (pct >= 20) score += 15; else if (pct >= 10) score += 8; else if (pct >= 0) score += 3;
                     items.push({ label: 'FCF Growth', value: pct.toFixed(1) + '%/yr', color: pct >= 15 ? 'green' : pct >= 5 ? 'yellow' : 'red' });
                 }
+                const roce = dcfD.roce;
+                if (roce !== null && roce !== undefined) {
+                    const rocePct = roce * 100;
+                    if (rocePct >= 20) score += 12; else if (rocePct >= 12) score += 6; else if (rocePct >= 0) score += 2; else score -= 4;
+                    items.push({ label: 'RoCE', value: rocePct.toFixed(1) + '%', color: rocePct >= 20 ? 'green' : rocePct >= 12 ? 'yellow' : 'red' });
+                }
+                const roe = dcfD.roe;
+                if (roe !== null && roe !== undefined) {
+                    const roePct = roe * 100;
+                    if (roePct >= 15) score += 8; else if (roePct >= 8) score += 4; else if (roePct < 0) score -= 5;
+                    items.push({ label: 'RoE', value: roePct.toFixed(1) + '%', color: roePct >= 15 ? 'green' : roePct >= 8 ? 'yellow' : 'red' });
+                }
             }
             if (regr && !regr.error && regr.beta !== undefined) {
                 const beta = regr.beta || 1;
@@ -4611,26 +4825,34 @@ def index():
 
         function buildScoreGrid(stRes, ltRes, divRes) {
             var cards = [
-                { title: '⚡ Short-Term Trading', res: stRes, color: 'var(--accent-cyan)' },
-                { title: '📈 Long-Term Holding',  res: ltRes, color: 'var(--accent-green)' },
-                { title: '💰 Dividend Income',    res: divRes, color: 'var(--warning)' }
+                { title: '⚡ Short-Term Trading', res: stRes, color: 'var(--accent-cyan)',   sectionId: 'vd-st-section' },
+                { title: '📈 Long-Term Holding',  res: ltRes, color: 'var(--accent-green)',  sectionId: 'vd-lt-section' },
+                { title: '💰 Dividend Income',    res: divRes, color: 'var(--warning)',       sectionId: 'vd-div-section' }
             ];
             var maxScore = Math.max(stRes.score, ltRes.score, divRes.score);
             var html = '<div class="vd-score-grid">';
             cards.forEach(function(c) {
                 var [badgeText, badgeClass] = verdictBadge(c.res.score);
                 var isBest = (c.res.score === maxScore && c.res.score >= 55);
-                html += `<div class="vd-score-card${isBest ? ' vd-best' : ''}">
+                html += `<div class="vd-score-card${isBest ? ' vd-best' : ''}" title="Click to expand details" onclick="scrollToVdSection('${c.sectionId}')">
                     <div class="vd-score-label" style="color:${c.color};">${c.title}</div>
                     <div class="vd-score-ring">
                         ${buildScoreRing(c.res.score, c.color)}
                         <div class="vd-score-ring-num" style="color:${c.color};">${c.res.score}</div>
                     </div>
                     <div class="vd-verdict-badge ${badgeClass}">${isBest ? '&#9733; ' : ''}${badgeText}</div>
+                    <div style="font-size:0.72em;color:var(--text-muted);margin-top:6px;">Tap to expand &#8595;</div>
                 </div>`;
             });
             html += '</div>';
             return html;
+        }
+
+        function scrollToVdSection(id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (!el.classList.contains('open')) el.classList.add('open');
+            setTimeout(function() { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
         }
 
         function verdictToggle(el) {
@@ -4652,7 +4874,7 @@ def index():
             var s = tech && tech.signal ? tech.signal : {};
             var d = tech && tech.details ? tech.details : {};
             var [badge, bdgClass] = verdictBadge(stRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-st-section">';
             h += vdSectionHeader('&#9889; Short-Term Trading', 'var(--accent-cyan)', badge, bdgClass, stRes.score);
             if (stRes.error) { h += '<p style="color:var(--text-muted);margin:0;">Technical data unavailable.</p>'; }
             else {
@@ -4686,7 +4908,7 @@ def index():
 
         function buildLTSection(tech, dcfD, regr, ltRes) {
             var [badge, bdgClass] = verdictBadge(ltRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-lt-section">';
             h += vdSectionHeader('&#128200; Long-Term Holding', 'var(--accent-green)', badge, bdgClass, ltRes.score);
             h += buildMetricsHtml(ltRes.items);
             var narrativeParts = [];
@@ -4718,13 +4940,53 @@ def index():
                 else if (dep > 0.7) narrativeParts.push('High market dependency (' + (dep * 100).toFixed(0) + '%) — performance closely tracks the Nifty 50.');
             }
             if (narrativeParts.length > 0) h += '<div class="vd-narrative">' + narrativeParts.join(' ') + '</div>';
+            // --- Trend section ---
+            if (dcfD && dcfD.margin_trend && dcfD.margin_trend.length >= 2) {
+                h += buildTrendSection(dcfD.margin_trend);
+            }
             h += '</div></div>';
+            return h;
+        }
+
+        function buildTrendSection(trend) {
+            if (!trend || trend.length < 2) return '';
+            var h = '<div class="trend-section-title">&#128200; Key Trends</div>';
+            // Operating margin trend
+            var opMargins = trend.filter(function(t){ return t.op_margin !== null && t.op_margin !== undefined; });
+            if (opMargins.length >= 2) {
+                var first = opMargins[0].op_margin, last = opMargins[opMargins.length-1].op_margin;
+                var diff = last - first;
+                var arrowClass = diff > 1 ? 'up' : diff < -1 ? 'down' : 'flat';
+                var arrowSymbol = diff > 1 ? '&#8593;' : diff < -1 ? '&#8595;' : '&#8594;';
+                var valStr = opMargins.map(function(t){ return t.year + ': ' + t.op_margin + '%'; }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Operating Margin</span><span class="trend-values">' + valStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + '</span></div>';
+            }
+            // Net margin trend
+            var netMargins = trend.filter(function(t){ return t.net_margin !== null && t.net_margin !== undefined; });
+            if (netMargins.length >= 2) {
+                var first = netMargins[0].net_margin, last = netMargins[netMargins.length-1].net_margin;
+                var diff = last - first;
+                var arrowClass = diff > 1 ? 'up' : diff < -1 ? 'down' : 'flat';
+                var arrowSymbol = diff > 1 ? '&#8593;' : diff < -1 ? '&#8595;' : '&#8594;';
+                var valStr = netMargins.map(function(t){ return t.year + ': ' + t.net_margin + '%'; }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Net Profit Margin</span><span class="trend-values">' + valStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + '</span></div>';
+            }
+            // Revenue trend
+            var revs = trend.filter(function(t){ return t.revenue > 0; });
+            if (revs.length >= 2) {
+                var revFirst = revs[0].revenue, revLast = revs[revs.length-1].revenue;
+                var revGrowth = ((revLast / revFirst) - 1) * 100;
+                var arrowClass = revGrowth > 5 ? 'up' : revGrowth < -5 ? 'down' : 'flat';
+                var arrowSymbol = revGrowth > 5 ? '&#8593;' : revGrowth < -5 ? '&#8595;' : '&#8594;';
+                var revStr = revs.map(function(t){ return t.year + ': ' + fmtCr(t.revenue); }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Revenue</span><span class="trend-values">' + revStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + ' ' + revGrowth.toFixed(0) + '%</span></div>';
+            }
             return h;
         }
 
         function buildDivSection(divD, divRes) {
             var [badge, bdgClass] = verdictBadge(divRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-div-section">';
             h += vdSectionHeader('&#128176; Dividend Income', 'var(--warning)', badge, bdgClass, divRes.score);
             h += buildMetricsHtml(divRes.items);
             if (!divD || !divD.found || !divD.dividend_yield) {
@@ -4762,10 +5024,26 @@ def index():
             if (stRes.score < 40 && ltRes.score < 40) parts.push('Both short and long-term scores are weak — exercise caution.');
             if (avgScore >= 60) parts.push('Overall profile is <strong style="color:var(--accent-green);">positive</strong> across multiple dimensions.');
             else if (avgScore < 35) parts.push('Overall profile is <strong style="color:var(--danger);">weak</strong> — high risk across dimensions.');
+            // Personalised note based on investor profile
+            var profileNote = '';
+            var ph = investorProfile.horizon, pr = investorProfile.risk, pg = investorProfile.goal;
+            var profileScoreMap = { short: stRes.score, medium: Math.round((stRes.score + ltRes.score) / 2), long: ltRes.score };
+            var relevantScore = profileScoreMap[ph] || ltRes.score;
+            if (pg === 'income') relevantScore = divRes.score;
+            if (pg === 'balanced') relevantScore = Math.round(avgScore);
+            var profileLabels = { short: 'short-term trader', medium: 'medium-term investor', long: 'long-term investor' };
+            var riskLabels = { low: 'low-risk', medium: 'moderate-risk', high: 'high-risk' };
+            profileNote = 'For your profile (<strong style="color:var(--accent-cyan);">' + riskLabels[pr] + ' ' + profileLabels[ph] + '</strong>): ';
+            if (relevantScore >= 65) profileNote += 'this stock <strong style="color:var(--accent-green);">aligns well</strong> with your investment style.';
+            else if (relevantScore >= 45) profileNote += 'this stock is a <strong style="color:var(--warning);">partial fit</strong> — review the detailed sections before deciding.';
+            else profileNote += 'this stock <strong style="color:var(--danger);">may not align</strong> with your current profile. Consider exploring alternatives.';
+            // Risk warning for high-risk takers
+            if (pr === 'low' && (dcfD && dcfD.pb_ratio && dcfD.pb_ratio > 5)) profileNote += ' Note: high P/B may signal elevated risk for conservative investors.';
             var h = `<div class="vd-overall">
                 <div class="vd-overall-label">Overall Investment Verdict for ${symbol}</div>
                 <div class="vd-overall-verdict" style="color:${bestColor};">Best For: ${bestFor}</div>
                 <div class="vd-overall-reason">${parts.join(' ')}</div>
+                <div class="vd-overall-reason" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);">${profileNote}</div>
                 <div style="margin-top:16px;display:flex;justify-content:center;gap:20px;flex-wrap:wrap;">
                     <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Short-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(stRes.score)};">${stRes.score}</div></div>
                     <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Long-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(ltRes.score)};">${ltRes.score}</div></div>
@@ -4872,7 +5150,7 @@ def index():
         }
 
 
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); loadProfile(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
     </script>
 </body>
 </html>'''
