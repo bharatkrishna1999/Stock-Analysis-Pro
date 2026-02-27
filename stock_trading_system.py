@@ -3575,15 +3575,17 @@ def index():
             if (startBtn) startBtn.style.display = 'none';
             if (stopBtn)  stopBtn.style.display  = '';
             // Helper refs
-            function setSub(msg)  { var el = document.getElementById('sc-sub');         if (el) el.innerHTML  = msg; }
-            function setFill(pct) { var el = document.getElementById('sc-progress-fill');if (el) el.style.width = pct + '%'; }
-            function setStatus(msg){ var el = document.getElementById('sc-status-text'); if (el) el.innerHTML  = msg; }
-            function setStats(chk, passed, deepDone, deepTot) {
+            function setSub(msg)   { var el = document.getElementById('sc-sub');          if (el) el.innerHTML  = msg; }
+            function setFill(pct)  { var el = document.getElementById('sc-progress-fill'); if (el) el.style.width = pct + '%'; }
+            function setStatus(msg){ var el = document.getElementById('sc-status-text');   if (el) el.innerHTML  = msg; }
+            function setStats(chk, s1, s2, s3done, s3tot) {
                 var el = document.getElementById('sc-stat-row');
                 if (!el) return;
-                el.innerHTML = '<span>Checked <strong>' + chk + '/' + universeTotal + '</strong></span>'
-                             + '<span style="color:var(--accent-green);">&#9679; ' + passed + ' qualified</span>'
-                             + '<span>Deep-scanned <strong>' + deepDone + '/' + deepTot + '</strong></span>';
+                el.innerHTML =
+                    '<span>Universe <strong>' + chk + '/' + universeTotal + '</strong></span>'
+                  + '<span style="color:var(--accent-cyan);">S1 &#8594; <strong>' + s1 + '</strong></span>'
+                  + '<span style="color:var(--accent-green);">S2 &#8594; <strong>' + s2 + '</strong></span>'
+                  + '<span>Deep <strong>' + s3done + '/' + s3tot + '</strong></span>';
             }
             setSub('Filtering <strong>' + universeTotal + ' NSE stocks</strong> by <strong style="color:var(--accent-cyan);">'
                    + labels.risk + ' risk &middot; ' + labels.horizon + ' horizon &middot; ' + labels.goal + '</strong>');
@@ -3592,16 +3594,24 @@ def index():
             // Clear previous results
             var resEl = document.getElementById('scanner-results-area');
             if (resEl) resEl.innerHTML = '';
-            // Pipeline state
-            var deepResults   = [];
-            var deepCompleted = 0;
-            var deepTotal     = 0;
-            var deepQueue     = [];
-            var deepActive    = 0;
-            var MAX_CONCURRENT = 5;
-            var pfChecked = 0;
-            var pfPassed  = 0;
-            var pfDone    = false;
+
+            var risk    = investorProfile.risk    || 'medium';
+            var horizon = investorProfile.horizon || 'long';
+            var goal    = investorProfile.goal    || 'growth';
+
+            // ── Stage 1: SSE price-action prefilter ─────────────────────────────
+            var pfChecked = 0, pfPassed = 0, pfDone = false;
+
+            // ── Stage 2: Mid-filter (quick fundamentals via /midfilter) ─────────
+            var midQueue = [], midActive = 0, midCompleted = 0, midTotal = 0, midPassed = 0;
+            var midDone  = false;
+            var MAX_MID  = 6;
+
+            // ── Stage 3: Deep scan (/analyze + /dcf-data + /dividend-info) ──────
+            var deepQueue = [], deepActive = 0, deepCompleted = 0, deepTotal = 0;
+            var deepResults = [];
+            var MAX_DEEP  = 5;
+
             function finishScan() {
                 _scanRunning = false;
                 if (startBtn) startBtn.style.display = '';
@@ -3609,18 +3619,32 @@ def index():
                 if (startBtn) startBtn.textContent = '&#128269; Re-scan with Current Profile';
             }
             function updateProgress() {
-                var bar = pfDone
-                    ? 60 + Math.round((deepCompleted / Math.max(deepTotal, 1)) * 40)
-                    : Math.min(55, Math.round((pfChecked / universeTotal) * 55));
-                setFill(bar);
-                setStats(pfChecked, pfPassed, deepCompleted, deepTotal);
+                var bar;
                 if (!pfDone) {
-                    setStatus('Filtering stocks&hellip;');
+                    // Stage 1: 0 – 45 %
+                    bar = Math.min(44, Math.round((pfChecked / universeTotal) * 45));
+                } else if (midCompleted < midTotal) {
+                    // Stage 2: 45 – 70 %
+                    bar = 45 + Math.round((midCompleted / Math.max(midTotal, 1)) * 25);
+                } else {
+                    // Stage 3: 70 – 100 %
+                    bar = 70 + Math.round((deepCompleted / Math.max(deepTotal, 1)) * 30);
+                }
+                setFill(bar);
+                setStats(pfChecked, pfPassed, midPassed, deepCompleted, deepTotal);
+                if (!pfDone) {
+                    setStatus('Stage 1 of 3 &mdash; Applying 6 price-action gates&hellip;');
+                } else if (midCompleted < midTotal) {
+                    setStatus('Stage 2 of 3 &mdash; Fundamental filter &mdash; '
+                              + midCompleted + '/' + midTotal + ' checked, '
+                              + midPassed + ' passed&hellip;');
                 } else if (deepCompleted < deepTotal) {
-                    setStatus('Pre-filter done &mdash; deep scanning remaining stocks&hellip;');
+                    setStatus('Stage 3 of 3 &mdash; Deep scanning '
+                              + deepCompleted + '/' + deepTotal + '&hellip;');
                 } else {
                     setFill(100);
-                    setStatus('&#9989; Complete &mdash; <strong>' + deepResults.length + '</strong> stocks ranked by <strong>' + relLabel + '</strong> score');
+                    setStatus('&#9989; Complete &mdash; <strong>' + deepResults.length
+                              + '</strong> stocks ranked by <strong>' + relLabel + '</strong> score');
                     finishScan();
                 }
             }
@@ -3641,12 +3665,14 @@ def index():
                     h += '<div class="scan-main-score" style="color:' + scoreColor + ';">' + r.relevantScore + '</div>';
                     h += '</div>';
                 });
-                if (deepResults.length === 0 && pfDone && deepTotal === 0)
+                if (deepResults.length === 0 && pfDone && midDone && deepTotal === 0)
                     h = '<div style="text-align:center;padding:32px;color:var(--text-muted);">No stocks passed the filter. Try relaxing your risk or horizon settings.</div>';
                 resEl.innerHTML = h;
             }
+
+            // Stage 3 launcher
             function launchDeepNext() {
-                while (deepActive < MAX_CONCURRENT && deepQueue.length > 0 && !_scanAbort) {
+                while (deepActive < MAX_DEEP && deepQueue.length > 0 && !_scanAbort) {
                     var sym = deepQueue.shift();
                     deepActive++;
                     scanOneStock(sym).then(function(res) {
@@ -3661,10 +3687,41 @@ def index():
                     });
                 }
             }
-            // SSE prefilter stream
-            var risk    = investorProfile.risk    || 'medium';
-            var horizon = investorProfile.horizon || 'long';
-            var goal    = investorProfile.goal    || 'growth';
+
+            // Stage 2 launcher — uses IIFE to capture sym per iteration
+            function launchMidNext() {
+                while (midActive < MAX_MID && midQueue.length > 0 && !_scanAbort) {
+                    (function(capturedSym) {
+                        midActive++;
+                        fetch('/midfilter?symbol=' + encodeURIComponent(capturedSym)
+                              + '&risk='    + encodeURIComponent(risk)
+                              + '&goal='    + encodeURIComponent(goal)
+                              + '&horizon=' + encodeURIComponent(horizon))
+                        .then(function(r) { return r.json(); })
+                        .catch(function()  { return { passed: true, symbol: capturedSym }; })
+                        .then(function(mf) {
+                            midActive--;
+                            midCompleted++;
+                            if (_scanAbort) return;
+                            if (mf && mf.passed) {
+                                midPassed++;
+                                deepTotal++;
+                                deepQueue.push(capturedSym);
+                                launchDeepNext();
+                            }
+                            updateProgress();
+                            launchMidNext();
+                            // If Stage 1 is done and all mid-filter work is finished
+                            if (pfDone && midCompleted >= midTotal) {
+                                midDone = true;
+                                if (deepTotal === 0) { renderTabResults(); finishScan(); }
+                            }
+                        });
+                    })(midQueue.shift());
+                }
+            }
+
+            // Stage 1: SSE prefilter stream
             var es = new EventSource('/prefilter-stream?risk=' + encodeURIComponent(risk)
                                     + '&horizon=' + encodeURIComponent(horizon)
                                     + '&goal=' + encodeURIComponent(goal));
@@ -3674,9 +3731,9 @@ def index():
                 var d = JSON.parse(evt.data);
                 if (d.type === 'pass') {
                     pfPassed++;
-                    deepTotal++;
-                    deepQueue.push(d.symbol);
-                    launchDeepNext();
+                    midTotal++;
+                    midQueue.push(d.symbol);
+                    launchMidNext();
                     updateProgress();
                 } else if (d.type === 'progress') {
                     pfChecked = d.checked;
@@ -3688,12 +3745,16 @@ def index():
                     es.close();
                     _prefilterES = null;
                     updateProgress();
-                    if (deepTotal === 0) { renderTabResults(); finishScan(); }
+                    if (midTotal === 0) { midDone = true; renderTabResults(); finishScan(); }
                 }
             };
             es.onerror = function() {
                 es.close(); _prefilterES = null;
-                if (!pfDone) { pfDone = true; updateProgress(); if (deepTotal === 0) finishScan(); }
+                if (!pfDone) {
+                    pfDone = true;
+                    updateProgress();
+                    if (midTotal === 0) { midDone = true; renderTabResults(); finishScan(); }
+                }
             };
         }
         function stopScanInTab() {
@@ -5963,29 +6024,128 @@ def dcf_data_route():
         return jsonify({'error': f'DCF analysis failed: {str(e)}'})
 
 
+@app.route('/midfilter')
+def midfilter_route():
+    """
+    Stage 2 of 3: Quick fundamental gate.
+    Fetches yf.Ticker().info (one lightweight round-trip) and applies
+    profile-based fundamental filters that are far cheaper than the full
+    deep-scan pipeline (/analyze + /dcf-data + /dividend-info).
+
+    Fail-open on missing data so valid stocks are never blocked by gaps
+    in yfinance coverage.
+
+    Gates:
+      A - P/E ratio        (reject extremes by goal)
+      B - Revenue growth   (reject declining for growth/balanced)
+      C - Profit margin    (reject deeply loss-making)
+      D - Debt / Equity    (reject overleveraged by risk)
+      E - Market cap       (reject micro-caps for conservative profiles)
+    """
+    symbol  = request.args.get('symbol',  '').strip().upper()
+    risk    = request.args.get('risk',    'medium')
+    goal    = request.args.get('goal',    'growth')
+    horizon = request.args.get('horizon', 'long')
+
+    if not symbol:
+        return jsonify({'symbol': symbol, 'passed': False, 'fails': ['no_symbol']})
+
+    ns_sym = symbol if symbol.endswith('.NS') else symbol + '.NS'
+    try:
+        info = yf.Ticker(ns_sym).info
+    except Exception:
+        return jsonify({'symbol': symbol, 'passed': True, 'fails': []})  # fail-open
+
+    fails = []
+    pe            = info.get('trailingPE')
+    rev_growth    = info.get('revenueGrowth')   # decimal, e.g. 0.12 = +12 %
+    profit_margin = info.get('profitMargins')    # decimal, e.g. 0.08 =  +8 %
+    debt_equity   = info.get('debtToEquity')     # e.g. 45 means 45 %
+    market_cap    = info.get('marketCap')        # INR
+
+    # Gate A: P/E ratio
+    if pe is not None:
+        if pe > 0:
+            pe_cap = {'growth': 100, 'balanced': 75, 'income': 50}.get(goal, 75)
+            if pe > pe_cap:
+                fails.append('pe_extreme')
+        else:
+            # Negative PE = loss-making; reject for conservative long-horizon profiles
+            if risk in ('low', 'medium') and horizon != 'short':
+                fails.append('loss_making')
+
+    # Gate B: Revenue growth
+    if rev_growth is not None:
+        rev_floor = {'growth': -0.08, 'balanced': -0.15, 'income': -0.20}.get(goal, -0.15)
+        if rev_growth < rev_floor:
+            fails.append('revenue_declining')
+
+    # Gate C: Profit margin — reject deeply loss-making companies
+    if profit_margin is not None and profit_margin < -0.20:
+        fails.append('deep_loss_maker')
+
+    # Gate D: Debt / Equity — risk-scaled ceiling
+    if debt_equity is not None:
+        de_limit = {'low': 60, 'medium': 120, 'high': 300}.get(risk, 120)
+        if debt_equity > de_limit:
+            fails.append('excessive_debt')
+
+    # Gate E: Market cap — avoid micro-caps for conservative profiles
+    if market_cap is not None:
+        cap_min = {'low': 10_000_000_000, 'medium': 2_000_000_000, 'high': 0}.get(risk, 2_000_000_000)
+        if market_cap < cap_min:
+            fails.append('micro_cap')
+
+    passed = len(fails) == 0
+    return jsonify({
+        'symbol':       symbol,
+        'passed':       passed,
+        'fails':        fails,
+        'pe':           pe,
+        'revGrowth':    rev_growth,
+        'profitMargin': profit_margin,
+        'debtEquity':   debt_equity,
+        'marketCap':    market_cap,
+    })
+
+
 @app.route('/prefilter-stream')
 def prefilter_stream_route():
     """
-    SSE streaming prefilter for the live scanner.
+    Stage 1 of 3: SSE streaming price-action prefilter for the live scanner.
     Processes the NSE universe in mini-batches of 25 using yf.download(),
-    applies profile-based filters server-side, and streams only the passing
-    symbols to the browser immediately — no bulk memory accumulation.
+    applies 6 profile-based gates using only OHLCV data, and streams the
+    surviving symbols to the browser for Stage 2 (mid-filter).
 
     Query params: risk (low|medium|high), horizon (short|medium|long),
                   goal (growth|income|balanced)
 
+    Gates (in rough order of rejection power):
+      1 - Volume / Liquidity   avg daily volume > risk-based minimum
+      2 - Drawdown             max drawdown from 3-month peak < risk limit
+      3 - Dual-SMA Trend       price above SMA20 AND SMA50 (long horizon)
+      4 - Multi-tf Momentum    1-month AND 3-month returns within profile bounds
+      5 - Volatility           daily-return std-dev below risk-based cap
+      6 - Volume Trend         recent 10-day avg vol >= 40% of 3-month avg
+
     Events:
+      {"type":"meta",     "total":292}
       {"type":"progress", "checked":25, "total":292, "passed":8}
-      {"type":"pass",     "symbol":"RELIANCE", "drawdown":4.1, "uptrend":true, "momentum":1.2}
-      {"type":"done",     "checked":292, "passed":45}
+      {"type":"pass",     "symbol":"RELIANCE", "drawdown":4.1, "uptrend":true,
+                          "momentum":1.2, "mom1m":-0.8, "mom3m":6.3,
+                          "volatility":1.4, "avgVol":3200000}
+      {"type":"done",     "checked":292, "passed":22}
     """
     risk    = request.args.get('risk',    'medium')
     horizon = request.args.get('horizon', 'long')
     goal    = request.args.get('goal',    'growth')
 
-    dd_limit = {'low': 10, 'medium': 20, 'high': 100}.get(risk, 20)
-    need_uptrend = (horizon == 'long')
-    need_momentum = (goal == 'growth')
+    # Gate thresholds — tuned per profile
+    dd_limit        = {'low': 10,      'medium': 20,      'high': 40     }.get(risk, 20)
+    vol_min         = {'low': 500_000, 'medium': 150_000, 'high': 50_000 }.get(risk, 150_000)
+    daily_vol_cap   = {'low': 1.8,     'medium': 2.8,     'high': 100.0  }.get(risk, 2.8)   # % std-dev
+    need_dual_trend = (horizon == 'long')
+    need_uptrend    = (horizon in ('long', 'medium'))
 
     symbols_raw = list(ALL_VALID_TICKERS)
     total = len(symbols_raw)
@@ -6012,7 +6172,7 @@ def prefilter_stream_route():
                     interval='1d',
                     group_by='ticker',
                     progress=False,
-                    threads=False,   # single-threaded: gentle on 0.1 CPU core
+                    threads=False,   # single-threaded: gentle on limited CPU
                     auto_adjust=True,
                 )
             except Exception:
@@ -6027,33 +6187,64 @@ def prefilter_stream_route():
                     df = raw if len(chunk_ns) == 1 else (
                         raw[ns_sym] if ns_sym in raw.columns.get_level_values(0) else None
                     )
-                    if df is None or df.empty or len(df) < 10:
+                    if df is None or df.empty or len(df) < 15:
                         continue
 
-                    close = df['Close'].dropna()
-                    if len(close) < 10:
+                    close  = df['Close'].dropna()
+                    volume = df['Volume'].dropna()
+                    if len(close) < 15:
                         continue
 
-                    current  = float(close.iloc[-1])
-                    peak     = float(df['High'].dropna().max())
+                    current = float(close.iloc[-1])
+                    peak    = float(df['High'].dropna().max())
+
+                    # ── Gate 1: Volume / Liquidity ───────────────────────────────────
+                    avg_vol = float(volume.mean()) if len(volume) > 0 else 0.0
+                    if avg_vol < vol_min:
+                        continue
+
+                    # ── Gate 2: Drawdown ─────────────────────────────────────────────
                     drawdown = round((peak - current) / peak * 100, 1) if peak > 0 else 100.0
-
-                    window  = min(50, len(close))
-                    ma      = float(close.rolling(window).mean().iloc[-1])
-                    uptrend = bool(current > ma)
-
-                    mom = round(float(close.iloc[-1] / close.iloc[-10] - 1) * 100, 2) if len(close) >= 10 else 0.0
-
-                    # Apply profile filters — only emit stocks that pass
                     if drawdown > dd_limit:
                         continue
-                    if need_uptrend and not uptrend:
+
+                    # ── Gate 3: Dual-SMA Trend ───────────────────────────────────────
+                    sma20   = float(close.rolling(min(20, len(close))).mean().iloc[-1])
+                    sma50   = float(close.rolling(min(50, len(close))).mean().iloc[-1])
+                    uptrend = bool(current > sma50)
+                    if need_dual_trend and (current < sma20 or current < sma50):
                         continue
-                    if need_momentum and mom < -5:
+                    elif need_uptrend and not uptrend:
                         continue
 
+                    # ── Gate 4: Multi-timeframe Momentum ─────────────────────────────
+                    mom10d = round(float(close.iloc[-1] / close.iloc[-10] - 1) * 100, 2) if len(close) >= 10 else 0.0
+                    mom1m  = round(float(close.iloc[-1] / close.iloc[-21] - 1) * 100, 2) if len(close) >= 21 else mom10d
+                    mom3m  = round(float(close.iloc[-1] / close.iloc[0]   - 1) * 100, 2)
+                    if goal == 'growth':
+                        if mom1m < -5.0 or mom3m < -10.0:
+                            continue
+                    elif goal == 'income':
+                        if mom3m < -20.0:
+                            continue
+                    else:  # balanced
+                        if mom1m < -8.0 or mom3m < -15.0:
+                            continue
+
+                    # ── Gate 5: Volatility ───────────────────────────────────────────
+                    daily_ret_std = float(close.pct_change().dropna().std()) * 100
+                    if daily_ret_std > daily_vol_cap:
+                        continue
+
+                    # ── Gate 6: Volume Trend (avoid dying institutional interest) ─────
+                    if len(volume) >= 20:
+                        recent_vol  = float(volume.iloc[-10:].mean())
+                        overall_vol = float(volume.mean())
+                        if overall_vol > 0 and recent_vol < overall_vol * 0.4:
+                            continue
+
                     passed += 1
-                    yield f"data: {json.dumps({'type': 'pass', 'symbol': plain, 'drawdown': drawdown, 'uptrend': uptrend, 'momentum': mom})}\n\n"
+                    yield f"data: {json.dumps({'type': 'pass', 'symbol': plain, 'drawdown': drawdown, 'uptrend': uptrend, 'momentum': mom10d, 'mom1m': mom1m, 'mom3m': mom3m, 'volatility': round(daily_ret_std, 2), 'avgVol': round(avg_vol)})}\n\n"
 
                 except Exception:
                     continue
