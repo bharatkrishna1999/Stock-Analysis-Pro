@@ -20,7 +20,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy import stats
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import warnings
 import matplotlib
 import matplotlib.pyplot as plt
@@ -381,6 +381,32 @@ def _compute_split_adjusted_dividend(dividends, splits):
             factor = 1.0
         adjusted_total += float(div_value) / factor
     return float(adjusted_total)
+
+
+def _fy_dates(n_years_back=0):
+    """Return (start_str, end_str) for a completed Indian financial year.
+
+    Indian FY: April 1 → March 31.
+    n_years_back=0 → most recently completed FY
+                      (e.g. FY2024-25 when today is Feb 2026)
+    n_years_back=1 → the FY before that, etc.
+    Returns strings in 'YYYY-MM-DD' format.
+    """
+    today = date.today()
+    # fy_end_year is the calendar year in which the FY ends (March)
+    fy_end_year = today.year if today.month >= 4 else today.year - 1
+    fy_end_year -= n_years_back
+    fy_start = date(fy_end_year - 1, 4, 1)
+    fy_end   = date(fy_end_year,     3, 31)
+    return fy_start.strftime('%Y-%m-%d'), fy_end.strftime('%Y-%m-%d')
+
+
+def _fy_label(n_years_back=0):
+    """Return a human-readable label, e.g. 'FY2024-25'."""
+    today = date.today()
+    fy_end_year = today.year if today.month >= 4 else today.year - 1
+    fy_end_year -= n_years_back
+    return f"FY{fy_end_year - 1}-{str(fy_end_year)[2:]}"
 
 
 def fetch_nse_universe():
@@ -2257,13 +2283,29 @@ class Analyzer:
             traceback.print_exc()
             return None
 
-    def fetch_dividend_data(self, symbols, limit_results=True):
-        """Fetch dividend yield, current price, and annualized volatility for given symbols."""
+    def fetch_dividend_data(self, symbols, limit_results=True, exclude_downtrend=True):
+        """Fetch FY-based dividend yield, current price, and volatility for given symbols.
+
+        Annual dividend is summed over the most recently completed Indian financial year
+        (April 1 → March 31) rather than a rolling 12-month window.  This gives a clean,
+        comparable figure that aligns with how Indian companies declare dividends.
+
+        Stocks whose current price is below their 200-day moving average (long-term
+        downtrend) are excluded from results by default so the dividend optimiser never
+        recommends stocks in structural decline.  Pass exclude_downtrend=False to
+        retrieve data for all stocks regardless (used by the single-stock verdict tab).
+        """
         results = []
         dividend_found = 0
 
         if not symbols:
             return results, dividend_found
+
+        # Resolve FY window once for this call
+        fy_start_str, fy_end_str = _fy_dates(0)
+        fy_lbl = _fy_label(0)
+        fy_start_ts = pd.Timestamp(fy_start_str)
+        fy_end_ts   = pd.Timestamp(fy_end_str)
 
         def _batched(iterable, size):
             for idx in range(0, len(iterable), size):
@@ -2272,9 +2314,11 @@ class Analyzer:
         for batch in _batched(symbols, 75):
             tickers = [f"{symbol}.NS" for symbol in batch]
             try:
+                # 2y covers the last complete FY for dividends AND provides enough
+                # history (~500 trading days) to compute a reliable 200-DMA
                 data = yf.download(
                     tickers=tickers,
-                    period='1y',
+                    period='2y',
                     interval='1d',
                     group_by='column',
                     actions=True,
@@ -2310,12 +2354,36 @@ class Analyzer:
                             splits = pd.Series(dtype=float)
                     if close_series.empty or len(close_series) < 10:
                         continue
+                    # Use latest close as current price (for yield denominator)
                     current_price = float(close_series.iloc[-1])
                     if current_price <= 0:
                         continue
-                    annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
+
+                    # ── Long-term trend: 200-DMA check ──────────────────────────────
+                    sma200_val = close_series.rolling(min(200, len(close_series))).mean().iloc[-1]
+                    in_downtrend = bool(current_price < float(sma200_val)) if not pd.isna(sma200_val) else False
+                    if exclude_downtrend and in_downtrend:
+                        continue  # never recommend stocks in structural decline
+
+                    # ── Dividends: slice to last complete Indian FY ──────────────────
+                    if not dividends.empty:
+                        try:
+                            if dividends.index.tz is not None:
+                                d_start = fy_start_ts.tz_localize('UTC')
+                                d_end   = fy_end_ts.tz_localize('UTC')
+                            else:
+                                d_start = fy_start_ts
+                                d_end   = fy_end_ts
+                            dividends_fy = dividends[(dividends.index >= d_start) & (dividends.index <= d_end)]
+                        except Exception:
+                            dividends_fy = dividends
+                    else:
+                        dividends_fy = dividends
+
+                    annual_dividend = _compute_split_adjusted_dividend(dividends_fy, splits)
                     if annual_dividend <= 0:
                         continue
+
                     dividend_yield = (annual_dividend / current_price) * 100
                     returns = close_series.pct_change().dropna()
                     volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
@@ -2323,11 +2391,13 @@ class Analyzer:
                     dividend_found += 1
 
                     results.append({
-                        'symbol': symbol,
-                        'price': round(current_price, 2),
+                        'symbol':          symbol,
+                        'price':           round(current_price, 2),
                         'annual_dividend': round(annual_dividend, 2),
-                        'dividend_yield': round(dividend_yield, 2),
-                        'volatility': round(volatility, 2)
+                        'dividend_yield':  round(dividend_yield, 2),
+                        'volatility':      round(volatility, 2),
+                        'fy_label':        fy_lbl,
+                        'in_downtrend':    in_downtrend,
                     })
                 except Exception:
                     continue
@@ -5081,16 +5151,49 @@ def index():
                 return { score: 5, items: [{ label: 'Dividend', value: 'No dividend found', color: 'red' }] };
             }
             let score = 0;
+            const fyLbl = divD.fy_label || 'FY';
+
+            // ── Long-term trend guard ────────────────────────────────────────────
+            if (divD.in_downtrend) {
+                // Stock is below 200-DMA — never a safe dividend recommendation
+                items.push({ label: 'Long-term Trend', value: 'Downtrend \u2014 price below 200-DMA', color: 'red' });
+                const yld = parseFloat(divD.dividend_yield) || 0;
+                if (yld > 0) items.push({ label: 'Annual Yield', value: yld.toFixed(2) + '% (' + fyLbl + ')', color: 'red' });
+                items.push({ label: 'Caution', value: 'Not suitable for income investing', color: 'red' });
+                return { score: 8, items };
+            }
+
+            // ── Uptrend confirmed ────────────────────────────────────────────────
+            items.push({ label: 'Long-term Trend', value: 'Uptrend \u2014 above 200-DMA', color: 'green' });
+            score += 10;
+
+            // ── Dividend yield (FY-based) ────────────────────────────────────────
             const yld = parseFloat(divD.dividend_yield) || 0;
-            if (yld >= 4) score += 42; else if (yld >= 2) score += 26; else if (yld >= 0.5) score += 12;
-            items.push({ label: 'Annual Yield', value: yld.toFixed(2) + '%', color: yld >= 3 ? 'green' : yld >= 1.5 ? 'yellow' : 'red' });
+            if (yld >= 4) score += 36; else if (yld >= 2) score += 22; else if (yld >= 0.5) score += 10;
+            items.push({ label: 'Annual Yield', value: yld.toFixed(2) + '% (' + fyLbl + ')', color: yld >= 3 ? 'green' : yld >= 1.5 ? 'yellow' : 'red' });
+
+            // ── Consistency: consecutive FYs with dividends ──────────────────────
+            const yrsC = parseInt(divD.years_consistent) || 0;
+            if      (yrsC >= 7) score += 22;
+            else if (yrsC >= 5) score += 16;
+            else if (yrsC >= 3) score += 8;
+            else if (yrsC >= 1) score += 2;
+            else                score -= 5;
+            if (yrsC > 0) items.push({ label: 'Consistency', value: yrsC + ' consecutive FY' + (yrsC > 1 ? 's' : ''), color: yrsC >= 5 ? 'green' : yrsC >= 3 ? 'yellow' : 'red' });
+            else items.push({ label: 'Consistency', value: 'No consistent history', color: 'red' });
+
+            // ── Price volatility ─────────────────────────────────────────────────
             const vol = parseFloat(divD.volatility) || 50;
-            if (vol < 22) score += 22; else if (vol < 32) score += 12; else if (vol < 42) score += 5;
+            if (vol < 22) score += 18; else if (vol < 32) score += 10; else if (vol < 42) score += 4;
             items.push({ label: 'Price Volatility', value: vol.toFixed(1) + '%', color: vol < 25 ? 'green' : vol < 38 ? 'yellow' : 'red' });
-            if (divD.ex_dividend_date) { score += 12; items.push({ label: 'Ex-Div Date', value: divD.ex_dividend_date, color: 'cyan' }); }
-            if (divD.payment_date) { score += 8; items.push({ label: 'Payment Date', value: divD.payment_date, color: 'cyan' }); }
+
+            // ── Dates ────────────────────────────────────────────────────────────
+            if (divD.ex_dividend_date) { score += 8; items.push({ label: 'Ex-Div Date', value: divD.ex_dividend_date, color: 'cyan' }); }
+            if (divD.payment_date)     { score += 4; items.push({ label: 'Payment Date', value: divD.payment_date, color: 'cyan' }); }
+
             const annDiv = parseFloat(divD.annual_dividend) || 0;
-            if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: '\u20b9' + annDiv.toFixed(2), color: 'cyan' });
+            if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: '\u20b9' + annDiv.toFixed(2) + ' (' + fyLbl + ')', color: 'cyan' });
+
             return { score: Math.max(0, Math.min(100, score)), items };
         }
 
@@ -5277,14 +5380,34 @@ def index():
             if (!divD || !divD.found || !divD.dividend_yield) {
                 h += '<div class="vd-narrative" style="color:var(--text-muted);">No dividend history found for this stock. It may be a growth-oriented company that reinvests earnings rather than paying dividends.</div>';
             } else {
-                var yld = parseFloat(divD.dividend_yield) || 0;
-                var vol = parseFloat(divD.volatility) || 50;
+                var yld   = parseFloat(divD.dividend_yield) || 0;
+                var vol   = parseFloat(divD.volatility) || 50;
+                var yrsC  = parseInt(divD.years_consistent) || 0;
+                var fyLbl = divD.fy_label || 'the last financial year';
                 var narrative = '';
-                if (yld >= 3) narrative += 'With a yield of <strong style="color:var(--warning);">' + yld.toFixed(2) + '%</strong>, this stock offers above-average dividend income. ';
-                else if (yld >= 1) narrative += 'Provides a modest yield of <strong>' + yld.toFixed(2) + '%</strong> — not a primary income play but contributes total return. ';
-                else narrative += 'Very low dividend yield (' + yld.toFixed(2) + '%). Primarily a capital-appreciation story, not a dividend income candidate. ';
-                if (vol < 25) narrative += 'Low price volatility (' + vol.toFixed(1) + '%) supports dividend sustainability — stable income candidate.';
-                else if (vol > 40) narrative += 'High price volatility (' + vol.toFixed(1) + '%) may offset dividend income with capital loss risk.';
+
+                // Downtrend warning overrides everything else
+                if (divD.in_downtrend) {
+                    narrative += '<span style="color:var(--danger);"><strong>&#9888; Long-term Downtrend:</strong> This stock is trading below its 200-day moving average. '
+                               + 'A ' + yld.toFixed(2) + '% dividend yield (' + fyLbl + ') does NOT compensate for sustained capital erosion — '
+                               + 'it is <strong>not recommended</strong> as a dividend income holding until the trend reverses.</span> ';
+                } else {
+                    // Yield narrative
+                    if (yld >= 3) narrative += 'With a yield of <strong style="color:var(--warning);">' + yld.toFixed(2) + '%</strong> (' + fyLbl + '), this stock offers above-average dividend income. ';
+                    else if (yld >= 1) narrative += 'Provides a modest yield of <strong>' + yld.toFixed(2) + '%</strong> (' + fyLbl + ') — not a primary income play but contributes to total return. ';
+                    else narrative += 'Very low dividend yield (' + yld.toFixed(2) + '%, ' + fyLbl + '). Primarily a capital-appreciation story, not a dividend income candidate. ';
+
+                    // Consistency narrative
+                    if (yrsC >= 7) narrative += 'Exceptionally consistent payer — <strong>' + yrsC + ' consecutive financial years</strong> of dividends signals a reliable income stream. ';
+                    else if (yrsC >= 5) narrative += '<strong>' + yrsC + ' consecutive years</strong> of dividend payments reflect a well-established payout policy. ';
+                    else if (yrsC >= 3) narrative += yrsC + ' consecutive years of dividends — a reasonable track record, though longer history preferred for income portfolios. ';
+                    else if (yrsC >= 1) narrative += 'Only ' + yrsC + ' year(s) of consistent dividend history — limited track record; treat with caution for income strategies. ';
+                    else narrative += 'No consistent multi-year dividend history found. Dividend continuity is uncertain. ';
+
+                    // Volatility narrative
+                    if (vol < 25) narrative += 'Low price volatility (' + vol.toFixed(1) + '%) supports dividend sustainability.';
+                    else if (vol > 40) narrative += 'High price volatility (' + vol.toFixed(1) + '%) may offset dividend income with capital loss risk.';
+                }
                 h += '<div class="vd-narrative">' + narrative + '</div>';
             }
             h += '</div></div>';
@@ -5523,24 +5646,33 @@ def regression_route():
 
 @app.route('/dividend-info')
 def dividend_info_route():
-    """Fetch dividend information for a single stock."""
+    """Fetch dividend information for a single stock.
+
+    Returns FY-based annual dividend, long-term trend flag, and the number of
+    consecutive Indian financial years in which the stock paid at least one dividend
+    (years_consistent).  Downtrend stocks are NOT excluded here — the caller
+    (verdict tab / scanner) receives the flag and can penalise the score.
+    """
     symbol = request.args.get('symbol', '').strip().upper()
     if not symbol:
         return jsonify({'error': 'Please enter a stock symbol'})
     if symbol not in ALL_VALID_TICKERS:
         return jsonify({'error': f'{symbol} is not a recognized NSE stock'})
     try:
-        results, dividend_found = analyzer.fetch_dividend_data([symbol], limit_results=False)
+        # exclude_downtrend=False so verdict tab can show data even for downtrend stocks
+        results, dividend_found = analyzer.fetch_dividend_data(
+            [symbol], limit_results=False, exclude_downtrend=False
+        )
         if not results:
             return jsonify({
                 'symbol': symbol,
                 'found': False,
-                'message': f'{symbol} does not pay dividends or no dividend data is available for the past year'
+                'message': f'{symbol} does not pay dividends or no dividend data is available for the last completed financial year'
             })
         stock = results[0]
         stock['found'] = True
         stock['name'] = TICKER_TO_NAME.get(symbol, symbol)
-        # Find the sector
+        # Sector
         skip_sectors = {"All NSE", "Nifty 50", "Nifty Next 50", "Others", "Conglomerate"}
         stock['sector'] = ''
         for sector_name, sector_stocks in STOCKS.items():
@@ -5549,6 +5681,48 @@ def dividend_info_route():
             if symbol in sector_stocks:
                 stock['sector'] = sector_name
                 break
+
+        # ── Consistency: count consecutive FYs with at least one dividend ──────
+        years_consistent = 0
+        try:
+            hist_divs = yf.Ticker(f"{symbol}.NS").dividends
+            if hist_divs is not None and not hist_divs.empty:
+                today_d = date.today()
+                fy_end_year = today_d.year if today_d.month >= 4 else today_d.year - 1
+                for i in range(10):  # check up to 10 FYs back
+                    fy_s = date(fy_end_year - i - 1, 4, 1)
+                    fy_e = date(fy_end_year - i,     3, 31)
+                    fy_s_ts = pd.Timestamp(fy_s)
+                    fy_e_ts = pd.Timestamp(fy_e)
+                    try:
+                        if hist_divs.index.tz is not None:
+                            fy_s_ts = fy_s_ts.tz_localize('UTC')
+                            fy_e_ts = fy_e_ts.tz_localize('UTC')
+                        fy_slice = hist_divs[
+                            (hist_divs.index >= fy_s_ts) & (hist_divs.index <= fy_e_ts)
+                        ]
+                        if float(fy_slice.sum()) > 0:
+                            years_consistent += 1
+                        else:
+                            break  # stop at the first FY with no dividend
+                    except Exception:
+                        break
+        except Exception:
+            pass
+        stock['years_consistent'] = years_consistent
+
+        # Fetch ex-dividend and payment dates from ticker info
+        try:
+            info = yf.Ticker(f"{symbol}.NS").info
+            ex_div = info.get('exDividendDate')
+            pay_dt = info.get('lastDividendDate') or info.get('payDate')
+            if ex_div:
+                stock['ex_dividend_date'] = datetime.utcfromtimestamp(ex_div).strftime('%Y-%m-%d') if isinstance(ex_div, (int, float)) else str(ex_div)
+            if pay_dt:
+                stock['payment_date'] = datetime.utcfromtimestamp(pay_dt).strftime('%Y-%m-%d') if isinstance(pay_dt, (int, float)) else str(pay_dt)
+        except Exception:
+            pass
+
         return jsonify(stock)
     except Exception as e:
         return jsonify({'error': f'Failed to fetch dividend data for {symbol}: {str(e)}'})
@@ -5658,6 +5832,11 @@ def dividend_optimize_stream_route():
             max_results = DIVIDEND_MAX_RESULTS
             truncated = False
             last_portfolio_update = 0
+            # FY window for this streaming scan
+            _fy_s_str, _fy_e_str = _fy_dates(0)
+            _fy_lbl   = _fy_label(0)
+            _fy_s_ts  = pd.Timestamp(_fy_s_str)
+            _fy_e_ts  = pd.Timestamp(_fy_e_str)
             yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
 
             # Serve cached entries first
@@ -5717,9 +5896,10 @@ def dividend_optimize_stream_route():
             for batch in _batched(symbols_to_fetch, 75):
                 tickers = [f"{s}.NS" for s in batch]
                 try:
+                    # 2y: covers last complete FY for dividends + ~500 days for 200-DMA
                     data = yf.download(
                         tickers=tickers,
-                        period='1y',
+                        period='2y',
                         interval='1d',
                         group_by='column',
                         actions=True,
@@ -5765,7 +5945,31 @@ def dividend_optimize_stream_route():
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
-                        annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
+
+                        # ── Long-term trend: skip stocks below 200-DMA ───────────────
+                        sma200_val = close_series.rolling(min(200, len(close_series))).mean().iloc[-1]
+                        in_downtrend = bool(current_price < float(sma200_val)) if not pd.isna(sma200_val) else False
+                        if in_downtrend:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+
+                        # ── Dividends: slice to last complete Indian FY ──────────────
+                        if not dividends.empty:
+                            try:
+                                if dividends.index.tz is not None:
+                                    d_start = _fy_s_ts.tz_localize('UTC')
+                                    d_end   = _fy_e_ts.tz_localize('UTC')
+                                else:
+                                    d_start = _fy_s_ts
+                                    d_end   = _fy_e_ts
+                                dividends_fy = dividends[(dividends.index >= d_start) & (dividends.index <= d_end)]
+                            except Exception:
+                                dividends_fy = dividends
+                        else:
+                            dividends_fy = dividends
+
+                        annual_dividend = _compute_split_adjusted_dividend(dividends_fy, splits)
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -5774,11 +5978,13 @@ def dividend_optimize_stream_route():
                         returns = close_series.pct_change().dropna()
                         volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
                         entry = {
-                            'symbol': symbol,
-                            'price': round(current_price, 2),
+                            'symbol':          symbol,
+                            'price':           round(current_price, 2),
                             'annual_dividend': round(annual_dividend, 2),
-                            'dividend_yield': round(dividend_yield, 2),
-                            'volatility': round(volatility, 2)
+                            'dividend_yield':  round(dividend_yield, 2),
+                            'volatility':      round(volatility, 2),
+                            'fy_label':        _fy_lbl,
+                            'in_downtrend':    False,
                         }
                         dividend_found += 1
                         results.append(entry)
