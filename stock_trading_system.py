@@ -2385,6 +2385,7 @@ class Analyzer:
                     # exceeding 8 % of the current share price is not a regular dividend.
                     if not dividends_fy.empty:
                         dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
+                    annual_dividend = float(dividends_fy.sum()) if not dividends_fy.empty else 0.0
                     if annual_dividend <= 0:
                         continue
 
@@ -6138,6 +6139,7 @@ def dividend_optimize_stream_route():
                         # Drop one-off corporate-action entries misclassified as dividends
                         if not dividends_fy.empty:
                             dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
+                        annual_dividend = float(dividends_fy.sum()) if not dividends_fy.empty else 0.0
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
