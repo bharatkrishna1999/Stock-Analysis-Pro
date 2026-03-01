@@ -3838,8 +3838,10 @@ def index():
             var el = document.getElementById('sc-status-text');
             if (el) el.innerHTML = 'Scan stopped. Click Re-scan to start again.';
         }
+        var _verdictReturnTab = null;
         function openScannerStock(symbol) {
-            // Navigate to verdict tab — scanner results persist when user returns
+            // Remember that we came from the scanner so Back returns there
+            _verdictReturnTab = 'scanner';
             switchTab('verdict');
             document.getElementById('verdict-search').value = symbol;
             fetchVerdictData();
@@ -5036,7 +5038,13 @@ def index():
         // ===== INVESTMENT VERDICT TAB =====
         function verdictGoBack() {
             document.getElementById('verdict-result-view').style.display = 'none';
-            document.getElementById('verdict-search-view').style.display = 'block';
+            var returnTab = _verdictReturnTab;
+            _verdictReturnTab = null;
+            if (returnTab) {
+                switchTab(returnTab);
+            } else {
+                document.getElementById('verdict-search-view').style.display = 'block';
+            }
         }
 
         function verdictScoreColor(score) {
