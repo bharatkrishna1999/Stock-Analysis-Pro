@@ -20,7 +20,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy import stats
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import warnings
 import matplotlib
 import matplotlib.pyplot as plt
@@ -381,6 +381,32 @@ def _compute_split_adjusted_dividend(dividends, splits):
             factor = 1.0
         adjusted_total += float(div_value) / factor
     return float(adjusted_total)
+
+
+def _fy_dates(n_years_back=0):
+    """Return (start_str, end_str) for a completed Indian financial year.
+
+    Indian FY: April 1 → March 31.
+    n_years_back=0 → most recently completed FY
+                      (e.g. FY2024-25 when today is Feb 2026)
+    n_years_back=1 → the FY before that, etc.
+    Returns strings in 'YYYY-MM-DD' format.
+    """
+    today = date.today()
+    # fy_end_year is the calendar year in which the FY ends (March)
+    fy_end_year = today.year if today.month >= 4 else today.year - 1
+    fy_end_year -= n_years_back
+    fy_start = date(fy_end_year - 1, 4, 1)
+    fy_end   = date(fy_end_year,     3, 31)
+    return fy_start.strftime('%Y-%m-%d'), fy_end.strftime('%Y-%m-%d')
+
+
+def _fy_label(n_years_back=0):
+    """Return a human-readable label, e.g. 'FY2024-25'."""
+    today = date.today()
+    fy_end_year = today.year if today.month >= 4 else today.year - 1
+    fy_end_year -= n_years_back
+    return f"FY{fy_end_year - 1}-{str(fy_end_year)[2:]}"
 
 
 def fetch_nse_universe():
@@ -2257,13 +2283,29 @@ class Analyzer:
             traceback.print_exc()
             return None
 
-    def fetch_dividend_data(self, symbols, limit_results=True):
-        """Fetch dividend yield, current price, and annualized volatility for given symbols."""
+    def fetch_dividend_data(self, symbols, limit_results=True, exclude_downtrend=True):
+        """Fetch FY-based dividend yield, current price, and volatility for given symbols.
+
+        Annual dividend is summed over the most recently completed Indian financial year
+        (April 1 → March 31) rather than a rolling 12-month window.  This gives a clean,
+        comparable figure that aligns with how Indian companies declare dividends.
+
+        Stocks whose current price is below their 200-day moving average (long-term
+        downtrend) are excluded from results by default so the dividend optimiser never
+        recommends stocks in structural decline.  Pass exclude_downtrend=False to
+        retrieve data for all stocks regardless (used by the single-stock verdict tab).
+        """
         results = []
         dividend_found = 0
 
         if not symbols:
             return results, dividend_found
+
+        # Resolve FY window once for this call
+        fy_start_str, fy_end_str = _fy_dates(0)
+        fy_lbl = _fy_label(0)
+        fy_start_ts = pd.Timestamp(fy_start_str)
+        fy_end_ts   = pd.Timestamp(fy_end_str)
 
         def _batched(iterable, size):
             for idx in range(0, len(iterable), size):
@@ -2272,9 +2314,11 @@ class Analyzer:
         for batch in _batched(symbols, 75):
             tickers = [f"{symbol}.NS" for symbol in batch]
             try:
+                # 2y covers the last complete FY for dividends AND provides enough
+                # history (~500 trading days) to compute a reliable 200-DMA
                 data = yf.download(
                     tickers=tickers,
-                    period='1y',
+                    period='2y',
                     interval='1d',
                     group_by='column',
                     actions=True,
@@ -2310,12 +2354,41 @@ class Analyzer:
                             splits = pd.Series(dtype=float)
                     if close_series.empty or len(close_series) < 10:
                         continue
+                    # Use latest close as current price (for yield denominator)
                     current_price = float(close_series.iloc[-1])
                     if current_price <= 0:
                         continue
-                    annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
+
+                    # ── Long-term trend: 200-DMA check ──────────────────────────────
+                    sma200_val = close_series.rolling(min(200, len(close_series))).mean().iloc[-1]
+                    in_downtrend = bool(current_price < float(sma200_val)) if not pd.isna(sma200_val) else False
+                    if exclude_downtrend and in_downtrend:
+                        continue  # never recommend stocks in structural decline
+
+                    # ── Dividends: slice to last complete Indian FY ──────────────────
+                    if not dividends.empty:
+                        try:
+                            if dividends.index.tz is not None:
+                                d_start = fy_start_ts.tz_localize('UTC')
+                                d_end   = fy_end_ts.tz_localize('UTC')
+                            else:
+                                d_start = fy_start_ts
+                                d_end   = fy_end_ts
+                            dividends_fy = dividends[(dividends.index >= d_start) & (dividends.index <= d_end)]
+                        except Exception:
+                            dividends_fy = dividends
+                    else:
+                        dividends_fy = dividends
+
+                    # Drop one-off corporate-action entries (demergers, buybacks, rights)
+                    # that yfinance misclassifies as dividends.  Any single payment
+                    # exceeding 8 % of the current share price is not a regular dividend.
+                    if not dividends_fy.empty:
+                        dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
+                    annual_dividend = float(dividends_fy.sum()) if not dividends_fy.empty else 0.0
                     if annual_dividend <= 0:
                         continue
+
                     dividend_yield = (annual_dividend / current_price) * 100
                     returns = close_series.pct_change().dropna()
                     volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
@@ -2323,11 +2396,13 @@ class Analyzer:
                     dividend_found += 1
 
                     results.append({
-                        'symbol': symbol,
-                        'price': round(current_price, 2),
+                        'symbol':          symbol,
+                        'price':           round(current_price, 2),
                         'annual_dividend': round(annual_dividend, 2),
-                        'dividend_yield': round(dividend_yield, 2),
-                        'volatility': round(volatility, 2)
+                        'dividend_yield':  round(dividend_yield, 2),
+                        'volatility':      round(volatility, 2),
+                        'fy_label':        fy_lbl,
+                        'in_downtrend':    in_downtrend,
                     })
                 except Exception:
                     continue
@@ -2562,6 +2637,71 @@ class Analyzer:
             except Exception:
                 pass
 
+            # --- Compute RoCE (Return on Capital Employed) ---
+            roce = None
+            margin_trend = []
+            try:
+                income_stmt = ticker_obj.income_stmt
+                if income_stmt is not None and not income_stmt.empty:
+                    ebit_val = None
+                    for row_name in ['EBIT', 'Operating Income', 'Operating Income Or Loss']:
+                        if row_name in income_stmt.index:
+                            v = income_stmt.loc[row_name].iloc[0]
+                            if pd.notna(v):
+                                ebit_val = float(v)
+                                break
+                    if ebit_val is not None and balance_sheet is not None and not balance_sheet.empty:
+                        total_assets = None
+                        curr_liabilities = None
+                        for row_name in ['Total Assets']:
+                            if row_name in balance_sheet.index:
+                                v = balance_sheet.loc[row_name].iloc[0]
+                                if pd.notna(v):
+                                    total_assets = float(v)
+                                    break
+                        for row_name in ['Current Liabilities', 'Total Current Liabilities']:
+                            if row_name in balance_sheet.index:
+                                v = balance_sheet.loc[row_name].iloc[0]
+                                if pd.notna(v):
+                                    curr_liabilities = float(v)
+                                    break
+                        if total_assets and total_assets > 0:
+                            cap_employed = total_assets - (curr_liabilities or 0)
+                            if cap_employed > 0:
+                                roce = round(ebit_val / cap_employed, 4)
+                    # --- Margin and Revenue trend (all available years) ---
+                    revenue_row = None
+                    op_income_row = None
+                    net_income_row = None
+                    for r in ['Total Revenue', 'Revenue', 'Net Revenue']:
+                        if r in income_stmt.index:
+                            revenue_row = income_stmt.loc[r]
+                            break
+                    for r in ['Operating Income', 'EBIT', 'Operating Income Or Loss']:
+                        if r in income_stmt.index:
+                            op_income_row = income_stmt.loc[r]
+                            break
+                    for r in ['Net Income', 'Net Income From Continuing Operations']:
+                        if r in income_stmt.index:
+                            net_income_row = income_stmt.loc[r]
+                            break
+                    if revenue_row is not None:
+                        for col in revenue_row.dropna().index:
+                            yr = col.year if hasattr(col, 'year') else int(str(col)[:4])
+                            rev = float(revenue_row[col]) if pd.notna(revenue_row[col]) else None
+                            op = float(op_income_row[col]) if (op_income_row is not None and col in op_income_row.index and pd.notna(op_income_row[col])) else None
+                            net = float(net_income_row[col]) if (net_income_row is not None and col in net_income_row.index and pd.notna(net_income_row[col])) else None
+                            if rev and rev > 0:
+                                margin_trend.append({
+                                    'year': yr,
+                                    'revenue': int(round(rev)),
+                                    'op_margin': round(op / rev * 100, 1) if op is not None else None,
+                                    'net_margin': round(net / rev * 100, 1) if net is not None else None,
+                                })
+                        margin_trend.sort(key=lambda x: x['year'])
+            except Exception:
+                pass
+
             # Suggested growth rate: clamp historical CAGR to [3%, 40%]
             if historical_growth is not None:
                 suggested_growth = min(max(float(historical_growth), 0.03), 0.40)
@@ -2587,6 +2727,8 @@ class Analyzer:
                 'pb_ratio': info.get('priceToBook'),
                 'ev_ebitda': info.get('enterpriseToEbitda'),
                 'roe': info.get('returnOnEquity'),
+                'roce': roce,
+                'margin_trend': margin_trend,
                 'fcf_history': fcf_history,
             }
         except Exception as e:
@@ -2625,7 +2767,7 @@ def index():
     <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root { --bg-dark: #0F1824; --bg-card: #162033; --bg-card-hover: #1C2B42; --accent-cyan: #387ed1; --accent-gold: #387ed1; --accent-purple: #5e6ad2; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #1E3448; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
+        :root { --bg-dark: #1B2D3F; --bg-card: #243A50; --bg-card-hover: #2C4560; --accent-cyan: #387ed1; --accent-gold: #387ed1; --accent-purple: #5e6ad2; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #2E4D66; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-dark); color: var(--text-primary); min-height: 100vh; line-height: 1.6; }
         .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
 
@@ -2662,8 +2804,8 @@ def index():
         .card { background: var(--bg-card); border-radius: 12px; padding: 25px; border: 1px solid var(--border-color); transition: all 0.3s; }
         .card:hover { background: var(--bg-card-hover); border-color: rgba(56,126,209,0.35); }
         .card h2 { color: var(--text-primary); margin-bottom: 15px; font-size: 1.3em; font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
-        #search, #regression-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; }
-        #search:focus, #regression-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(56, 126, 209, 0.12); }
+        #search, #regression-search, #verdict-search, #dcf-search { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1em; background: var(--bg-dark); color: var(--text-primary); transition: all 0.3s; font-family: 'Inter', sans-serif; }
+        #search:focus, #regression-search:focus, #verdict-search:focus, #dcf-search:focus { outline: none; border-color: var(--accent-cyan); box-shadow: 0 0 0 3px rgba(56, 126, 209, 0.15); }
         #dividend-search:focus { outline: none; border-color: var(--accent-gold); box-shadow: 0 0 0 3px rgba(56, 126, 209, 0.12); }
         .suggestions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 15px; max-height: 300px; overflow-y: auto; }
         .category { margin-bottom: 20px; }
@@ -3028,8 +3170,8 @@ def index():
             .dcf-key-stats { grid-template-columns: 1fr; }
         }
         /* ===== INVESTMENT VERDICT TAB ===== */
-        .verdict-fetch-btn { width:100%;margin-top:14px;padding:14px;background:linear-gradient(135deg,#1C3A5E,#243F68);color:var(--text-primary);border:1px solid rgba(61,122,181,0.35);border-radius:8px;font-size:1em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.3s;letter-spacing:0.3px; }
-        .verdict-fetch-btn:hover { transform:translateY(-2px);box-shadow:0 5px 20px rgba(0,0,0,0.35); }
+        .verdict-fetch-btn { width:100%;margin-top:14px;padding:14px;background:linear-gradient(135deg,#1C3A5E,#2A5080);color:#E8EDF2;border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.25s;letter-spacing:0.3px;box-shadow:0 4px 16px rgba(27,45,63,0.22); }
+        .verdict-fetch-btn:hover { transform:translateY(-2px);box-shadow:0 8px 28px rgba(27,45,63,0.32);background:linear-gradient(135deg,#233F60,#316090); }
         .vd-hero { background:var(--bg-card-hover);border-radius:14px;padding:24px 28px;margin-bottom:22px;border:1px solid var(--border-color);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px; }
         .vd-name { font-family:'Space Grotesk',sans-serif;font-size:1.55em;font-weight:700;color:var(--text-primary); }
         .vd-sub { color:var(--text-muted);font-size:0.86em;margin-top:3px; }
@@ -3087,10 +3229,83 @@ def index():
         .vd-load-status.loading { color:var(--warning); }
         .vd-load-status.error { color:var(--danger); }
         .vd-divider { height:1px;background:var(--border-color);margin:6px 0 14px; }
+        /* Investor Profile */
+        .pref-group { display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;margin-bottom:4px; }
+        .pref-btn { background:var(--bg-dark);color:var(--text-secondary);border:1px solid var(--border-color);border-radius:20px;padding:6px 14px;font-size:0.82em;font-weight:600;cursor:pointer;transition:all 0.2s;font-family:'Inter',sans-serif; }
+        .pref-btn:hover { border-color:var(--accent-cyan);color:var(--text-primary); }
+        .pref-btn.active { background:rgba(56,126,209,0.15);border-color:var(--accent-cyan);color:var(--accent-cyan); }
+        .pref-label { font-size:0.75em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin-top:14px;margin-bottom:2px; }
+        /* ── HNI Questionnaire ───────────────────────────────────────────── */
+        .qz-section { margin-bottom:18px; }
+        .qz-header { display:flex;align-items:flex-start;gap:10px;margin-bottom:10px; }
+        .qz-num { min-width:26px;height:26px;border-radius:50%;background:rgba(56,126,209,0.1);border:1px solid rgba(56,126,209,0.28);color:var(--accent-cyan);font-size:0.72em;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px;transition:all 0.25s; }
+        .qz-num.done { background:rgba(16,185,129,0.15);border-color:rgba(16,185,129,0.4);color:var(--accent-green); }
+        .qz-q { font-size:0.9em;font-weight:600;color:var(--text-primary);line-height:1.45;padding-top:3px; }
+        .qz-opts { display:flex;flex-wrap:wrap;gap:8px;padding-left:36px; }
+        .qz-opt { flex:1 1 150px;background:var(--bg-dark);border:1px solid var(--border-color);border-radius:10px;padding:10px 13px;cursor:pointer;transition:all 0.2s;text-align:left;font-family:'Inter',sans-serif; }
+        .qz-opt:hover { border-color:var(--accent-cyan);background:rgba(56,126,209,0.06); }
+        .qz-opt.selected { background:rgba(56,126,209,0.13);border-color:var(--accent-cyan); }
+        .qz-opt-label { font-size:0.82em;font-weight:700;color:var(--text-primary);margin-bottom:3px; }
+        .qz-opt.selected .qz-opt-label { color:var(--accent-cyan); }
+        .qz-opt-desc { font-size:0.71em;color:var(--text-muted);line-height:1.3; }
+        .qz-divider { height:1px;background:var(--border-color);margin:4px 0 18px; }
+        .qz-progress { font-size:0.75em;color:var(--text-muted);margin-bottom:12px;min-height:1.1em; }
+        .qz-progress strong { color:var(--accent-cyan); }
+        .qz-cta { width:100%;padding:14px;background:linear-gradient(90deg,rgba(56,126,209,0.18),rgba(139,92,246,0.12));border:1px solid rgba(56,126,209,0.4);color:var(--accent-cyan);border-radius:12px;font-size:0.95em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.25s;display:none; }
+        .qz-cta.ready { display:block; }
+        .qz-cta:hover { background:linear-gradient(90deg,rgba(56,126,209,0.28),rgba(139,92,246,0.22));box-shadow:0 0 18px rgba(56,126,209,0.22); }
+        .suggest-stocks-btn { width:100%;margin-top:18px;padding:11px;background:rgba(56,126,209,0.12);border:1px solid rgba(56,126,209,0.35);color:var(--accent-cyan);border-radius:10px;font-size:0.9em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s; }
+        .suggest-stocks-btn:hover { background:rgba(56,126,209,0.22); }
+        /* Trend indicators */
+        .trend-section-title { font-size:0.75em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin:16px 0 8px; }
+        .trend-row { display:flex;align-items:center;gap:8px;padding:7px 12px;border-radius:8px;background:var(--bg-dark);margin-bottom:6px; }
+        .trend-label { font-size:0.78em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.4px;min-width:130px; }
+        .trend-values { font-size:0.8em;color:var(--text-secondary);font-family:'Space Grotesk',sans-serif;flex:1; }
+        .trend-arrow { font-size:1em;font-weight:700;min-width:20px;text-align:right; }
+        .trend-arrow.up { color:var(--accent-green); }
+        .trend-arrow.down { color:var(--danger); }
+        .trend-arrow.flat { color:var(--warning); }
+        /* Score card clickable */
+        .vd-score-card { cursor:pointer; }
+        /* Curated stocks modal */
+        .curated-modal { position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:16px; }
+        .curated-modal-box { background:var(--bg-card);border-radius:16px;border:1px solid var(--border-color);padding:26px;max-width:680px;width:100%;max-height:82vh;overflow-y:auto; }
+        .curated-modal-title { font-family:'Space Grotesk',sans-serif;font-size:1.2em;font-weight:700;margin-bottom:4px; }
+        .curated-modal-sub { color:var(--text-muted);font-size:0.83em;margin-bottom:18px;line-height:1.5; }
+        .curated-group { margin-bottom:18px; }
+        .curated-group-title { font-size:0.74em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid var(--border-color); }
+        .curated-stocks { display:flex;flex-wrap:wrap;gap:8px; }
+        .curated-stock-btn { background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:20px;padding:6px 14px;font-size:0.83em;cursor:pointer;transition:all 0.2s;font-family:'Space Grotesk',sans-serif;font-weight:600; }
+        .curated-stock-btn:hover { border-color:var(--accent-cyan);color:var(--accent-cyan);background:rgba(56,126,209,0.1); }
+        .curated-close-btn { width:100%;padding:10px;background:var(--bg-dark);border:1px solid var(--border-color);color:var(--text-secondary);border-radius:10px;font-size:0.88em;cursor:pointer;margin-top:16px;font-family:'Inter',sans-serif; }
+        /* Scanner tab */
+        .scanner-start-btn { width:100%;margin-top:18px;padding:11px;background:rgba(56,126,209,0.12);border:1px solid rgba(56,126,209,0.35);color:var(--accent-cyan);border-radius:10px;font-size:0.9em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s; }
+        .scanner-start-btn:hover { background:rgba(56,126,209,0.22); }
+        .scanner-stop-btn { width:100%;margin-top:8px;padding:9px;background:rgba(220,53,69,0.1);border:1px solid rgba(220,53,69,0.3);color:var(--danger);border-radius:10px;font-size:0.85em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s;display:none; }
+        .scanner-stop-btn:hover { background:rgba(220,53,69,0.2); }
+        .sc-stat-row { display:flex;flex-wrap:wrap;gap:16px;margin-bottom:14px;font-size:0.82em;color:var(--text-muted); }
+        .sc-stat-row span { display:flex;align-items:center;gap:4px; }
+        .sc-stat-row strong { color:var(--text-primary); }
+        /* Live scan rows */
+        .scan-row { display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--bg-dark);border:1px solid var(--border-color);border-radius:10px;margin-bottom:8px;transition:border-color 0.2s,background 0.2s; }
+        .scan-row:hover { border-color:var(--accent-cyan);background:rgba(56,126,209,0.06); }
+        .scan-rank { font-family:'Space Grotesk',sans-serif;font-size:0.82em;font-weight:700;color:var(--text-muted);min-width:22px;text-align:center; }
+        .scan-info { flex:1;min-width:0; }
+        .scan-name { font-family:'Space Grotesk',sans-serif;font-size:0.92em;font-weight:700;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
+        .scan-symbol { font-size:0.74em;color:var(--text-muted); }
+        .scan-scores { display:flex;gap:10px; }
+        .scan-score-item { text-align:center;min-width:32px; }
+        .scan-score-label { display:block;font-size:0.62em;text-transform:uppercase;color:var(--text-muted);letter-spacing:0.3px; }
+        .scan-score-item span:last-child { font-family:'Space Grotesk',sans-serif;font-size:0.88em;font-weight:700; }
+        .scan-main-score { font-family:'Space Grotesk',sans-serif;font-size:1.4em;font-weight:700;min-width:40px;text-align:right; }
+        @media (max-width:480px) { .scan-scores { display:none; } .scan-main-score { font-size:1.2em; } }
+        /* Profile badge on verdict overall */
+        .profile-match-badge { display:inline-block;margin-top:10px;padding:4px 12px;border-radius:20px;font-size:0.78em;font-weight:700;background:rgba(56,126,209,0.15);color:var(--accent-cyan);border:1px solid rgba(56,126,209,0.3); }
         @media (max-width:768px) {
             .vd-score-grid { grid-template-columns:1fr; }
             .vd-metrics { grid-template-columns:1fr 1fr; }
             .vd-trade-levels { grid-template-columns:1fr 1fr 1fr; }
+            .trend-label { min-width:100px; }
         }
     </style>
 </head>
@@ -3104,6 +3319,7 @@ def index():
                 <button class="nav-link" data-tab="dcf" onclick="switchTab('dcf', event)">DCF Valuation</button>
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
+                <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
             </div>
             <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
                 <span></span><span></span><span></span>
@@ -3117,6 +3333,7 @@ def index():
         <button class="mobile-menu-item" data-tab="dcf" onclick="switchTab('dcf', event); closeMobileMenu()">DCF Valuation</button>
         <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
+        <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
     </div>
     <header>
         <div class="container">
@@ -3260,32 +3477,24 @@ def index():
         </div>
         <div id="verdict-tab" class="tab-content active">
             <div id="verdict-search-view">
-                <div class="grid">
-                    <div class="card">
-                        <h2>Investment Verdict</h2>
-                        <p style="color:var(--text-secondary);margin-bottom:18px;font-size:0.92em;line-height:1.7;">
-                            Combines Technical signals, DCF valuation, Market Connection and Dividend metrics into one unified verdict — telling you exactly what this stock is best suited for.
-                        </p>
-                        <input type="text" id="verdict-search" placeholder="Search stock symbol (e.g. TCS, INFY, RELIANCE, HDFC)..." style="font-size:1.1em;padding:14px 18px;height:54px;">
+                <div style="text-align:center;padding:64px 20px 28px;max-width:680px;margin:0 auto;">
+                    <div style="display:inline-flex;align-items:center;gap:7px;background:rgba(56,126,209,0.13);border:1px solid rgba(56,126,209,0.3);border-radius:20px;padding:5px 16px;font-size:0.76em;font-weight:700;color:var(--accent-cyan);letter-spacing:0.6px;text-transform:uppercase;margin-bottom:22px;">&#9889; AI-Powered Analysis Engine</div>
+                    <h1 style="font-family:'Space Grotesk',sans-serif;font-size:2.6em;font-weight:800;color:var(--text-primary);line-height:1.15;margin-bottom:16px;letter-spacing:-0.5px;">Investment Verdict</h1>
+                    <p style="color:var(--text-secondary);font-size:1em;line-height:1.75;max-width:520px;margin:0 auto;">Combines <strong style="color:var(--text-primary);">Technical signals</strong>, <strong style="color:var(--text-primary);">DCF valuation</strong>, <strong style="color:var(--text-primary);">Market Connection</strong> and <strong style="color:var(--text-primary);">Dividend metrics</strong> into one unified score — telling you exactly what this stock is best suited for.</p>
+                </div>
+                <div style="max-width:540px;margin:0 auto;padding:0 20px 20px;">
+                    <div style="background:var(--bg-card);border-radius:18px;padding:30px 28px;border:1px solid var(--border-color);box-shadow:0 8px 40px rgba(27,45,63,0.18);">
+                        <label style="display:block;font-size:0.76em;font-weight:700;text-transform:uppercase;letter-spacing:0.7px;color:var(--text-muted);margin-bottom:8px;">Stock Symbol</label>
+                        <input type="text" id="verdict-search" placeholder="e.g. TCS, INFY, RELIANCE, HDFC..." style="font-size:1.05em;padding:14px 18px;height:52px;border-radius:10px;">
                         <div class="suggestions" id="verdict-suggestions"></div>
-                        <button class="verdict-fetch-btn" onclick="fetchVerdictData()">Analyse &amp; Get Verdict</button>
+                        <button class="verdict-fetch-btn" onclick="fetchVerdictData()" style="margin-top:16px;border-radius:10px;font-size:1em;height:52px;letter-spacing:0.3px;">&#128269;&nbsp; Analyse &amp; Get Verdict</button>
                     </div>
-                    <div class="card">
-                        <h2>What You Get</h2>
-                        <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px;">
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-cyan);">
-                                <strong style="color:var(--accent-cyan);font-size:0.88em;">Short-Term Trading</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Entry price, stop loss, target, timeframe and why the technical setup makes sense right now.</p>
-                            </div>
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--accent-green);">
-                                <strong style="color:var(--accent-green);font-size:0.88em;">Long-Term Holding</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">DCF intrinsic value, FCF growth, beta and market dependency to assess long-term wealth creation.</p>
-                            </div>
-                            <div style="background:var(--bg-dark);padding:12px 14px;border-radius:8px;border-left:3px solid var(--warning);">
-                                <strong style="color:var(--warning);font-size:0.88em;">Dividend Income</strong>
-                                <p style="color:var(--text-muted);font-size:0.8em;margin:4px 0 0;line-height:1.5;">Yield, stability and upcoming dividend dates to evaluate as a passive income candidate.</p>
-                            </div>
-                        </div>
+                    <div style="display:flex;justify-content:center;gap:28px;margin-top:28px;flex-wrap:wrap;">
+                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">4-in-1</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Score Model</div></div>
+                        <div style="width:1px;background:var(--border-color);"></div>
+                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">292</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">NSE Stocks</div></div>
+                        <div style="width:1px;background:var(--border-color);"></div>
+                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">Live</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Market Data</div></div>
                     </div>
                 </div>
             </div>
@@ -3293,6 +3502,95 @@ def index():
                 <button class="back-btn" onclick="verdictGoBack()">&#8592; Back to Search</button>
                 <div id="verdict-result"></div>
             </div>
+        </div>
+        <div id="scanner-tab" class="tab-content">
+            <div class="card" style="max-width:860px;margin:0 auto 0;">
+                <h2 style="margin-bottom:4px;">&#127919; Build Your Top-20 Portfolio</h2>
+                <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:22px;line-height:1.5;">Answer 6 questions and we will run 292 NSE stocks through 3 progressive filters — returning your personalised top 20.</p>
+
+                <!-- Q1 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn1">1</div><div class="qz-q">What is your primary investment objective?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q1" data-v="beat" onclick="setQ('q1','beat',this)"><div class="qz-opt-label">&#128200; Beat the Index</div><div class="qz-opt-desc">Alpha above Nifty — concentrated bets on high-conviction ideas</div></button>
+                        <button class="qz-opt" data-q="q1" data-v="compounder" onclick="setQ('q1','compounder',this)"><div class="qz-opt-label">&#9889; Steady Compounder</div><div class="qz-opt-desc">12–18% CAGR — quality businesses held through business cycles</div></button>
+                        <button class="qz-opt" data-q="q1" data-v="income" onclick="setQ('q1','income',this)"><div class="qz-opt-label">&#128176; Regular Income</div><div class="qz-opt-desc">Consistent dividends, capital safety, minimal drawdowns</div></button>
+                        <button class="qz-opt" data-q="q1" data-v="tactical" onclick="setQ('q1','tactical',this)"><div class="qz-opt-label">&#127919; Tactical Play</div><div class="qz-opt-desc">Momentum &amp; technical setups — shorter-horizon event-driven trades</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q2 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn2">2</div><div class="qz-q">Your portfolio is down 25% from peak. What is your instinct?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q2" data-v="cut" onclick="setQ('q2','cut',this)"><div class="qz-opt-label">&#128683; Protect Capital</div><div class="qz-opt-desc">I exit or reduce — preserving principal is non-negotiable</div></button>
+                        <button class="qz-opt" data-q="q2" data-v="calm" onclick="setQ('q2','calm',this)"><div class="qz-opt-label">&#128564; Hold Steady</div><div class="qz-opt-desc">I trust the fundamentals, stay the course and wait it out</div></button>
+                        <button class="qz-opt" data-q="q2" data-v="buy" onclick="setQ('q2','buy',this)"><div class="qz-opt-label">&#128640; Average Down</div><div class="qz-opt-desc">Drawdowns are opportunities — I deploy more capital aggressively</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q3 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn3">3</div><div class="qz-q">What is your planned holding horizon for this deployment?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q3" data-v="s6m" onclick="setQ('q3','s6m',this)"><div class="qz-opt-label">&#9889; Under 6 Months</div><div class="qz-opt-desc">Event-driven plays, earnings season, technical breakouts</div></button>
+                        <button class="qz-opt" data-q="q3" data-v="s2yr" onclick="setQ('q3','s2yr',this)"><div class="qz-opt-label">&#128337; 6 Months – 2 Years</div><div class="qz-opt-desc">Sectoral recovery, re-rating plays, medium business cycle</div></button>
+                        <button class="qz-opt" data-q="q3" data-v="s5yr" onclick="setQ('q3','s5yr',this)"><div class="qz-opt-label">&#128200; 2 – 5 Years</div><div class="qz-opt-desc">Structural theme investing across a full business cycle</div></button>
+                        <button class="qz-opt" data-q="q3" data-v="long" onclick="setQ('q3','long',this)"><div class="qz-opt-label">&#127381; 5+ Years</div><div class="qz-opt-desc">Long-term compounding — buy, hold, and let time do the work</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q4 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn4">4</div><div class="qz-q">Which market-cap range aligns with your strategy?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q4" data-v="large" onclick="setQ('q4','large',this)"><div class="qz-opt-label">&#127963; Large-Cap Only</div><div class="qz-opt-desc">Nifty 50 blue chips — deep liquidity, institutional grade</div></button>
+                        <button class="qz-opt" data-q="q4" data-v="mid" onclick="setQ('q4','mid',this)"><div class="qz-opt-label">&#9878;&#65039; Large + Mid</div><div class="qz-opt-desc">Best of both — quality anchors with mid-cap alpha kickers</div></button>
+                        <button class="qz-opt" data-q="q4" data-v="small" onclick="setQ('q4','small',this)"><div class="qz-opt-label">&#128293; Mid &amp; Small</div><div class="qz-opt-desc">Maximum alpha potential — higher short-term volatility accepted</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q5 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn5">5</div><div class="qz-q">Do you have a sector conviction right now?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q5" data-v="fin" onclick="setQ('q5','fin',this)"><div class="qz-opt-label">&#127981; Financials</div><div class="qz-opt-desc">Banks, NBFCs, insurance, AMCs</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="pharma" onclick="setQ('q5','pharma',this)"><div class="qz-opt-label">&#128138; Pharma &amp; Health</div><div class="qz-opt-desc">Pharma, hospitals, diagnostics, chemicals</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="infra" onclick="setQ('q5','infra',this)"><div class="qz-opt-label">&#127959;&#65039; Infra &amp; Capex</div><div class="qz-opt-desc">Infrastructure, defence, capital goods, power, cement</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="tech" onclick="setQ('q5','tech',this)"><div class="qz-opt-label">&#128187; Technology</div><div class="qz-opt-desc">IT services, software, digital platforms</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="consumer" onclick="setQ('q5','consumer',this)"><div class="qz-opt-label">&#128666; Consumer &amp; Auto</div><div class="qz-opt-desc">FMCG, auto, retail, hospitality, electronics</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="all" onclick="setQ('q5','all',this)"><div class="qz-opt-label">&#127758; No Preference</div><div class="qz-opt-desc">Purely quantitative — best ideas across all sectors</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q6 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn6">6</div><div class="qz-q">How are you positioned on the broader market right now?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q6" data-v="bull" onclick="setQ('q6','bull',this)"><div class="qz-opt-label">&#128640; Fully Deployed</div><div class="qz-opt-desc">Markets are going higher — I want to be fully invested</div></button>
+                        <button class="qz-opt" data-q="q6" data-v="selective" onclick="setQ('q6','selective',this)"><div class="qz-opt-label">&#127919; Selective</div><div class="qz-opt-desc">Cautiously optimistic — quality at fair value, not at any price</div></button>
+                        <button class="qz-opt" data-q="q6" data-v="defensive" onclick="setQ('q6','defensive',this)"><div class="qz-opt-label">&#128737;&#65039; Defensive</div><div class="qz-opt-desc">Capital preservation first — low volatility, earnings certainty</div></button>
+                    </div>
+                </div>
+
+                <div class="qz-progress" id="qz-progress"></div>
+                <button class="qz-cta" id="qz-cta" onclick="startScanInTab()">&#128269; Find My Top 20 Stocks</button>
+                <button class="scanner-stop-btn" id="scanner-stop-btn" onclick="stopScanInTab()">&#9632; Stop Scan</button>
+            </div>
+            <div class="card" id="sc-status-card" style="display:none;max-width:860px;margin:18px auto 0;">
+                <div id="sc-sub" style="font-size:0.88em;color:var(--text-muted);margin-bottom:12px;line-height:1.5;"></div>
+                <div style="background:var(--bg-dark);border-radius:8px;height:6px;overflow:hidden;margin-bottom:10px;">
+                    <div id="sc-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.35s;border-radius:8px;"></div>
+                </div>
+                <div id="sc-status-text" style="font-size:0.78em;color:var(--text-muted);margin-bottom:10px;"></div>
+                <div class="sc-stat-row" id="sc-stat-row"></div>
+            </div>
+            <div id="scanner-results-area" style="margin-top:18px;max-width:860px;margin-left:auto;margin-right:auto;"></div>
         </div>
     </main>
     <script>
@@ -3312,6 +3610,413 @@ def index():
             return "";
         }
         const allTickers = [...new Set(Object.values(stocks).flat())];
+
+        // ===== INVESTOR PROFILE =====
+        var investorProfile = { horizon: 'long', risk: 'medium', goal: 'growth', mcap: 'mid', sector: 'all', view: 'selective' };
+
+        // ===== QUESTIONNAIRE STATE =====
+        var questionnaire = { q1: null, q2: null, q3: null, q4: null, q5: null, q6: null };
+        var QZ_TOTAL = 6;
+
+        function loadProfile() {
+            try {
+                var p = JSON.parse(localStorage.getItem('stockProProfile'));
+                if (p && typeof p === 'object') {
+                    investorProfile = Object.assign(investorProfile, p);
+                    if (p.qz && typeof p.qz === 'object') questionnaire = Object.assign(questionnaire, p.qz);
+                }
+            } catch(e) {}
+            updateProfileUI();
+            updateQzUI();
+        }
+        function saveProfile() {
+            try { localStorage.setItem('stockProProfile', JSON.stringify(Object.assign({}, investorProfile, { qz: questionnaire }))); } catch(e) {}
+        }
+        function setPref(key, val, el) {
+            // Used by verdict tab profile toggles only
+            var grp = el.closest('.pref-group');
+            if (investorProfile[key] === val) {
+                investorProfile[key] = null;
+                saveProfile();
+                grp.querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
+                return;
+            }
+            investorProfile[key] = val;
+            saveProfile();
+            grp.querySelectorAll('.pref-btn').forEach(function(b) { b.classList.remove('active'); });
+            el.classList.add('active');
+        }
+        function updateProfileUI() {
+            // Sync verdict-tab profile toggles only
+            ['horizon', 'risk', 'goal'].forEach(function(key) {
+                var grp = document.getElementById('pref-' + key);
+                if (!grp) return;
+                grp.querySelectorAll('.pref-btn').forEach(function(b) {
+                    b.classList.toggle('active', b.dataset.value === investorProfile[key]);
+                });
+            });
+        }
+
+        // ── Questionnaire functions ──────────────────────────────────────────
+        function setQ(key, val, el) {
+            questionnaire[key] = val;
+            document.querySelectorAll('[data-q="' + key + '"]').forEach(function(b) {
+                b.classList.toggle('selected', b.dataset.v === val);
+            });
+            var badge = document.getElementById('qn' + key.replace('q', ''));
+            if (badge) badge.classList.add('done');
+            resolveProfile();
+            updateQzProgress();
+            saveProfile();
+        }
+        function resolveProfile() {
+            var a = questionnaire;
+            var goalMap  = { beat: 'growth', compounder: 'balanced', income: 'income', tactical: 'growth' };
+            var riskMap  = { cut: 'low', calm: 'medium', buy: 'high' };
+            var horizMap = { s6m: 'short', s2yr: 'medium', s5yr: 'long', long: 'long' };
+            if (a.q1) investorProfile.goal    = goalMap[a.q1]  || investorProfile.goal;
+            if (a.q2) investorProfile.risk    = riskMap[a.q2]  || investorProfile.risk;
+            if (a.q3) investorProfile.horizon = horizMap[a.q3] || investorProfile.horizon;
+            // Tactical + no horizon answer → default to short
+            if (a.q1 === 'tactical' && !a.q3) investorProfile.horizon = 'short';
+            if (a.q4) investorProfile.mcap   = a.q4;
+            if (a.q5) investorProfile.sector = a.q5;
+            if (a.q6) investorProfile.view   = a.q6;
+        }
+        function qzAnswered() {
+            return Object.values(questionnaire).filter(function(v) { return v !== null; }).length;
+        }
+        function updateQzProgress() {
+            var n = qzAnswered();
+            var pEl  = document.getElementById('qz-progress');
+            var cBtn = document.getElementById('qz-cta');
+            if (pEl) {
+                pEl.innerHTML = n < QZ_TOTAL
+                    ? '<strong>' + n + '</strong> of ' + QZ_TOTAL + ' questions answered'
+                    : '<strong style="color:var(--accent-green);">&#10003; All questions answered</strong> — your picks are ready';
+            }
+            if (cBtn) cBtn.classList.toggle('ready', n === QZ_TOTAL);
+        }
+        function updateQzUI() {
+            Object.keys(questionnaire).forEach(function(key) {
+                var val = questionnaire[key];
+                if (!val) return;
+                document.querySelectorAll('[data-q="' + key + '"]').forEach(function(b) {
+                    b.classList.toggle('selected', b.dataset.v === val);
+                });
+                var badge = document.getElementById('qn' + key.replace('q', ''));
+                if (badge) badge.classList.add('done');
+            });
+            updateQzProgress();
+        }
+
+        // ===== LIVE STOCK SCANNER BY PROFILE =====
+        var _scanAbort = null;
+        function getProfileLabels() {
+            return {
+                horizon: { short: 'Short-Term', medium: 'Medium-Term', long: 'Long-Term' }[investorProfile.horizon] || 'Long-Term',
+                risk:    { low: 'Capital Preserving', medium: 'Balanced Risk', high: 'High Risk' }[investorProfile.risk] || 'Balanced Risk',
+                goal:    { growth: 'Alpha Growth', income: 'Dividend Income', balanced: 'Steady Compounder' }[investorProfile.goal] || 'Alpha Growth',
+                mcap:    { large: 'Large-Cap', mid: 'Large+Mid', small: 'Mid & Small' }[investorProfile.mcap] || 'Large+Mid',
+                sector:  { fin: 'Financials', pharma: 'Pharma & Health', infra: 'Infra & Capex', tech: 'Technology', consumer: 'Consumer & Auto', all: 'All Sectors' }[investorProfile.sector] || 'All Sectors',
+                view:    { bull: 'Bullish', selective: 'Selective', defensive: 'Defensive' }[investorProfile.view] || 'Selective',
+            };
+        }
+        function getRelevantScore(stScore, ltScore, divScore) {
+            var g = investorProfile.goal, h = investorProfile.horizon;
+            if (g === 'income') return divScore;
+            if (g === 'balanced') return Math.round((stScore + ltScore + divScore) / 3);
+            if (h === 'short') return stScore;
+            if (h === 'medium') return Math.round((stScore + ltScore) / 2);
+            return ltScore;
+        }
+        function getRelevantLabel() {
+            var g = investorProfile.goal, h = investorProfile.horizon;
+            if (g === 'income') return 'Dividend';
+            if (g === 'balanced') return 'Balanced';
+            if (h === 'short') return 'Short-Term';
+            if (h === 'medium') return 'Medium-Term';
+            return 'Long-Term';
+        }
+        function passesRiskFilter(stRes, ltRes, dcfD, regr) {
+            var r = investorProfile.risk;
+            if (!r) return true;
+            if (r === 'low') {
+                if (dcfD && dcfD.pb_ratio && dcfD.pb_ratio > 8) return false;
+                if (regr && regr.beta && regr.beta > 1.5) return false;
+            }
+            return true;
+        }
+        // ===== SCANNER TAB — persistent, no popup =====
+        var _prefilterES = null;
+        var _scanRunning = false;
+
+        function showCuratedStocks() {
+            // "Get Stock Suggestions" button in verdict tab → go to Scanner
+            switchTab('scanner');
+            // Auto-start only if questionnaire is fully answered
+            if (!_scanRunning && qzAnswered() === QZ_TOTAL) startScanInTab();
+        }
+        function startScanInTab() {
+            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
+            _scanAbort = false;
+            _scanRunning = true;
+            resolveProfile();  // make sure profile reflects latest questionnaire answers
+            var labels   = getProfileLabels();
+            var relLabel = getRelevantLabel();
+            var universeTotal = allTickers.length;
+            // Show status card; hide CTA, show stop
+            var statusCard = document.getElementById('sc-status-card');
+            if (statusCard) statusCard.style.display = '';
+            var startBtn = document.getElementById('qz-cta');
+            var stopBtn  = document.getElementById('scanner-stop-btn');
+            if (startBtn) startBtn.style.display = 'none';
+            if (stopBtn)  stopBtn.style.display  = '';
+            // Helper refs
+            function setSub(msg)   { var el = document.getElementById('sc-sub');          if (el) el.innerHTML  = msg; }
+            function setFill(pct)  { var el = document.getElementById('sc-progress-fill'); if (el) el.style.width = pct + '%'; }
+            function setStatus(msg){ var el = document.getElementById('sc-status-text');   if (el) el.innerHTML  = msg; }
+            function setStats(chk, s1, s2, s3done, s3tot) {
+                var el = document.getElementById('sc-stat-row');
+                if (!el) return;
+                el.innerHTML =
+                    '<span>Universe <strong>' + chk + '/' + universeTotal + '</strong></span>'
+                  + '<span style="color:var(--accent-cyan);">S1 &#8594; <strong>' + s1 + '</strong></span>'
+                  + '<span style="color:var(--accent-green);">S2 &#8594; <strong>' + s2 + '</strong></span>'
+                  + '<span>Deep <strong>' + s3done + '/' + s3tot + '</strong></span>';
+            }
+            setSub('Scanning <strong>' + universeTotal + ' NSE stocks</strong> &mdash; '
+                   + '<strong style="color:var(--accent-cyan);">' + labels.goal + '</strong>'
+                   + ' &middot; ' + labels.risk
+                   + ' &middot; ' + labels.horizon
+                   + ' &middot; ' + labels.mcap
+                   + ' &middot; ' + labels.sector
+                   + ' &middot; ' + labels.view
+                   + ' &mdash; surfacing your <strong>top 20</strong>');
+            setFill(0);
+            setStatus('Connecting to data stream&hellip;');
+            // Clear previous results
+            var resEl = document.getElementById('scanner-results-area');
+            if (resEl) resEl.innerHTML = '';
+
+            var risk    = investorProfile.risk    || 'medium';
+            var horizon = investorProfile.horizon || 'long';
+            var goal    = investorProfile.goal    || 'growth';
+            var mcap    = investorProfile.mcap    || 'mid';
+            var sector  = investorProfile.sector  || 'all';
+            var view    = investorProfile.view    || 'selective';
+
+            // ── Stage 1: SSE price-action prefilter ─────────────────────────────
+            var pfChecked = 0, pfPassed = 0, pfDone = false;
+
+            // ── Stage 2: Mid-filter (quick fundamentals via /midfilter) ─────────
+            var midQueue = [], midActive = 0, midCompleted = 0, midTotal = 0, midPassed = 0;
+            var midDone  = false;
+            var MAX_MID  = 6;
+
+            // ── Stage 3: Deep scan (/analyze + /dcf-data + /dividend-info) ──────
+            var deepQueue = [], deepActive = 0, deepCompleted = 0, deepTotal = 0;
+            var deepResults = [];
+            var MAX_DEEP  = 5;
+
+            var MAX_DISPLAY = 20;  // show top 20 only
+
+            function finishScan() {
+                _scanRunning = false;
+                if (startBtn) { startBtn.style.display = ''; startBtn.classList.add('ready'); startBtn.innerHTML = '&#128269; Re-scan with This Profile'; }
+                if (stopBtn)  stopBtn.style.display = 'none';
+            }
+            function updateProgress() {
+                var bar;
+                if (!pfDone) {
+                    // Stage 1: 0 – 45 %
+                    bar = Math.min(44, Math.round((pfChecked / universeTotal) * 45));
+                } else if (midCompleted < midTotal) {
+                    // Stage 2: 45 – 70 %
+                    bar = 45 + Math.round((midCompleted / Math.max(midTotal, 1)) * 25);
+                } else {
+                    // Stage 3: 70 – 100 %
+                    bar = 70 + Math.round((deepCompleted / Math.max(deepTotal, 1)) * 30);
+                }
+                setFill(bar);
+                setStats(pfChecked, pfPassed, midPassed, deepCompleted, deepTotal);
+                if (!pfDone) {
+                    setStatus('Stage 1 of 3 &mdash; Applying 6 price-action gates&hellip;');
+                } else if (midCompleted < midTotal) {
+                    setStatus('Stage 2 of 3 &mdash; Fundamental filter &mdash; '
+                              + midCompleted + '/' + midTotal + ' checked, '
+                              + midPassed + ' passed&hellip;');
+                } else if (deepCompleted < deepTotal) {
+                    setStatus('Stage 3 of 3 &mdash; Deep scanning '
+                              + deepCompleted + '/' + deepTotal + '&hellip;');
+                } else {
+                    setFill(100);
+                    setStatus('&#9989; Complete &mdash; <strong>' + deepResults.length
+                              + '</strong> stocks ranked by <strong>' + relLabel + '</strong> score');
+                    finishScan();
+                }
+            }
+            function renderTabResults() {
+                if (!resEl) return;
+                var display = deepResults.slice(0, MAX_DISPLAY);
+                var h = '';
+                if (display.length > 0) {
+                    h += '<div style="font-size:0.78em;color:var(--text-muted);margin-bottom:10px;text-align:right;">Showing top <strong style="color:var(--accent-cyan);">' + display.length + '</strong> stocks ranked by <strong>' + relLabel + '</strong> score</div>';
+                }
+                display.forEach(function(r, i) {
+                    var scoreColor = r.relevantScore >= 65 ? 'var(--accent-green)' : r.relevantScore >= 40 ? 'var(--warning)' : 'var(--danger)';
+                    h += '<div class="scan-row" onclick="openScannerStock(\\'' + r.symbol + '\\')" style="cursor:pointer;">';
+                    h += '<div class="scan-rank">' + (i + 1) + '</div>';
+                    h += '<div class="scan-info"><div class="scan-name">' + r.name + '</div>';
+                    h += '<div class="scan-symbol">' + r.symbol + ' &middot; Best for: <span style="color:' + r.bestColor + ';">' + r.bestLabel + '</span></div></div>';
+                    h += '<div class="scan-scores">';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">ST</span><span style="color:' + verdictScoreColor(r.stScore) + ';">' + r.stScore + '</span></div>';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">LT</span><span style="color:' + verdictScoreColor(r.ltScore) + ';">' + r.ltScore + '</span></div>';
+                    h += '<div class="scan-score-item"><span class="scan-score-label">Div</span><span style="color:' + verdictScoreColor(r.divScore) + ';">' + r.divScore + '</span></div>';
+                    h += '</div>';
+                    h += '<div class="scan-main-score" style="color:' + scoreColor + ';">' + r.relevantScore + '</div>';
+                    h += '</div>';
+                });
+                if (display.length === 0 && pfDone && midDone && deepTotal === 0)
+                    h = '<div style="text-align:center;padding:32px;color:var(--text-muted);">No stocks matched your profile. Try adjusting your sector or market view.</div>';
+                resEl.innerHTML = h;
+            }
+
+            // Stage 3 launcher
+            function launchDeepNext() {
+                while (deepActive < MAX_DEEP && deepQueue.length > 0 && !_scanAbort) {
+                    var sym = deepQueue.shift();
+                    deepActive++;
+                    scanOneStock(sym).then(function(res) {
+                        deepActive--;
+                        deepCompleted++;
+                        if (_scanAbort) return;
+                        if (res && !(investorProfile.goal === 'income' && res.divScore <= 5)) deepResults.push(res);
+                        deepResults.sort(function(a, b) { return b.relevantScore - a.relevantScore; });
+                        renderTabResults();
+                        updateProgress();
+                        launchDeepNext();
+                    });
+                }
+            }
+
+            // Stage 2 launcher — uses IIFE to capture sym per iteration
+            function launchMidNext() {
+                while (midActive < MAX_MID && midQueue.length > 0 && !_scanAbort) {
+                    (function(capturedSym) {
+                        midActive++;
+                        fetch('/midfilter?symbol=' + encodeURIComponent(capturedSym)
+                              + '&risk='    + encodeURIComponent(risk)
+                              + '&goal='    + encodeURIComponent(goal)
+                              + '&horizon=' + encodeURIComponent(horizon)
+                              + '&sector='  + encodeURIComponent(sector))
+                        .then(function(r) { return r.json(); })
+                        .catch(function()  { return { passed: true, symbol: capturedSym }; })
+                        .then(function(mf) {
+                            midActive--;
+                            midCompleted++;
+                            if (_scanAbort) return;
+                            if (mf && mf.passed) {
+                                midPassed++;
+                                deepTotal++;
+                                deepQueue.push(capturedSym);
+                                launchDeepNext();
+                            }
+                            updateProgress();
+                            launchMidNext();
+                            // If Stage 1 is done and all mid-filter work is finished
+                            if (pfDone && midCompleted >= midTotal) {
+                                midDone = true;
+                                if (deepTotal === 0) { renderTabResults(); finishScan(); }
+                            }
+                        });
+                    })(midQueue.shift());
+                }
+            }
+
+            // Stage 1: SSE prefilter stream
+            var es = new EventSource('/prefilter-stream?risk=' + encodeURIComponent(risk)
+                                    + '&horizon=' + encodeURIComponent(horizon)
+                                    + '&goal='    + encodeURIComponent(goal)
+                                    + '&mcap='    + encodeURIComponent(mcap)
+                                    + '&view='    + encodeURIComponent(view));
+            _prefilterES = es;
+            es.onmessage = function(evt) {
+                if (_scanAbort) { es.close(); _prefilterES = null; return; }
+                var d = JSON.parse(evt.data);
+                if (d.type === 'pass') {
+                    pfPassed++;
+                    midTotal++;
+                    midQueue.push(d.symbol);
+                    launchMidNext();
+                    updateProgress();
+                } else if (d.type === 'progress') {
+                    pfChecked = d.checked;
+                    updateProgress();
+                } else if (d.type === 'done') {
+                    pfDone    = true;
+                    pfChecked = d.checked;
+                    pfPassed  = d.passed;
+                    es.close();
+                    _prefilterES = null;
+                    updateProgress();
+                    if (midTotal === 0) { midDone = true; renderTabResults(); finishScan(); }
+                }
+            };
+            es.onerror = function() {
+                es.close(); _prefilterES = null;
+                if (!pfDone) {
+                    pfDone = true;
+                    updateProgress();
+                    if (midTotal === 0) { midDone = true; renderTabResults(); finishScan(); }
+                }
+            };
+        }
+        function stopScanInTab() {
+            _scanAbort = true;
+            _scanRunning = false;
+            if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
+            var startBtn = document.getElementById('qz-cta');
+            var stopBtn  = document.getElementById('scanner-stop-btn');
+            if (startBtn) { startBtn.style.display = ''; startBtn.classList.add('ready'); startBtn.innerHTML = '&#128269; Re-scan with This Profile'; }
+            if (stopBtn)  stopBtn.style.display = 'none';
+            var el = document.getElementById('sc-status-text');
+            if (el) el.innerHTML = 'Scan stopped. Click Re-scan to start again.';
+        }
+        var _verdictReturnTab = null;
+        function openScannerStock(symbol) {
+            // Remember that we came from the scanner so Back returns there
+            _verdictReturnTab = 'scanner';
+            switchTab('verdict');
+            document.getElementById('verdict-search').value = symbol;
+            fetchVerdictData();
+        }
+        function scanOneStock(symbol) {
+            return Promise.all([
+                fetch('/analyze?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;}),
+                fetch('/dcf-data?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;}),
+                fetch('/dividend-info?symbol=' + encodeURIComponent(symbol)).then(function(r){return r.json();}).catch(function(){return null;})
+            ]).then(function(data) {
+                var tech = data[0], dcfD = data[1], divD = data[2];
+                if (!tech || tech.error) return null;
+                var stRes = scoreShortTerm(tech);
+                var ltRes = scoreLongTerm(tech, dcfD, null);
+                var divRes = scoreDividend(divD);
+                var relevantScore = getRelevantScore(stRes.score, ltRes.score, divRes.score);
+                if (!passesRiskFilter(stRes, ltRes, dcfD, null)) relevantScore = Math.round(relevantScore * 0.6);
+                var name = (dcfD && dcfD.name) ? dcfD.name : getStockName(symbol);
+                var mx = Math.max(stRes.score, ltRes.score, divRes.score);
+                var bestLabel, bestColor;
+                if (investorProfile.goal === 'income' && divRes.score > 5) {
+                    bestLabel = 'Dividend'; bestColor = 'var(--warning)';
+                } else {
+                    bestLabel = stRes.score === mx ? 'Short-Term' : ltRes.score === mx ? 'Long-Term' : 'Dividend';
+                    bestColor = stRes.score === mx ? 'var(--accent-cyan)' : ltRes.score === mx ? 'var(--accent-green)' : 'var(--warning)';
+                }
+                return { symbol: symbol, name: name, stScore: stRes.score, ltScore: ltRes.score, divScore: divRes.score, relevantScore: relevantScore, bestLabel: bestLabel, bestColor: bestColor };
+            }).catch(function() { return null; });
+        }
+
         let currentTab = 'analysis';
         let loadedTabs = new Set();
         function ensureTabLoaded(tab) {
@@ -4339,6 +5044,8 @@ def index():
             var netCash = fmtCr(data.cash - data.total_debt);
             var pe = data.pe_ratio ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
             var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
+            var roce = data.roce ? (data.roce * 100).toFixed(1) + '%' : 'N/A';
+            var roe = data.roe ? (data.roe * 100).toFixed(1) + '%' : 'N/A';
             var priceStr = '\u20b9' + data.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
             var fcfStr = fmtCr(data.current_fcf);
             var h = '';
@@ -4353,6 +5060,8 @@ def index():
             h += '<div class="dcf-stat" style="border-left-color:var(--warning);"><div class="dcf-stat-label">P/E Ratio</div><div class="dcf-stat-value">' + pe + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--danger);"><div class="dcf-stat-label">P/B Ratio</div><div class="dcf-stat-value">' + pb + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--text-muted);"><div class="dcf-stat-label">Hist. FCF CAGR</div><div class="dcf-stat-value">' + histCagr + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">RoCE</div><div class="dcf-stat-value" style="color:' + (data.roce ? (data.roce*100>=20?'var(--accent-green)':data.roce*100>=12?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roce + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">RoE</div><div class="dcf-stat-value" style="color:' + (data.roe ? (data.roe*100>=15?'var(--accent-green)':data.roe*100>=8?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roe + '</div></div>';
             h += '</div>';
             if (data.fcf_history && data.fcf_history.length > 1) h += renderFCFHistory(data.fcf_history);
             h += '<div class="dcf-valuation-grid">';
@@ -4479,7 +5188,13 @@ def index():
         // ===== INVESTMENT VERDICT TAB =====
         function verdictGoBack() {
             document.getElementById('verdict-result-view').style.display = 'none';
-            document.getElementById('verdict-search-view').style.display = 'block';
+            var returnTab = _verdictReturnTab;
+            _verdictReturnTab = null;
+            if (returnTab) {
+                switchTab(returnTab);
+            } else {
+                document.getElementById('verdict-search-view').style.display = 'block';
+            }
         }
 
         function verdictScoreColor(score) {
@@ -4557,6 +5272,18 @@ def index():
                     if (pct >= 20) score += 15; else if (pct >= 10) score += 8; else if (pct >= 0) score += 3;
                     items.push({ label: 'FCF Growth', value: pct.toFixed(1) + '%/yr', color: pct >= 15 ? 'green' : pct >= 5 ? 'yellow' : 'red' });
                 }
+                const roce = dcfD.roce;
+                if (roce !== null && roce !== undefined) {
+                    const rocePct = roce * 100;
+                    if (rocePct >= 20) score += 12; else if (rocePct >= 12) score += 6; else if (rocePct >= 0) score += 2; else score -= 4;
+                    items.push({ label: 'RoCE', value: rocePct.toFixed(1) + '%', color: rocePct >= 20 ? 'green' : rocePct >= 12 ? 'yellow' : 'red' });
+                }
+                const roe = dcfD.roe;
+                if (roe !== null && roe !== undefined) {
+                    const roePct = roe * 100;
+                    if (roePct >= 15) score += 8; else if (roePct >= 8) score += 4; else if (roePct < 0) score -= 5;
+                    items.push({ label: 'RoE', value: roePct.toFixed(1) + '%', color: roePct >= 15 ? 'green' : roePct >= 8 ? 'yellow' : 'red' });
+                }
             }
             if (regr && !regr.error && regr.beta !== undefined) {
                 const beta = regr.beta || 1;
@@ -4582,16 +5309,49 @@ def index():
                 return { score: 5, items: [{ label: 'Dividend', value: 'No dividend found', color: 'red' }] };
             }
             let score = 0;
+            const fyLbl = divD.fy_label || 'FY';
+
+            // ── Long-term trend guard ────────────────────────────────────────────
+            if (divD.in_downtrend) {
+                // Stock is below 200-DMA — never a safe dividend recommendation
+                items.push({ label: 'Long-term Trend', value: 'Downtrend \u2014 price below 200-DMA', color: 'red' });
+                const yld = parseFloat(divD.dividend_yield) || 0;
+                if (yld > 0) items.push({ label: 'Annual Yield', value: yld.toFixed(2) + '% (' + fyLbl + ')', color: 'red' });
+                items.push({ label: 'Caution', value: 'Not suitable for income investing', color: 'red' });
+                return { score: 8, items };
+            }
+
+            // ── Uptrend confirmed ────────────────────────────────────────────────
+            items.push({ label: 'Long-term Trend', value: 'Uptrend \u2014 above 200-DMA', color: 'green' });
+            score += 10;
+
+            // ── Dividend yield (FY-based) ────────────────────────────────────────
             const yld = parseFloat(divD.dividend_yield) || 0;
-            if (yld >= 4) score += 42; else if (yld >= 2) score += 26; else if (yld >= 0.5) score += 12;
-            items.push({ label: 'Annual Yield', value: yld.toFixed(2) + '%', color: yld >= 3 ? 'green' : yld >= 1.5 ? 'yellow' : 'red' });
+            if (yld >= 4) score += 36; else if (yld >= 2) score += 22; else if (yld >= 0.5) score += 10;
+            items.push({ label: 'Annual Yield', value: yld.toFixed(2) + '% (' + fyLbl + ')', color: yld >= 3 ? 'green' : yld >= 1.5 ? 'yellow' : 'red' });
+
+            // ── Consistency: consecutive FYs with dividends ──────────────────────
+            const yrsC = parseInt(divD.years_consistent) || 0;
+            if      (yrsC >= 7) score += 22;
+            else if (yrsC >= 5) score += 16;
+            else if (yrsC >= 3) score += 8;
+            else if (yrsC >= 1) score += 2;
+            else                score -= 5;
+            if (yrsC > 0) items.push({ label: 'Consistency', value: yrsC + ' consecutive FY' + (yrsC > 1 ? 's' : ''), color: yrsC >= 5 ? 'green' : yrsC >= 3 ? 'yellow' : 'red' });
+            else items.push({ label: 'Consistency', value: 'No consistent history', color: 'red' });
+
+            // ── Price volatility ─────────────────────────────────────────────────
             const vol = parseFloat(divD.volatility) || 50;
-            if (vol < 22) score += 22; else if (vol < 32) score += 12; else if (vol < 42) score += 5;
+            if (vol < 22) score += 18; else if (vol < 32) score += 10; else if (vol < 42) score += 4;
             items.push({ label: 'Price Volatility', value: vol.toFixed(1) + '%', color: vol < 25 ? 'green' : vol < 38 ? 'yellow' : 'red' });
-            if (divD.ex_dividend_date) { score += 12; items.push({ label: 'Ex-Div Date', value: divD.ex_dividend_date, color: 'cyan' }); }
-            if (divD.payment_date) { score += 8; items.push({ label: 'Payment Date', value: divD.payment_date, color: 'cyan' }); }
+
+            // ── Dates ────────────────────────────────────────────────────────────
+            if (divD.ex_dividend_date) { score += 8; items.push({ label: 'Ex-Div Date', value: divD.ex_dividend_date, color: 'cyan' }); }
+            if (divD.payment_date)     { score += 4; items.push({ label: 'Payment Date', value: divD.payment_date, color: 'cyan' }); }
+
             const annDiv = parseFloat(divD.annual_dividend) || 0;
-            if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: '\u20b9' + annDiv.toFixed(2), color: 'cyan' });
+            if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: '\u20b9' + annDiv.toFixed(2) + ' (' + fyLbl + ')', color: 'cyan' });
+
             return { score: Math.max(0, Math.min(100, score)), items };
         }
 
@@ -4611,26 +5371,34 @@ def index():
 
         function buildScoreGrid(stRes, ltRes, divRes) {
             var cards = [
-                { title: '⚡ Short-Term Trading', res: stRes, color: 'var(--accent-cyan)' },
-                { title: '📈 Long-Term Holding',  res: ltRes, color: 'var(--accent-green)' },
-                { title: '💰 Dividend Income',    res: divRes, color: 'var(--warning)' }
+                { title: '⚡ Short-Term Trading', res: stRes, color: 'var(--accent-cyan)',   sectionId: 'vd-st-section' },
+                { title: '📈 Long-Term Holding',  res: ltRes, color: 'var(--accent-green)',  sectionId: 'vd-lt-section' },
+                { title: '💰 Dividend Income',    res: divRes, color: 'var(--warning)',       sectionId: 'vd-div-section' }
             ];
             var maxScore = Math.max(stRes.score, ltRes.score, divRes.score);
             var html = '<div class="vd-score-grid">';
             cards.forEach(function(c) {
                 var [badgeText, badgeClass] = verdictBadge(c.res.score);
                 var isBest = (c.res.score === maxScore && c.res.score >= 55);
-                html += `<div class="vd-score-card${isBest ? ' vd-best' : ''}">
+                html += `<div class="vd-score-card${isBest ? ' vd-best' : ''}" title="Click to expand details" onclick="scrollToVdSection('${c.sectionId}')">
                     <div class="vd-score-label" style="color:${c.color};">${c.title}</div>
                     <div class="vd-score-ring">
                         ${buildScoreRing(c.res.score, c.color)}
                         <div class="vd-score-ring-num" style="color:${c.color};">${c.res.score}</div>
                     </div>
                     <div class="vd-verdict-badge ${badgeClass}">${isBest ? '&#9733; ' : ''}${badgeText}</div>
+                    <div style="font-size:0.72em;color:var(--text-muted);margin-top:6px;">Tap to expand &#8595;</div>
                 </div>`;
             });
             html += '</div>';
             return html;
+        }
+
+        function scrollToVdSection(id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (!el.classList.contains('open')) el.classList.add('open');
+            setTimeout(function() { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 50);
         }
 
         function verdictToggle(el) {
@@ -4652,7 +5420,7 @@ def index():
             var s = tech && tech.signal ? tech.signal : {};
             var d = tech && tech.details ? tech.details : {};
             var [badge, bdgClass] = verdictBadge(stRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-st-section">';
             h += vdSectionHeader('&#9889; Short-Term Trading', 'var(--accent-cyan)', badge, bdgClass, stRes.score);
             if (stRes.error) { h += '<p style="color:var(--text-muted);margin:0;">Technical data unavailable.</p>'; }
             else {
@@ -4686,7 +5454,7 @@ def index():
 
         function buildLTSection(tech, dcfD, regr, ltRes) {
             var [badge, bdgClass] = verdictBadge(ltRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-lt-section">';
             h += vdSectionHeader('&#128200; Long-Term Holding', 'var(--accent-green)', badge, bdgClass, ltRes.score);
             h += buildMetricsHtml(ltRes.items);
             var narrativeParts = [];
@@ -4718,26 +5486,86 @@ def index():
                 else if (dep > 0.7) narrativeParts.push('High market dependency (' + (dep * 100).toFixed(0) + '%) — performance closely tracks the Nifty 50.');
             }
             if (narrativeParts.length > 0) h += '<div class="vd-narrative">' + narrativeParts.join(' ') + '</div>';
+            // --- Trend section ---
+            if (dcfD && dcfD.margin_trend && dcfD.margin_trend.length >= 2) {
+                h += buildTrendSection(dcfD.margin_trend);
+            }
             h += '</div></div>';
+            return h;
+        }
+
+        function buildTrendSection(trend) {
+            if (!trend || trend.length < 2) return '';
+            var h = '<div class="trend-section-title">&#128200; Key Trends</div>';
+            // Operating margin trend
+            var opMargins = trend.filter(function(t){ return t.op_margin !== null && t.op_margin !== undefined; });
+            if (opMargins.length >= 2) {
+                var first = opMargins[0].op_margin, last = opMargins[opMargins.length-1].op_margin;
+                var diff = last - first;
+                var arrowClass = diff > 1 ? 'up' : diff < -1 ? 'down' : 'flat';
+                var arrowSymbol = diff > 1 ? '&#8593;' : diff < -1 ? '&#8595;' : '&#8594;';
+                var valStr = opMargins.map(function(t){ return t.year + ': ' + t.op_margin + '%'; }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Operating Margin</span><span class="trend-values">' + valStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + '</span></div>';
+            }
+            // Net margin trend
+            var netMargins = trend.filter(function(t){ return t.net_margin !== null && t.net_margin !== undefined; });
+            if (netMargins.length >= 2) {
+                var first = netMargins[0].net_margin, last = netMargins[netMargins.length-1].net_margin;
+                var diff = last - first;
+                var arrowClass = diff > 1 ? 'up' : diff < -1 ? 'down' : 'flat';
+                var arrowSymbol = diff > 1 ? '&#8593;' : diff < -1 ? '&#8595;' : '&#8594;';
+                var valStr = netMargins.map(function(t){ return t.year + ': ' + t.net_margin + '%'; }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Net Profit Margin</span><span class="trend-values">' + valStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + '</span></div>';
+            }
+            // Revenue trend
+            var revs = trend.filter(function(t){ return t.revenue > 0; });
+            if (revs.length >= 2) {
+                var revFirst = revs[0].revenue, revLast = revs[revs.length-1].revenue;
+                var revGrowth = ((revLast / revFirst) - 1) * 100;
+                var arrowClass = revGrowth > 5 ? 'up' : revGrowth < -5 ? 'down' : 'flat';
+                var arrowSymbol = revGrowth > 5 ? '&#8593;' : revGrowth < -5 ? '&#8595;' : '&#8594;';
+                var revStr = revs.map(function(t){ return t.year + ': ' + fmtCr(t.revenue); }).join(' &rarr; ');
+                h += '<div class="trend-row"><span class="trend-label">Revenue</span><span class="trend-values">' + revStr + '</span><span class="trend-arrow ' + arrowClass + '">' + arrowSymbol + ' ' + revGrowth.toFixed(0) + '%</span></div>';
+            }
             return h;
         }
 
         function buildDivSection(divD, divRes) {
             var [badge, bdgClass] = verdictBadge(divRes.score);
-            var h = '<div class="vd-section">';
+            var h = '<div class="vd-section" id="vd-div-section">';
             h += vdSectionHeader('&#128176; Dividend Income', 'var(--warning)', badge, bdgClass, divRes.score);
             h += buildMetricsHtml(divRes.items);
             if (!divD || !divD.found || !divD.dividend_yield) {
                 h += '<div class="vd-narrative" style="color:var(--text-muted);">No dividend history found for this stock. It may be a growth-oriented company that reinvests earnings rather than paying dividends.</div>';
             } else {
-                var yld = parseFloat(divD.dividend_yield) || 0;
-                var vol = parseFloat(divD.volatility) || 50;
+                var yld   = parseFloat(divD.dividend_yield) || 0;
+                var vol   = parseFloat(divD.volatility) || 50;
+                var yrsC  = parseInt(divD.years_consistent) || 0;
+                var fyLbl = divD.fy_label || 'the last financial year';
                 var narrative = '';
-                if (yld >= 3) narrative += 'With a yield of <strong style="color:var(--warning);">' + yld.toFixed(2) + '%</strong>, this stock offers above-average dividend income. ';
-                else if (yld >= 1) narrative += 'Provides a modest yield of <strong>' + yld.toFixed(2) + '%</strong> — not a primary income play but contributes total return. ';
-                else narrative += 'Very low dividend yield (' + yld.toFixed(2) + '%). Primarily a capital-appreciation story, not a dividend income candidate. ';
-                if (vol < 25) narrative += 'Low price volatility (' + vol.toFixed(1) + '%) supports dividend sustainability — stable income candidate.';
-                else if (vol > 40) narrative += 'High price volatility (' + vol.toFixed(1) + '%) may offset dividend income with capital loss risk.';
+
+                // Downtrend warning overrides everything else
+                if (divD.in_downtrend) {
+                    narrative += '<span style="color:var(--danger);"><strong>&#9888; Long-term Downtrend:</strong> This stock is trading below its 200-day moving average. '
+                               + 'A ' + yld.toFixed(2) + '% dividend yield (' + fyLbl + ') does NOT compensate for sustained capital erosion — '
+                               + 'it is <strong>not recommended</strong> as a dividend income holding until the trend reverses.</span> ';
+                } else {
+                    // Yield narrative
+                    if (yld >= 3) narrative += 'With a yield of <strong style="color:var(--warning);">' + yld.toFixed(2) + '%</strong> (' + fyLbl + '), this stock offers above-average dividend income. ';
+                    else if (yld >= 1) narrative += 'Provides a modest yield of <strong>' + yld.toFixed(2) + '%</strong> (' + fyLbl + ') — not a primary income play but contributes to total return. ';
+                    else narrative += 'Very low dividend yield (' + yld.toFixed(2) + '%, ' + fyLbl + '). Primarily a capital-appreciation story, not a dividend income candidate. ';
+
+                    // Consistency narrative
+                    if (yrsC >= 7) narrative += 'Exceptionally consistent payer — <strong>' + yrsC + ' consecutive financial years</strong> of dividends signals a reliable income stream. ';
+                    else if (yrsC >= 5) narrative += '<strong>' + yrsC + ' consecutive years</strong> of dividend payments reflect a well-established payout policy. ';
+                    else if (yrsC >= 3) narrative += yrsC + ' consecutive years of dividends — a reasonable track record, though longer history preferred for income portfolios. ';
+                    else if (yrsC >= 1) narrative += 'Only ' + yrsC + ' year(s) of consistent dividend history — limited track record; treat with caution for income strategies. ';
+                    else narrative += 'No consistent multi-year dividend history found. Dividend continuity is uncertain. ';
+
+                    // Volatility narrative
+                    if (vol < 25) narrative += 'Low price volatility (' + vol.toFixed(1) + '%) supports dividend sustainability.';
+                    else if (vol > 40) narrative += 'High price volatility (' + vol.toFixed(1) + '%) may offset dividend income with capital loss risk.';
+                }
                 h += '<div class="vd-narrative">' + narrative + '</div>';
             }
             h += '</div></div>';
@@ -4762,10 +5590,26 @@ def index():
             if (stRes.score < 40 && ltRes.score < 40) parts.push('Both short and long-term scores are weak — exercise caution.');
             if (avgScore >= 60) parts.push('Overall profile is <strong style="color:var(--accent-green);">positive</strong> across multiple dimensions.');
             else if (avgScore < 35) parts.push('Overall profile is <strong style="color:var(--danger);">weak</strong> — high risk across dimensions.');
+            // Personalised note based on investor profile
+            var profileNote = '';
+            var ph = investorProfile.horizon, pr = investorProfile.risk, pg = investorProfile.goal;
+            var profileScoreMap = { short: stRes.score, medium: Math.round((stRes.score + ltRes.score) / 2), long: ltRes.score };
+            var relevantScore = profileScoreMap[ph] || ltRes.score;
+            if (pg === 'income') relevantScore = divRes.score;
+            if (pg === 'balanced') relevantScore = Math.round(avgScore);
+            var profileLabels = { short: 'short-term trader', medium: 'medium-term investor', long: 'long-term investor' };
+            var riskLabels = { low: 'low-risk', medium: 'moderate-risk', high: 'high-risk' };
+            profileNote = 'For your profile (<strong style="color:var(--accent-cyan);">' + riskLabels[pr] + ' ' + profileLabels[ph] + '</strong>): ';
+            if (relevantScore >= 65) profileNote += 'this stock <strong style="color:var(--accent-green);">aligns well</strong> with your investment style.';
+            else if (relevantScore >= 45) profileNote += 'this stock is a <strong style="color:var(--warning);">partial fit</strong> — review the detailed sections before deciding.';
+            else profileNote += 'this stock <strong style="color:var(--danger);">may not align</strong> with your current profile. Consider exploring alternatives.';
+            // Risk warning for high-risk takers
+            if (pr === 'low' && (dcfD && dcfD.pb_ratio && dcfD.pb_ratio > 5)) profileNote += ' Note: high P/B may signal elevated risk for conservative investors.';
             var h = `<div class="vd-overall">
                 <div class="vd-overall-label">Overall Investment Verdict for ${symbol}</div>
                 <div class="vd-overall-verdict" style="color:${bestColor};">Best For: ${bestFor}</div>
                 <div class="vd-overall-reason">${parts.join(' ')}</div>
+                <div class="vd-overall-reason" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.06);">${profileNote}</div>
                 <div style="margin-top:16px;display:flex;justify-content:center;gap:20px;flex-wrap:wrap;">
                     <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Short-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(stRes.score)};">${stRes.score}</div></div>
                     <div style="text-align:center;"><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Long-Term</div><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:700;color:${verdictScoreColor(ltRes.score)};">${ltRes.score}</div></div>
@@ -4872,7 +5716,7 @@ def index():
         }
 
 
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
+        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); loadProfile(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
     </script>
 </body>
 </html>'''
@@ -4960,24 +5804,33 @@ def regression_route():
 
 @app.route('/dividend-info')
 def dividend_info_route():
-    """Fetch dividend information for a single stock."""
+    """Fetch dividend information for a single stock.
+
+    Returns FY-based annual dividend, long-term trend flag, and the number of
+    consecutive Indian financial years in which the stock paid at least one dividend
+    (years_consistent).  Downtrend stocks are NOT excluded here — the caller
+    (verdict tab / scanner) receives the flag and can penalise the score.
+    """
     symbol = request.args.get('symbol', '').strip().upper()
     if not symbol:
         return jsonify({'error': 'Please enter a stock symbol'})
     if symbol not in ALL_VALID_TICKERS:
         return jsonify({'error': f'{symbol} is not a recognized NSE stock'})
     try:
-        results, dividend_found = analyzer.fetch_dividend_data([symbol], limit_results=False)
+        # exclude_downtrend=False so verdict tab can show data even for downtrend stocks
+        results, dividend_found = analyzer.fetch_dividend_data(
+            [symbol], limit_results=False, exclude_downtrend=False
+        )
         if not results:
             return jsonify({
                 'symbol': symbol,
                 'found': False,
-                'message': f'{symbol} does not pay dividends or no dividend data is available for the past year'
+                'message': f'{symbol} does not pay dividends or no dividend data is available for the last completed financial year'
             })
         stock = results[0]
         stock['found'] = True
         stock['name'] = TICKER_TO_NAME.get(symbol, symbol)
-        # Find the sector
+        # Sector
         skip_sectors = {"All NSE", "Nifty 50", "Nifty Next 50", "Others", "Conglomerate"}
         stock['sector'] = ''
         for sector_name, sector_stocks in STOCKS.items():
@@ -4986,6 +5839,48 @@ def dividend_info_route():
             if symbol in sector_stocks:
                 stock['sector'] = sector_name
                 break
+
+        # ── Consistency: count consecutive FYs with at least one dividend ──────
+        years_consistent = 0
+        try:
+            hist_divs = yf.Ticker(f"{symbol}.NS").dividends
+            if hist_divs is not None and not hist_divs.empty:
+                today_d = date.today()
+                fy_end_year = today_d.year if today_d.month >= 4 else today_d.year - 1
+                for i in range(10):  # check up to 10 FYs back
+                    fy_s = date(fy_end_year - i - 1, 4, 1)
+                    fy_e = date(fy_end_year - i,     3, 31)
+                    fy_s_ts = pd.Timestamp(fy_s)
+                    fy_e_ts = pd.Timestamp(fy_e)
+                    try:
+                        if hist_divs.index.tz is not None:
+                            fy_s_ts = fy_s_ts.tz_localize('UTC')
+                            fy_e_ts = fy_e_ts.tz_localize('UTC')
+                        fy_slice = hist_divs[
+                            (hist_divs.index >= fy_s_ts) & (hist_divs.index <= fy_e_ts)
+                        ]
+                        if float(fy_slice.sum()) > 0:
+                            years_consistent += 1
+                        else:
+                            break  # stop at the first FY with no dividend
+                    except Exception:
+                        break
+        except Exception:
+            pass
+        stock['years_consistent'] = years_consistent
+
+        # Fetch ex-dividend and payment dates from ticker info
+        try:
+            info = yf.Ticker(f"{symbol}.NS").info
+            ex_div = info.get('exDividendDate')
+            pay_dt = info.get('lastDividendDate') or info.get('payDate')
+            if ex_div:
+                stock['ex_dividend_date'] = datetime.utcfromtimestamp(ex_div).strftime('%Y-%m-%d') if isinstance(ex_div, (int, float)) else str(ex_div)
+            if pay_dt:
+                stock['payment_date'] = datetime.utcfromtimestamp(pay_dt).strftime('%Y-%m-%d') if isinstance(pay_dt, (int, float)) else str(pay_dt)
+        except Exception:
+            pass
+
         return jsonify(stock)
     except Exception as e:
         return jsonify({'error': f'Failed to fetch dividend data for {symbol}: {str(e)}'})
@@ -5095,6 +5990,11 @@ def dividend_optimize_stream_route():
             max_results = DIVIDEND_MAX_RESULTS
             truncated = False
             last_portfolio_update = 0
+            # FY window for this streaming scan
+            _fy_s_str, _fy_e_str = _fy_dates(0)
+            _fy_lbl   = _fy_label(0)
+            _fy_s_ts  = pd.Timestamp(_fy_s_str)
+            _fy_e_ts  = pd.Timestamp(_fy_e_str)
             yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
 
             # Serve cached entries first
@@ -5154,9 +6054,10 @@ def dividend_optimize_stream_route():
             for batch in _batched(symbols_to_fetch, 75):
                 tickers = [f"{s}.NS" for s in batch]
                 try:
+                    # 2y: covers last complete FY for dividends + ~500 days for 200-DMA
                     data = yf.download(
                         tickers=tickers,
-                        period='1y',
+                        period='2y',
                         interval='1d',
                         group_by='column',
                         actions=True,
@@ -5202,7 +6103,34 @@ def dividend_optimize_stream_route():
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
-                        annual_dividend = _compute_split_adjusted_dividend(dividends, splits)
+
+                        # ── Long-term trend: skip stocks below 200-DMA ───────────────
+                        sma200_val = close_series.rolling(min(200, len(close_series))).mean().iloc[-1]
+                        in_downtrend = bool(current_price < float(sma200_val)) if not pd.isna(sma200_val) else False
+                        if in_downtrend:
+                            payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
+                            yield f"data: {json.dumps(payload)}\n\n"
+                            continue
+
+                        # ── Dividends: slice to last complete Indian FY ──────────────
+                        if not dividends.empty:
+                            try:
+                                if dividends.index.tz is not None:
+                                    d_start = _fy_s_ts.tz_localize('UTC')
+                                    d_end   = _fy_e_ts.tz_localize('UTC')
+                                else:
+                                    d_start = _fy_s_ts
+                                    d_end   = _fy_e_ts
+                                dividends_fy = dividends[(dividends.index >= d_start) & (dividends.index <= d_end)]
+                            except Exception:
+                                dividends_fy = dividends
+                        else:
+                            dividends_fy = dividends
+
+                        # Drop one-off corporate-action entries misclassified as dividends
+                        if not dividends_fy.empty:
+                            dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
+                        annual_dividend = float(dividends_fy.sum()) if not dividends_fy.empty else 0.0
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -5211,11 +6139,13 @@ def dividend_optimize_stream_route():
                         returns = close_series.pct_change().dropna()
                         volatility = float(returns.std() * np.sqrt(252) * 100) if len(returns) > 5 else 0.0
                         entry = {
-                            'symbol': symbol,
-                            'price': round(current_price, 2),
+                            'symbol':          symbol,
+                            'price':           round(current_price, 2),
                             'annual_dividend': round(annual_dividend, 2),
-                            'dividend_yield': round(dividend_yield, 2),
-                            'volatility': round(volatility, 2)
+                            'dividend_yield':  round(dividend_yield, 2),
+                            'volatility':      round(volatility, 2),
+                            'fy_label':        _fy_lbl,
+                            'in_downtrend':    False,
                         }
                         dividend_found += 1
                         results.append(entry)
@@ -5459,6 +6389,289 @@ def dcf_data_route():
     except Exception as e:
         print(f"DCF route error for {normalized_symbol}: {e}")
         return jsonify({'error': f'DCF analysis failed: {str(e)}'})
+
+
+# Sector group keywords matched against STOCKS dictionary keys (lowercase)
+_SECTOR_GROUPS = {
+    'fin':      ['banking', 'financial services'],
+    'pharma':   ['pharma', 'healthcare', 'chemicals'],
+    'infra':    ['infrastructure', 'power', 'cement', 'construction', 'metals'],
+    'tech':     ['it sector'],
+    'consumer': ['consumer goods', 'retail', 'auto', 'fmcg', 'hospitality', 'electronics', 'paints'],
+}
+
+def _symbol_sector_group(symbol):
+    """Return which sector group(s) this symbol belongs to (subset of _SECTOR_GROUPS keys)."""
+    skip = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Others', 'Conglomerate'}
+    matched = set()
+    for sector_name, sector_stocks in STOCKS.items():
+        if sector_name in skip:
+            continue
+        if symbol not in sector_stocks:
+            continue
+        sn_lower = sector_name.lower()
+        for group, keywords in _SECTOR_GROUPS.items():
+            if any(kw in sn_lower for kw in keywords):
+                matched.add(group)
+    return matched
+
+
+@app.route('/midfilter')
+def midfilter_route():
+    """
+    Stage 2 of 3: Quick fundamental gate.
+    Fetches yf.Ticker().info (one lightweight round-trip) and applies
+    profile-based fundamental filters that are far cheaper than the full
+    deep-scan pipeline (/analyze + /dcf-data + /dividend-info).
+
+    Fail-open on missing data so valid stocks are never blocked by gaps
+    in yfinance coverage.
+
+    Gates:
+      0 - Sector           (reject if outside user's sector conviction)
+      A - P/E ratio        (reject extremes by goal)
+      B - Revenue growth   (reject declining for growth/balanced)
+      C - Profit margin    (reject deeply loss-making)
+      D - Debt / Equity    (reject overleveraged by risk)
+      E - Market cap       (reject micro-caps for conservative profiles)
+    """
+    symbol  = request.args.get('symbol',  '').strip().upper()
+    risk    = request.args.get('risk',    'medium')
+    goal    = request.args.get('goal',    'growth')
+    horizon = request.args.get('horizon', 'long')
+    sector  = request.args.get('sector',  'all')
+
+    if not symbol:
+        return jsonify({'symbol': symbol, 'passed': False, 'fails': ['no_symbol']})
+
+    ns_sym = symbol if symbol.endswith('.NS') else symbol + '.NS'
+    try:
+        info = yf.Ticker(ns_sym).info
+    except Exception:
+        return jsonify({'symbol': symbol, 'passed': True, 'fails': []})  # fail-open
+
+    fails = []
+
+    # ── Gate 0: Sector conviction filter ────────────────────────────────────
+    if sector not in ('all', None, ''):
+        sym_groups = _symbol_sector_group(symbol)
+        if sym_groups and sector not in sym_groups:
+            return jsonify({'symbol': symbol, 'passed': False, 'fails': ['sector_mismatch']})
+        # If sym_groups is empty the stock spans no mapped sector — pass through
+
+    pe            = info.get('trailingPE')
+    rev_growth    = info.get('revenueGrowth')   # decimal, e.g. 0.12 = +12 %
+    profit_margin = info.get('profitMargins')    # decimal, e.g. 0.08 =  +8 %
+    debt_equity   = info.get('debtToEquity')     # e.g. 45 means 45 %
+    market_cap    = info.get('marketCap')        # INR
+
+    # Gate A: P/E ratio
+    if pe is not None:
+        if pe > 0:
+            pe_cap = {'growth': 100, 'balanced': 75, 'income': 50}.get(goal, 75)
+            if pe > pe_cap:
+                fails.append('pe_extreme')
+        else:
+            # Negative PE = loss-making; reject for conservative long-horizon profiles
+            if risk in ('low', 'medium') and horizon != 'short':
+                fails.append('loss_making')
+
+    # Gate B: Revenue growth
+    if rev_growth is not None:
+        rev_floor = {'growth': -0.08, 'balanced': -0.15, 'income': -0.20}.get(goal, -0.15)
+        if rev_growth < rev_floor:
+            fails.append('revenue_declining')
+
+    # Gate C: Profit margin — reject deeply loss-making companies
+    if profit_margin is not None and profit_margin < -0.20:
+        fails.append('deep_loss_maker')
+
+    # Gate D: Debt / Equity — risk-scaled ceiling
+    if debt_equity is not None:
+        de_limit = {'low': 60, 'medium': 120, 'high': 300}.get(risk, 120)
+        if debt_equity > de_limit:
+            fails.append('excessive_debt')
+
+    # Gate E: Market cap — avoid micro-caps for conservative profiles
+    if market_cap is not None:
+        cap_min = {'low': 10_000_000_000, 'medium': 2_000_000_000, 'high': 0}.get(risk, 2_000_000_000)
+        if market_cap < cap_min:
+            fails.append('micro_cap')
+
+    passed = len(fails) == 0
+    return jsonify({
+        'symbol':       symbol,
+        'passed':       passed,
+        'fails':        fails,
+        'pe':           pe,
+        'revGrowth':    rev_growth,
+        'profitMargin': profit_margin,
+        'debtEquity':   debt_equity,
+        'marketCap':    market_cap,
+    })
+
+
+@app.route('/prefilter-stream')
+def prefilter_stream_route():
+    """
+    Stage 1 of 3: SSE streaming price-action prefilter for the live scanner.
+    Processes the NSE universe in mini-batches of 25 using yf.download(),
+    applies 6 profile-based gates using only OHLCV data, and streams the
+    surviving symbols to the browser for Stage 2 (mid-filter).
+
+    Query params: risk (low|medium|high), horizon (short|medium|long),
+                  goal (growth|income|balanced)
+
+    Gates (in rough order of rejection power):
+      1 - Volume / Liquidity   avg daily volume > risk-based minimum
+      2 - Drawdown             max drawdown from 3-month peak < risk limit
+      3 - Dual-SMA Trend       price above SMA20 AND SMA50 (long horizon)
+      4 - Multi-tf Momentum    1-month AND 3-month returns within profile bounds
+      5 - Volatility           daily-return std-dev below risk-based cap
+      6 - Volume Trend         recent 10-day avg vol >= 40% of 3-month avg
+
+    Events:
+      {"type":"meta",     "total":292}
+      {"type":"progress", "checked":25, "total":292, "passed":8}
+      {"type":"pass",     "symbol":"RELIANCE", "drawdown":4.1, "uptrend":true,
+                          "momentum":1.2, "mom1m":-0.8, "mom3m":6.3,
+                          "volatility":1.4, "avgVol":3200000}
+      {"type":"done",     "checked":292, "passed":22}
+    """
+    risk    = request.args.get('risk',    'medium')
+    horizon = request.args.get('horizon', 'long')
+    goal    = request.args.get('goal',    'growth')
+    mcap    = request.args.get('mcap',    'mid')      # large | mid | small
+    view    = request.args.get('view',    'selective') # bull | selective | defensive
+
+    # ── Gate thresholds — layered by risk + market view ──────────────────────
+    dd_limit      = {'low': 10, 'medium': 20, 'high': 40}.get(risk, 20)
+    daily_vol_cap = {'low': 1.8, 'medium': 2.8, 'high': 100.0}.get(risk, 2.8)
+
+    # Market view tightens or relaxes thresholds
+    if view == 'defensive':
+        dd_limit      = min(dd_limit, 12)   # extra tight drawdown
+        daily_vol_cap = min(daily_vol_cap, 2.0)
+    elif view == 'bull':
+        dd_limit      = min(dd_limit + 10, 50)  # slightly more lenient
+        daily_vol_cap = min(daily_vol_cap + 0.5, 4.0)
+
+    # Volume floor scales with preferred market-cap tier
+    base_vol = {'low': 500_000, 'medium': 150_000, 'high': 50_000}.get(risk, 150_000)
+    mcap_vol = {'large': 1_500_000, 'mid': 200_000, 'small': 50_000}.get(mcap, 200_000)
+    vol_min  = max(base_vol, mcap_vol)   # take the stricter of the two
+
+    need_dual_trend = (horizon == 'long')
+    need_uptrend    = (horizon in ('long', 'medium'))
+
+    symbols_raw = list(ALL_VALID_TICKERS)
+    total = len(symbols_raw)
+    CHUNK = 25  # mini-batch size — keeps peak RAM low
+
+    def to_ns(s):
+        s = s.strip().upper()
+        return s if s.endswith('.NS') else s + '.NS'
+
+    def generate():
+        checked = 0
+        passed  = 0
+        yield f"data: {json.dumps({'type': 'meta', 'total': total})}\n\n"
+
+        for i in range(0, total, CHUNK):
+            chunk_plain = symbols_raw[i:i + CHUNK]
+            chunk_ns    = [to_ns(s) for s in chunk_plain]
+            ns_to_plain = {to_ns(s): s for s in chunk_plain}
+
+            try:
+                raw = yf.download(
+                    tickers=chunk_ns,
+                    period='3mo',
+                    interval='1d',
+                    group_by='ticker',
+                    progress=False,
+                    threads=False,   # single-threaded: gentle on limited CPU
+                    auto_adjust=True,
+                )
+            except Exception:
+                checked += len(chunk_plain)
+                yield f"data: {json.dumps({'type': 'progress', 'checked': checked, 'total': total, 'passed': passed})}\n\n"
+                continue
+
+            for ns_sym in chunk_ns:
+                plain = ns_to_plain[ns_sym]
+                checked += 1
+                try:
+                    df = raw if len(chunk_ns) == 1 else (
+                        raw[ns_sym] if ns_sym in raw.columns.get_level_values(0) else None
+                    )
+                    if df is None or df.empty or len(df) < 15:
+                        continue
+
+                    close  = df['Close'].dropna()
+                    volume = df['Volume'].dropna()
+                    if len(close) < 15:
+                        continue
+
+                    current = float(close.iloc[-1])
+                    peak    = float(df['High'].dropna().max())
+
+                    # ── Gate 1: Volume / Liquidity ───────────────────────────────────
+                    avg_vol = float(volume.mean()) if len(volume) > 0 else 0.0
+                    if avg_vol < vol_min:
+                        continue
+
+                    # ── Gate 2: Drawdown ─────────────────────────────────────────────
+                    drawdown = round((peak - current) / peak * 100, 1) if peak > 0 else 100.0
+                    if drawdown > dd_limit:
+                        continue
+
+                    # ── Gate 3: Dual-SMA Trend ───────────────────────────────────────
+                    sma20   = float(close.rolling(min(20, len(close))).mean().iloc[-1])
+                    sma50   = float(close.rolling(min(50, len(close))).mean().iloc[-1])
+                    uptrend = bool(current > sma50)
+                    if need_dual_trend and (current < sma20 or current < sma50):
+                        continue
+                    elif need_uptrend and not uptrend:
+                        continue
+
+                    # ── Gate 4: Multi-timeframe Momentum ─────────────────────────────
+                    mom10d = round(float(close.iloc[-1] / close.iloc[-10] - 1) * 100, 2) if len(close) >= 10 else 0.0
+                    mom1m  = round(float(close.iloc[-1] / close.iloc[-21] - 1) * 100, 2) if len(close) >= 21 else mom10d
+                    mom3m  = round(float(close.iloc[-1] / close.iloc[0]   - 1) * 100, 2)
+                    if goal == 'growth':
+                        if mom1m < -5.0 or mom3m < -10.0:
+                            continue
+                    elif goal == 'income':
+                        if mom3m < -20.0:
+                            continue
+                    else:  # balanced
+                        if mom1m < -8.0 or mom3m < -15.0:
+                            continue
+
+                    # ── Gate 5: Volatility ───────────────────────────────────────────
+                    daily_ret_std = float(close.pct_change().dropna().std()) * 100
+                    if daily_ret_std > daily_vol_cap:
+                        continue
+
+                    # ── Gate 6: Volume Trend (avoid dying institutional interest) ─────
+                    if len(volume) >= 20:
+                        recent_vol  = float(volume.iloc[-10:].mean())
+                        overall_vol = float(volume.mean())
+                        if overall_vol > 0 and recent_vol < overall_vol * 0.4:
+                            continue
+
+                    passed += 1
+                    yield f"data: {json.dumps({'type': 'pass', 'symbol': plain, 'drawdown': drawdown, 'uptrend': uptrend, 'momentum': mom10d, 'mom1m': mom1m, 'mom3m': mom3m, 'volatility': round(daily_ret_std, 2), 'avgVol': round(avg_vol)})}\n\n"
+
+                except Exception:
+                    continue
+
+            # Progress heartbeat after each mini-batch
+            yield f"data: {json.dumps({'type': 'progress', 'checked': checked, 'total': total, 'passed': passed})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'done', 'checked': checked, 'passed': passed})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 
 if __name__ == '__main__':
