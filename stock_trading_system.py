@@ -2767,8 +2767,8 @@ def index():
     <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root { --bg-dark: #1B2D3F; --bg-page: #ECF1F8; --bg-card: #243A50; --bg-card-hover: #2C4560; --accent-cyan: #387ed1; --accent-gold: #387ed1; --accent-purple: #5e6ad2; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #2E4D66; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg-page); color: var(--text-primary); min-height: 100vh; line-height: 1.6; }
+        :root { --bg-dark: #1B2D3F; --bg-card: #243A50; --bg-card-hover: #2C4560; --accent-cyan: #387ed1; --accent-gold: #387ed1; --accent-purple: #5e6ad2; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #2E4D66; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg-dark); color: var(--text-primary); min-height: 100vh; line-height: 1.6; }
         .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
 
         /* ===== NAVBAR ===== */
@@ -3479,8 +3479,8 @@ def index():
             <div id="verdict-search-view">
                 <div style="text-align:center;padding:64px 20px 28px;max-width:680px;margin:0 auto;">
                     <div style="display:inline-flex;align-items:center;gap:7px;background:rgba(56,126,209,0.13);border:1px solid rgba(56,126,209,0.3);border-radius:20px;padding:5px 16px;font-size:0.76em;font-weight:700;color:var(--accent-cyan);letter-spacing:0.6px;text-transform:uppercase;margin-bottom:22px;">&#9889; AI-Powered Analysis Engine</div>
-                    <h1 style="font-family:'Space Grotesk',sans-serif;font-size:2.6em;font-weight:800;color:#1B2D3F;line-height:1.15;margin-bottom:16px;letter-spacing:-0.5px;">Investment Verdict</h1>
-                    <p style="color:#4A6080;font-size:1em;line-height:1.75;max-width:520px;margin:0 auto;">Combines <strong style="color:#2C4A6E;">Technical signals</strong>, <strong style="color:#2C4A6E;">DCF valuation</strong>, <strong style="color:#2C4A6E;">Market Connection</strong> and <strong style="color:#2C4A6E;">Dividend metrics</strong> into one unified score — telling you exactly what this stock is best suited for.</p>
+                    <h1 style="font-family:'Space Grotesk',sans-serif;font-size:2.6em;font-weight:800;color:var(--text-primary);line-height:1.15;margin-bottom:16px;letter-spacing:-0.5px;">Investment Verdict</h1>
+                    <p style="color:var(--text-secondary);font-size:1em;line-height:1.75;max-width:520px;margin:0 auto;">Combines <strong style="color:var(--text-primary);">Technical signals</strong>, <strong style="color:var(--text-primary);">DCF valuation</strong>, <strong style="color:var(--text-primary);">Market Connection</strong> and <strong style="color:var(--text-primary);">Dividend metrics</strong> into one unified score — telling you exactly what this stock is best suited for.</p>
                 </div>
                 <div style="max-width:540px;margin:0 auto;padding:0 20px 20px;">
                     <div style="background:var(--bg-card);border-radius:18px;padding:30px 28px;border:1px solid var(--border-color);box-shadow:0 8px 40px rgba(27,45,63,0.18);">
@@ -3490,11 +3490,11 @@ def index():
                         <button class="verdict-fetch-btn" onclick="fetchVerdictData()" style="margin-top:16px;border-radius:10px;font-size:1em;height:52px;letter-spacing:0.3px;">&#128269;&nbsp; Analyse &amp; Get Verdict</button>
                     </div>
                     <div style="display:flex;justify-content:center;gap:28px;margin-top:28px;flex-wrap:wrap;">
-                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:#1B2D3F;">4-in-1</div><div style="font-size:0.75em;color:#6B8BAD;margin-top:2px;">Score Model</div></div>
-                        <div style="width:1px;background:#C8D8E8;"></div>
-                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:#1B2D3F;">292</div><div style="font-size:0.75em;color:#6B8BAD;margin-top:2px;">NSE Stocks</div></div>
-                        <div style="width:1px;background:#C8D8E8;"></div>
-                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:#1B2D3F;">Live</div><div style="font-size:0.75em;color:#6B8BAD;margin-top:2px;">Market Data</div></div>
+                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">4-in-1</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Score Model</div></div>
+                        <div style="width:1px;background:var(--border-color);"></div>
+                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">292</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">NSE Stocks</div></div>
+                        <div style="width:1px;background:var(--border-color);"></div>
+                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">Live</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Market Data</div></div>
                     </div>
                 </div>
             </div>
