@@ -3487,29 +3487,6 @@ def index():
                         <div class="suggestions" id="verdict-suggestions"></div>
                         <button class="verdict-fetch-btn" onclick="fetchVerdictData()">Analyse &amp; Get Verdict</button>
                     </div>
-                    <div class="card">
-                        <h2>Your Investor Profile</h2>
-                        <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:4px;line-height:1.6;">Tell us your goals — we'll personalise the verdict and surface stocks that match your style.</p>
-                        <div class="pref-label">Investment Horizon</div>
-                        <div class="pref-group" id="pref-horizon">
-                            <button class="pref-btn" data-value="short" onclick="setPref('horizon','short',this)">Short-Term (weeks)</button>
-                            <button class="pref-btn" data-value="medium" onclick="setPref('horizon','medium',this)">Medium (months)</button>
-                            <button class="pref-btn active" data-value="long" onclick="setPref('horizon','long',this)">Long-Term (years)</button>
-                        </div>
-                        <div class="pref-label">Risk Tolerance</div>
-                        <div class="pref-group" id="pref-risk">
-                            <button class="pref-btn" data-value="low" onclick="setPref('risk','low',this)">Low (&lt;10% drawdown)</button>
-                            <button class="pref-btn active" data-value="medium" onclick="setPref('risk','medium',this)">Medium (up to 30%)</button>
-                            <button class="pref-btn" data-value="high" onclick="setPref('risk','high',this)">High (40–50%+ ok)</button>
-                        </div>
-                        <div class="pref-label">Primary Goal</div>
-                        <div class="pref-group" id="pref-goal">
-                            <button class="pref-btn active" data-value="growth" onclick="setPref('goal','growth',this)">Capital Growth</button>
-                            <button class="pref-btn" data-value="income" onclick="setPref('goal','income',this)">Dividend Income</button>
-                            <button class="pref-btn" data-value="balanced" onclick="setPref('goal','balanced',this)">Balanced</button>
-                        </div>
-                        <button class="suggest-stocks-btn" onclick="showCuratedStocks()">&#128269; Get Stock Suggestions for My Profile</button>
-                    </div>
                 </div>
             </div>
             <div id="verdict-result-view" style="display:none;">
