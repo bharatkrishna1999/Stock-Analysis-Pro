@@ -2767,7 +2767,7 @@ def index():
     <noscript><link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet"></noscript>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        :root { --bg-dark: #0F1824; --bg-card: #162033; --bg-card-hover: #1C2B42; --accent-cyan: #387ed1; --accent-gold: #387ed1; --accent-purple: #5e6ad2; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #1E3448; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
+        :root { --bg-dark: #1B2D3F; --bg-card: #243A50; --bg-card-hover: #2C4560; --accent-cyan: #387ed1; --accent-gold: #387ed1; --accent-purple: #5e6ad2; --accent-green: #2ECC8C; --text-primary: #E8EDF2; --text-secondary: #90A4BE; --text-muted: #607B96; --border-color: #2E4D66; --success: #2ECC8C; --warning: #F59E0B; --danger: #EF4444; }
         body { font-family: 'Inter', sans-serif; background: var(--bg-dark); color: var(--text-primary); min-height: 100vh; line-height: 1.6; }
         .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
 
