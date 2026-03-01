@@ -2380,7 +2380,11 @@ class Analyzer:
                     else:
                         dividends_fy = dividends
 
-                    annual_dividend = _compute_split_adjusted_dividend(dividends_fy, splits)
+                    # Drop one-off corporate-action entries (demergers, buybacks, rights)
+                    # that yfinance misclassifies as dividends.  Any single payment
+                    # exceeding 8 % of the current share price is not a regular dividend.
+                    if not dividends_fy.empty:
+                        dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
                     if annual_dividend <= 0:
                         continue
 
@@ -3230,6 +3234,25 @@ def index():
         .pref-btn:hover { border-color:var(--accent-cyan);color:var(--text-primary); }
         .pref-btn.active { background:rgba(56,126,209,0.15);border-color:var(--accent-cyan);color:var(--accent-cyan); }
         .pref-label { font-size:0.75em;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-muted);font-weight:700;margin-top:14px;margin-bottom:2px; }
+        /* ── HNI Questionnaire ───────────────────────────────────────────── */
+        .qz-section { margin-bottom:18px; }
+        .qz-header { display:flex;align-items:flex-start;gap:10px;margin-bottom:10px; }
+        .qz-num { min-width:26px;height:26px;border-radius:50%;background:rgba(56,126,209,0.1);border:1px solid rgba(56,126,209,0.28);color:var(--accent-cyan);font-size:0.72em;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:2px;transition:all 0.25s; }
+        .qz-num.done { background:rgba(16,185,129,0.15);border-color:rgba(16,185,129,0.4);color:var(--accent-green); }
+        .qz-q { font-size:0.9em;font-weight:600;color:var(--text-primary);line-height:1.45;padding-top:3px; }
+        .qz-opts { display:flex;flex-wrap:wrap;gap:8px;padding-left:36px; }
+        .qz-opt { flex:1 1 150px;background:var(--bg-dark);border:1px solid var(--border-color);border-radius:10px;padding:10px 13px;cursor:pointer;transition:all 0.2s;text-align:left;font-family:'Inter',sans-serif; }
+        .qz-opt:hover { border-color:var(--accent-cyan);background:rgba(56,126,209,0.06); }
+        .qz-opt.selected { background:rgba(56,126,209,0.13);border-color:var(--accent-cyan); }
+        .qz-opt-label { font-size:0.82em;font-weight:700;color:var(--text-primary);margin-bottom:3px; }
+        .qz-opt.selected .qz-opt-label { color:var(--accent-cyan); }
+        .qz-opt-desc { font-size:0.71em;color:var(--text-muted);line-height:1.3; }
+        .qz-divider { height:1px;background:var(--border-color);margin:4px 0 18px; }
+        .qz-progress { font-size:0.75em;color:var(--text-muted);margin-bottom:12px;min-height:1.1em; }
+        .qz-progress strong { color:var(--accent-cyan); }
+        .qz-cta { width:100%;padding:14px;background:linear-gradient(90deg,rgba(56,126,209,0.18),rgba(139,92,246,0.12));border:1px solid rgba(56,126,209,0.4);color:var(--accent-cyan);border-radius:12px;font-size:0.95em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.25s;display:none; }
+        .qz-cta.ready { display:block; }
+        .qz-cta:hover { background:linear-gradient(90deg,rgba(56,126,209,0.28),rgba(139,92,246,0.22));box-shadow:0 0 18px rgba(56,126,209,0.22); }
         .suggest-stocks-btn { width:100%;margin-top:18px;padding:11px;background:rgba(56,126,209,0.12);border:1px solid rgba(56,126,209,0.35);color:var(--accent-cyan);border-radius:10px;font-size:0.9em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s; }
         .suggest-stocks-btn:hover { background:rgba(56,126,209,0.22); }
         /* Trend indicators */
@@ -3494,41 +3517,93 @@ def index():
             </div>
         </div>
         <div id="scanner-tab" class="tab-content">
-            <div class="grid" style="align-items:start;">
-                <div class="card">
-                    <h2>&#128269; Live Stock Scanner</h2>
-                    <p style="color:var(--text-secondary);font-size:0.87em;line-height:1.6;margin-bottom:4px;">Scans all 292 NSE stocks and ranks them by your investor profile. Results stay here when you click a stock and come back.</p>
-                    <div class="pref-label">Investment Horizon</div>
-                    <div class="pref-group" id="sc-pref-horizon">
-                        <button class="pref-btn" data-value="short" onclick="setPref('horizon','short',this)">Short-term</button>
-                        <button class="pref-btn" data-value="medium" onclick="setPref('horizon','medium',this)">Medium-term</button>
-                        <button class="pref-btn" data-value="long" onclick="setPref('horizon','long',this)">Long-term</button>
+            <div class="card" style="max-width:860px;margin:0 auto 0;">
+                <h2 style="margin-bottom:4px;">&#127919; Build Your Top-20 Portfolio</h2>
+                <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:22px;line-height:1.5;">Answer 6 questions and we will run 292 NSE stocks through 3 progressive filters — returning your personalised top 20.</p>
+
+                <!-- Q1 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn1">1</div><div class="qz-q">What is your primary investment objective?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q1" data-v="beat" onclick="setQ('q1','beat',this)"><div class="qz-opt-label">&#128200; Beat the Index</div><div class="qz-opt-desc">Alpha above Nifty — concentrated bets on high-conviction ideas</div></button>
+                        <button class="qz-opt" data-q="q1" data-v="compounder" onclick="setQ('q1','compounder',this)"><div class="qz-opt-label">&#9889; Steady Compounder</div><div class="qz-opt-desc">12–18% CAGR — quality businesses held through business cycles</div></button>
+                        <button class="qz-opt" data-q="q1" data-v="income" onclick="setQ('q1','income',this)"><div class="qz-opt-label">&#128176; Regular Income</div><div class="qz-opt-desc">Consistent dividends, capital safety, minimal drawdowns</div></button>
+                        <button class="qz-opt" data-q="q1" data-v="tactical" onclick="setQ('q1','tactical',this)"><div class="qz-opt-label">&#127919; Tactical Play</div><div class="qz-opt-desc">Momentum &amp; technical setups — shorter-horizon event-driven trades</div></button>
                     </div>
-                    <div class="pref-label">Risk Tolerance</div>
-                    <div class="pref-group" id="sc-pref-risk">
-                        <button class="pref-btn" data-value="low" onclick="setPref('risk','low',this)">Low Risk</button>
-                        <button class="pref-btn" data-value="medium" onclick="setPref('risk','medium',this)">Medium Risk</button>
-                        <button class="pref-btn" data-value="high" onclick="setPref('risk','high',this)">High Risk</button>
-                    </div>
-                    <div class="pref-label">Investment Goal</div>
-                    <div class="pref-group" id="sc-pref-goal">
-                        <button class="pref-btn" data-value="growth" onclick="setPref('goal','growth',this)">Capital Growth</button>
-                        <button class="pref-btn" data-value="income" onclick="setPref('goal','income',this)">Dividend Income</button>
-                        <button class="pref-btn" data-value="balanced" onclick="setPref('goal','balanced',this)">Balanced</button>
-                    </div>
-                    <button class="scanner-start-btn" id="scanner-start-btn" onclick="startScanInTab()">&#128269; Scan NSE Universe</button>
-                    <button class="scanner-stop-btn" id="scanner-stop-btn" onclick="stopScanInTab()">&#9632; Stop Scan</button>
                 </div>
-                <div class="card" id="sc-status-card" style="display:none;">
-                    <div id="sc-sub" style="font-size:0.88em;color:var(--text-muted);margin-bottom:12px;line-height:1.5;"></div>
-                    <div style="background:var(--bg-dark);border-radius:8px;height:6px;overflow:hidden;margin-bottom:10px;">
-                        <div id="sc-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.35s;border-radius:8px;"></div>
+                <div class="qz-divider"></div>
+
+                <!-- Q2 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn2">2</div><div class="qz-q">Your portfolio is down 25% from peak. What is your instinct?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q2" data-v="cut" onclick="setQ('q2','cut',this)"><div class="qz-opt-label">&#128683; Protect Capital</div><div class="qz-opt-desc">I exit or reduce — preserving principal is non-negotiable</div></button>
+                        <button class="qz-opt" data-q="q2" data-v="calm" onclick="setQ('q2','calm',this)"><div class="qz-opt-label">&#128564; Hold Steady</div><div class="qz-opt-desc">I trust the fundamentals, stay the course and wait it out</div></button>
+                        <button class="qz-opt" data-q="q2" data-v="buy" onclick="setQ('q2','buy',this)"><div class="qz-opt-label">&#128640; Average Down</div><div class="qz-opt-desc">Drawdowns are opportunities — I deploy more capital aggressively</div></button>
                     </div>
-                    <div id="sc-status-text" style="font-size:0.78em;color:var(--text-muted);margin-bottom:10px;"></div>
-                    <div class="sc-stat-row" id="sc-stat-row"></div>
                 </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q3 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn3">3</div><div class="qz-q">What is your planned holding horizon for this deployment?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q3" data-v="s6m" onclick="setQ('q3','s6m',this)"><div class="qz-opt-label">&#9889; Under 6 Months</div><div class="qz-opt-desc">Event-driven plays, earnings season, technical breakouts</div></button>
+                        <button class="qz-opt" data-q="q3" data-v="s2yr" onclick="setQ('q3','s2yr',this)"><div class="qz-opt-label">&#128337; 6 Months – 2 Years</div><div class="qz-opt-desc">Sectoral recovery, re-rating plays, medium business cycle</div></button>
+                        <button class="qz-opt" data-q="q3" data-v="s5yr" onclick="setQ('q3','s5yr',this)"><div class="qz-opt-label">&#128200; 2 – 5 Years</div><div class="qz-opt-desc">Structural theme investing across a full business cycle</div></button>
+                        <button class="qz-opt" data-q="q3" data-v="long" onclick="setQ('q3','long',this)"><div class="qz-opt-label">&#127381; 5+ Years</div><div class="qz-opt-desc">Long-term compounding — buy, hold, and let time do the work</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q4 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn4">4</div><div class="qz-q">Which market-cap range aligns with your strategy?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q4" data-v="large" onclick="setQ('q4','large',this)"><div class="qz-opt-label">&#127963; Large-Cap Only</div><div class="qz-opt-desc">Nifty 50 blue chips — deep liquidity, institutional grade</div></button>
+                        <button class="qz-opt" data-q="q4" data-v="mid" onclick="setQ('q4','mid',this)"><div class="qz-opt-label">&#9878;&#65039; Large + Mid</div><div class="qz-opt-desc">Best of both — quality anchors with mid-cap alpha kickers</div></button>
+                        <button class="qz-opt" data-q="q4" data-v="small" onclick="setQ('q4','small',this)"><div class="qz-opt-label">&#128293; Mid &amp; Small</div><div class="qz-opt-desc">Maximum alpha potential — higher short-term volatility accepted</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q5 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn5">5</div><div class="qz-q">Do you have a sector conviction right now?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q5" data-v="fin" onclick="setQ('q5','fin',this)"><div class="qz-opt-label">&#127981; Financials</div><div class="qz-opt-desc">Banks, NBFCs, insurance, AMCs</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="pharma" onclick="setQ('q5','pharma',this)"><div class="qz-opt-label">&#128138; Pharma &amp; Health</div><div class="qz-opt-desc">Pharma, hospitals, diagnostics, chemicals</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="infra" onclick="setQ('q5','infra',this)"><div class="qz-opt-label">&#127959;&#65039; Infra &amp; Capex</div><div class="qz-opt-desc">Infrastructure, defence, capital goods, power, cement</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="tech" onclick="setQ('q5','tech',this)"><div class="qz-opt-label">&#128187; Technology</div><div class="qz-opt-desc">IT services, software, digital platforms</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="consumer" onclick="setQ('q5','consumer',this)"><div class="qz-opt-label">&#128666; Consumer &amp; Auto</div><div class="qz-opt-desc">FMCG, auto, retail, hospitality, electronics</div></button>
+                        <button class="qz-opt" data-q="q5" data-v="all" onclick="setQ('q5','all',this)"><div class="qz-opt-label">&#127758; No Preference</div><div class="qz-opt-desc">Purely quantitative — best ideas across all sectors</div></button>
+                    </div>
+                </div>
+                <div class="qz-divider"></div>
+
+                <!-- Q6 -->
+                <div class="qz-section">
+                    <div class="qz-header"><div class="qz-num" id="qn6">6</div><div class="qz-q">How are you positioned on the broader market right now?</div></div>
+                    <div class="qz-opts">
+                        <button class="qz-opt" data-q="q6" data-v="bull" onclick="setQ('q6','bull',this)"><div class="qz-opt-label">&#128640; Fully Deployed</div><div class="qz-opt-desc">Markets are going higher — I want to be fully invested</div></button>
+                        <button class="qz-opt" data-q="q6" data-v="selective" onclick="setQ('q6','selective',this)"><div class="qz-opt-label">&#127919; Selective</div><div class="qz-opt-desc">Cautiously optimistic — quality at fair value, not at any price</div></button>
+                        <button class="qz-opt" data-q="q6" data-v="defensive" onclick="setQ('q6','defensive',this)"><div class="qz-opt-label">&#128737;&#65039; Defensive</div><div class="qz-opt-desc">Capital preservation first — low volatility, earnings certainty</div></button>
+                    </div>
+                </div>
+
+                <div class="qz-progress" id="qz-progress"></div>
+                <button class="qz-cta" id="qz-cta" onclick="startScanInTab()">&#128269; Find My Top 20 Stocks</button>
+                <button class="scanner-stop-btn" id="scanner-stop-btn" onclick="stopScanInTab()">&#9632; Stop Scan</button>
             </div>
-            <div id="scanner-results-area" style="margin-top:18px;"></div>
+            <div class="card" id="sc-status-card" style="display:none;max-width:860px;margin:18px auto 0;">
+                <div id="sc-sub" style="font-size:0.88em;color:var(--text-muted);margin-bottom:12px;line-height:1.5;"></div>
+                <div style="background:var(--bg-dark);border-radius:8px;height:6px;overflow:hidden;margin-bottom:10px;">
+                    <div id="sc-progress-fill" style="height:100%;width:0%;background:var(--accent-cyan);transition:width 0.35s;border-radius:8px;"></div>
+                </div>
+                <div id="sc-status-text" style="font-size:0.78em;color:var(--text-muted);margin-bottom:10px;"></div>
+                <div class="sc-stat-row" id="sc-stat-row"></div>
+            </div>
+            <div id="scanner-results-area" style="margin-top:18px;max-width:860px;margin-left:auto;margin-right:auto;"></div>
         </div>
     </main>
     <script>
@@ -3550,18 +3625,28 @@ def index():
         const allTickers = [...new Set(Object.values(stocks).flat())];
 
         // ===== INVESTOR PROFILE =====
-        var investorProfile = { horizon: 'long', risk: 'medium', goal: 'growth' };
+        var investorProfile = { horizon: 'long', risk: 'medium', goal: 'growth', mcap: 'mid', sector: 'all', view: 'selective' };
+
+        // ===== QUESTIONNAIRE STATE =====
+        var questionnaire = { q1: null, q2: null, q3: null, q4: null, q5: null, q6: null };
+        var QZ_TOTAL = 6;
+
         function loadProfile() {
             try {
                 var p = JSON.parse(localStorage.getItem('stockProProfile'));
-                if (p && typeof p === 'object') investorProfile = { horizon: p.horizon || null, risk: p.risk || null, goal: p.goal || null };
+                if (p && typeof p === 'object') {
+                    investorProfile = Object.assign(investorProfile, p);
+                    if (p.qz && typeof p.qz === 'object') questionnaire = Object.assign(questionnaire, p.qz);
+                }
             } catch(e) {}
             updateProfileUI();
+            updateQzUI();
         }
         function saveProfile() {
-            try { localStorage.setItem('stockProProfile', JSON.stringify(investorProfile)); } catch(e) {}
+            try { localStorage.setItem('stockProProfile', JSON.stringify(Object.assign({}, investorProfile, { qz: questionnaire }))); } catch(e) {}
         }
         function setPref(key, val, el) {
+            // Used by verdict tab profile toggles only
             var grp = el.closest('.pref-group');
             if (investorProfile[key] === val) {
                 investorProfile[key] = null;
@@ -3575,25 +3660,79 @@ def index():
             el.classList.add('active');
         }
         function updateProfileUI() {
+            // Sync verdict-tab profile toggles only
             ['horizon', 'risk', 'goal'].forEach(function(key) {
-                // Sync both verdict-tab profile group and scanner-tab profile group
-                ['pref-' + key, 'sc-pref-' + key].forEach(function(id) {
-                    var grp = document.getElementById(id);
-                    if (!grp) return;
-                    grp.querySelectorAll('.pref-btn').forEach(function(b) {
-                        b.classList.toggle('active', b.dataset.value === investorProfile[key]);
-                    });
+                var grp = document.getElementById('pref-' + key);
+                if (!grp) return;
+                grp.querySelectorAll('.pref-btn').forEach(function(b) {
+                    b.classList.toggle('active', b.dataset.value === investorProfile[key]);
                 });
             });
+        }
+
+        // ── Questionnaire functions ──────────────────────────────────────────
+        function setQ(key, val, el) {
+            questionnaire[key] = val;
+            document.querySelectorAll('[data-q="' + key + '"]').forEach(function(b) {
+                b.classList.toggle('selected', b.dataset.v === val);
+            });
+            var badge = document.getElementById('qn' + key.replace('q', ''));
+            if (badge) badge.classList.add('done');
+            resolveProfile();
+            updateQzProgress();
+            saveProfile();
+        }
+        function resolveProfile() {
+            var a = questionnaire;
+            var goalMap  = { beat: 'growth', compounder: 'balanced', income: 'income', tactical: 'growth' };
+            var riskMap  = { cut: 'low', calm: 'medium', buy: 'high' };
+            var horizMap = { s6m: 'short', s2yr: 'medium', s5yr: 'long', long: 'long' };
+            if (a.q1) investorProfile.goal    = goalMap[a.q1]  || investorProfile.goal;
+            if (a.q2) investorProfile.risk    = riskMap[a.q2]  || investorProfile.risk;
+            if (a.q3) investorProfile.horizon = horizMap[a.q3] || investorProfile.horizon;
+            // Tactical + no horizon answer → default to short
+            if (a.q1 === 'tactical' && !a.q3) investorProfile.horizon = 'short';
+            if (a.q4) investorProfile.mcap   = a.q4;
+            if (a.q5) investorProfile.sector = a.q5;
+            if (a.q6) investorProfile.view   = a.q6;
+        }
+        function qzAnswered() {
+            return Object.values(questionnaire).filter(function(v) { return v !== null; }).length;
+        }
+        function updateQzProgress() {
+            var n = qzAnswered();
+            var pEl  = document.getElementById('qz-progress');
+            var cBtn = document.getElementById('qz-cta');
+            if (pEl) {
+                pEl.innerHTML = n < QZ_TOTAL
+                    ? '<strong>' + n + '</strong> of ' + QZ_TOTAL + ' questions answered'
+                    : '<strong style="color:var(--accent-green);">&#10003; All questions answered</strong> — your picks are ready';
+            }
+            if (cBtn) cBtn.classList.toggle('ready', n === QZ_TOTAL);
+        }
+        function updateQzUI() {
+            Object.keys(questionnaire).forEach(function(key) {
+                var val = questionnaire[key];
+                if (!val) return;
+                document.querySelectorAll('[data-q="' + key + '"]').forEach(function(b) {
+                    b.classList.toggle('selected', b.dataset.v === val);
+                });
+                var badge = document.getElementById('qn' + key.replace('q', ''));
+                if (badge) badge.classList.add('done');
+            });
+            updateQzProgress();
         }
 
         // ===== LIVE STOCK SCANNER BY PROFILE =====
         var _scanAbort = null;
         function getProfileLabels() {
             return {
-                horizon: { short: 'Short-Term', medium: 'Medium-Term', long: 'Long-Term' }[investorProfile.horizon] || 'Any Horizon',
-                risk: { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' }[investorProfile.risk] || 'Any Risk',
-                goal: { growth: 'Capital Growth', income: 'Dividend Income', balanced: 'Balanced' }[investorProfile.goal] || 'Any Goal'
+                horizon: { short: 'Short-Term', medium: 'Medium-Term', long: 'Long-Term' }[investorProfile.horizon] || 'Long-Term',
+                risk:    { low: 'Capital Preserving', medium: 'Balanced Risk', high: 'High Risk' }[investorProfile.risk] || 'Balanced Risk',
+                goal:    { growth: 'Alpha Growth', income: 'Dividend Income', balanced: 'Steady Compounder' }[investorProfile.goal] || 'Alpha Growth',
+                mcap:    { large: 'Large-Cap', mid: 'Large+Mid', small: 'Mid & Small' }[investorProfile.mcap] || 'Large+Mid',
+                sector:  { fin: 'Financials', pharma: 'Pharma & Health', infra: 'Infra & Capex', tech: 'Technology', consumer: 'Consumer & Auto', all: 'All Sectors' }[investorProfile.sector] || 'All Sectors',
+                view:    { bull: 'Bullish', selective: 'Selective', defensive: 'Defensive' }[investorProfile.view] || 'Selective',
             };
         }
         function getRelevantScore(stScore, ltScore, divScore) {
@@ -3626,21 +3765,23 @@ def index():
         var _scanRunning = false;
 
         function showCuratedStocks() {
-            // "Get Stock Suggestions" button in verdict tab → navigate to Scanner tab
+            // "Get Stock Suggestions" button in verdict tab → go to Scanner
             switchTab('scanner');
-            if (!_scanRunning) startScanInTab();
+            // Auto-start only if questionnaire is fully answered
+            if (!_scanRunning && qzAnswered() === QZ_TOTAL) startScanInTab();
         }
         function startScanInTab() {
             if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
             _scanAbort = false;
             _scanRunning = true;
+            resolveProfile();  // make sure profile reflects latest questionnaire answers
             var labels   = getProfileLabels();
             var relLabel = getRelevantLabel();
             var universeTotal = allTickers.length;
-            // Show status card, toggle buttons
+            // Show status card; hide CTA, show stop
             var statusCard = document.getElementById('sc-status-card');
             if (statusCard) statusCard.style.display = '';
-            var startBtn = document.getElementById('scanner-start-btn');
+            var startBtn = document.getElementById('qz-cta');
             var stopBtn  = document.getElementById('scanner-stop-btn');
             if (startBtn) startBtn.style.display = 'none';
             if (stopBtn)  stopBtn.style.display  = '';
@@ -3657,8 +3798,14 @@ def index():
                   + '<span style="color:var(--accent-green);">S2 &#8594; <strong>' + s2 + '</strong></span>'
                   + '<span>Deep <strong>' + s3done + '/' + s3tot + '</strong></span>';
             }
-            setSub('Filtering <strong>' + universeTotal + ' NSE stocks</strong> by <strong style="color:var(--accent-cyan);">'
-                   + labels.risk + ' risk &middot; ' + labels.horizon + ' horizon &middot; ' + labels.goal + '</strong>');
+            setSub('Scanning <strong>' + universeTotal + ' NSE stocks</strong> &mdash; '
+                   + '<strong style="color:var(--accent-cyan);">' + labels.goal + '</strong>'
+                   + ' &middot; ' + labels.risk
+                   + ' &middot; ' + labels.horizon
+                   + ' &middot; ' + labels.mcap
+                   + ' &middot; ' + labels.sector
+                   + ' &middot; ' + labels.view
+                   + ' &mdash; surfacing your <strong>top 20</strong>');
             setFill(0);
             setStatus('Connecting to data stream&hellip;');
             // Clear previous results
@@ -3668,6 +3815,9 @@ def index():
             var risk    = investorProfile.risk    || 'medium';
             var horizon = investorProfile.horizon || 'long';
             var goal    = investorProfile.goal    || 'growth';
+            var mcap    = investorProfile.mcap    || 'mid';
+            var sector  = investorProfile.sector  || 'all';
+            var view    = investorProfile.view    || 'selective';
 
             // ── Stage 1: SSE price-action prefilter ─────────────────────────────
             var pfChecked = 0, pfPassed = 0, pfDone = false;
@@ -3682,11 +3832,12 @@ def index():
             var deepResults = [];
             var MAX_DEEP  = 5;
 
+            var MAX_DISPLAY = 20;  // show top 20 only
+
             function finishScan() {
                 _scanRunning = false;
-                if (startBtn) startBtn.style.display = '';
-                if (stopBtn)  stopBtn.style.display  = 'none';
-                if (startBtn) startBtn.textContent = '&#128269; Re-scan with Current Profile';
+                if (startBtn) { startBtn.style.display = ''; startBtn.classList.add('ready'); startBtn.innerHTML = '&#128269; Re-scan with This Profile'; }
+                if (stopBtn)  stopBtn.style.display = 'none';
             }
             function updateProgress() {
                 var bar;
@@ -3720,8 +3871,12 @@ def index():
             }
             function renderTabResults() {
                 if (!resEl) return;
+                var display = deepResults.slice(0, MAX_DISPLAY);
                 var h = '';
-                deepResults.forEach(function(r, i) {
+                if (display.length > 0) {
+                    h += '<div style="font-size:0.78em;color:var(--text-muted);margin-bottom:10px;text-align:right;">Showing top <strong style="color:var(--accent-cyan);">' + display.length + '</strong> stocks ranked by <strong>' + relLabel + '</strong> score</div>';
+                }
+                display.forEach(function(r, i) {
                     var scoreColor = r.relevantScore >= 65 ? 'var(--accent-green)' : r.relevantScore >= 40 ? 'var(--warning)' : 'var(--danger)';
                     h += '<div class="scan-row" onclick="openScannerStock(\\'' + r.symbol + '\\')" style="cursor:pointer;">';
                     h += '<div class="scan-rank">' + (i + 1) + '</div>';
@@ -3735,8 +3890,8 @@ def index():
                     h += '<div class="scan-main-score" style="color:' + scoreColor + ';">' + r.relevantScore + '</div>';
                     h += '</div>';
                 });
-                if (deepResults.length === 0 && pfDone && midDone && deepTotal === 0)
-                    h = '<div style="text-align:center;padding:32px;color:var(--text-muted);">No stocks passed the filter. Try relaxing your risk or horizon settings.</div>';
+                if (display.length === 0 && pfDone && midDone && deepTotal === 0)
+                    h = '<div style="text-align:center;padding:32px;color:var(--text-muted);">No stocks matched your profile. Try adjusting your sector or market view.</div>';
                 resEl.innerHTML = h;
             }
 
@@ -3766,7 +3921,8 @@ def index():
                         fetch('/midfilter?symbol=' + encodeURIComponent(capturedSym)
                               + '&risk='    + encodeURIComponent(risk)
                               + '&goal='    + encodeURIComponent(goal)
-                              + '&horizon=' + encodeURIComponent(horizon))
+                              + '&horizon=' + encodeURIComponent(horizon)
+                              + '&sector='  + encodeURIComponent(sector))
                         .then(function(r) { return r.json(); })
                         .catch(function()  { return { passed: true, symbol: capturedSym }; })
                         .then(function(mf) {
@@ -3794,7 +3950,9 @@ def index():
             // Stage 1: SSE prefilter stream
             var es = new EventSource('/prefilter-stream?risk=' + encodeURIComponent(risk)
                                     + '&horizon=' + encodeURIComponent(horizon)
-                                    + '&goal=' + encodeURIComponent(goal));
+                                    + '&goal='    + encodeURIComponent(goal)
+                                    + '&mcap='    + encodeURIComponent(mcap)
+                                    + '&view='    + encodeURIComponent(view));
             _prefilterES = es;
             es.onmessage = function(evt) {
                 if (_scanAbort) { es.close(); _prefilterES = null; return; }
@@ -3831,9 +3989,9 @@ def index():
             _scanAbort = true;
             _scanRunning = false;
             if (_prefilterES) { _prefilterES.close(); _prefilterES = null; }
-            var startBtn = document.getElementById('scanner-start-btn');
+            var startBtn = document.getElementById('qz-cta');
             var stopBtn  = document.getElementById('scanner-stop-btn');
-            if (startBtn) { startBtn.style.display = ''; startBtn.textContent = '&#128269; Re-scan with Current Profile'; }
+            if (startBtn) { startBtn.style.display = ''; startBtn.classList.add('ready'); startBtn.innerHTML = '&#128269; Re-scan with This Profile'; }
             if (stopBtn)  stopBtn.style.display = 'none';
             var el = document.getElementById('sc-status-text');
             if (el) el.innerHTML = 'Scan stopped. Click Re-scan to start again.';
@@ -5977,7 +6135,9 @@ def dividend_optimize_stream_route():
                         else:
                             dividends_fy = dividends
 
-                        annual_dividend = _compute_split_adjusted_dividend(dividends_fy, splits)
+                        # Drop one-off corporate-action entries misclassified as dividends
+                        if not dividends_fy.empty:
+                            dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -6238,6 +6398,31 @@ def dcf_data_route():
         return jsonify({'error': f'DCF analysis failed: {str(e)}'})
 
 
+# Sector group keywords matched against STOCKS dictionary keys (lowercase)
+_SECTOR_GROUPS = {
+    'fin':      ['banking', 'financial services'],
+    'pharma':   ['pharma', 'healthcare', 'chemicals'],
+    'infra':    ['infrastructure', 'power', 'cement', 'construction', 'metals'],
+    'tech':     ['it sector'],
+    'consumer': ['consumer goods', 'retail', 'auto', 'fmcg', 'hospitality', 'electronics', 'paints'],
+}
+
+def _symbol_sector_group(symbol):
+    """Return which sector group(s) this symbol belongs to (subset of _SECTOR_GROUPS keys)."""
+    skip = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Others', 'Conglomerate'}
+    matched = set()
+    for sector_name, sector_stocks in STOCKS.items():
+        if sector_name in skip:
+            continue
+        if symbol not in sector_stocks:
+            continue
+        sn_lower = sector_name.lower()
+        for group, keywords in _SECTOR_GROUPS.items():
+            if any(kw in sn_lower for kw in keywords):
+                matched.add(group)
+    return matched
+
+
 @app.route('/midfilter')
 def midfilter_route():
     """
@@ -6250,6 +6435,7 @@ def midfilter_route():
     in yfinance coverage.
 
     Gates:
+      0 - Sector           (reject if outside user's sector conviction)
       A - P/E ratio        (reject extremes by goal)
       B - Revenue growth   (reject declining for growth/balanced)
       C - Profit margin    (reject deeply loss-making)
@@ -6260,6 +6446,7 @@ def midfilter_route():
     risk    = request.args.get('risk',    'medium')
     goal    = request.args.get('goal',    'growth')
     horizon = request.args.get('horizon', 'long')
+    sector  = request.args.get('sector',  'all')
 
     if not symbol:
         return jsonify({'symbol': symbol, 'passed': False, 'fails': ['no_symbol']})
@@ -6271,6 +6458,14 @@ def midfilter_route():
         return jsonify({'symbol': symbol, 'passed': True, 'fails': []})  # fail-open
 
     fails = []
+
+    # ── Gate 0: Sector conviction filter ────────────────────────────────────
+    if sector not in ('all', None, ''):
+        sym_groups = _symbol_sector_group(symbol)
+        if sym_groups and sector not in sym_groups:
+            return jsonify({'symbol': symbol, 'passed': False, 'fails': ['sector_mismatch']})
+        # If sym_groups is empty the stock spans no mapped sector — pass through
+
     pe            = info.get('trailingPE')
     rev_growth    = info.get('revenueGrowth')   # decimal, e.g. 0.12 = +12 %
     profit_margin = info.get('profitMargins')    # decimal, e.g. 0.08 =  +8 %
@@ -6353,11 +6548,26 @@ def prefilter_stream_route():
     risk    = request.args.get('risk',    'medium')
     horizon = request.args.get('horizon', 'long')
     goal    = request.args.get('goal',    'growth')
+    mcap    = request.args.get('mcap',    'mid')      # large | mid | small
+    view    = request.args.get('view',    'selective') # bull | selective | defensive
 
-    # Gate thresholds — tuned per profile
-    dd_limit        = {'low': 10,      'medium': 20,      'high': 40     }.get(risk, 20)
-    vol_min         = {'low': 500_000, 'medium': 150_000, 'high': 50_000 }.get(risk, 150_000)
-    daily_vol_cap   = {'low': 1.8,     'medium': 2.8,     'high': 100.0  }.get(risk, 2.8)   # % std-dev
+    # ── Gate thresholds — layered by risk + market view ──────────────────────
+    dd_limit      = {'low': 10, 'medium': 20, 'high': 40}.get(risk, 20)
+    daily_vol_cap = {'low': 1.8, 'medium': 2.8, 'high': 100.0}.get(risk, 2.8)
+
+    # Market view tightens or relaxes thresholds
+    if view == 'defensive':
+        dd_limit      = min(dd_limit, 12)   # extra tight drawdown
+        daily_vol_cap = min(daily_vol_cap, 2.0)
+    elif view == 'bull':
+        dd_limit      = min(dd_limit + 10, 50)  # slightly more lenient
+        daily_vol_cap = min(daily_vol_cap + 0.5, 4.0)
+
+    # Volume floor scales with preferred market-cap tier
+    base_vol = {'low': 500_000, 'medium': 150_000, 'high': 50_000}.get(risk, 150_000)
+    mcap_vol = {'large': 1_500_000, 'mid': 200_000, 'small': 50_000}.get(mcap, 200_000)
+    vol_min  = max(base_vol, mcap_vol)   # take the stricter of the two
+
     need_dual_trend = (horizon == 'long')
     need_uptrend    = (horizon in ('long', 'medium'))
 
