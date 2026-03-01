@@ -3882,7 +3882,7 @@ def index():
                         deepActive--;
                         deepCompleted++;
                         if (_scanAbort) return;
-                        if (res) deepResults.push(res);
+                        if (res && !(investorProfile.goal === 'income' && res.divScore <= 5)) deepResults.push(res);
                         deepResults.sort(function(a, b) { return b.relevantScore - a.relevantScore; });
                         renderTabResults();
                         updateProgress();
@@ -3997,8 +3997,13 @@ def index():
                 if (!passesRiskFilter(stRes, ltRes, dcfD, null)) relevantScore = Math.round(relevantScore * 0.6);
                 var name = (dcfD && dcfD.name) ? dcfD.name : getStockName(symbol);
                 var mx = Math.max(stRes.score, ltRes.score, divRes.score);
-                var bestLabel = stRes.score === mx ? 'Short-Term' : ltRes.score === mx ? 'Long-Term' : 'Dividend';
-                var bestColor = stRes.score === mx ? 'var(--accent-cyan)' : ltRes.score === mx ? 'var(--accent-green)' : 'var(--warning)';
+                var bestLabel, bestColor;
+                if (investorProfile.goal === 'income' && divRes.score > 5) {
+                    bestLabel = 'Dividend'; bestColor = 'var(--warning)';
+                } else {
+                    bestLabel = stRes.score === mx ? 'Short-Term' : ltRes.score === mx ? 'Long-Term' : 'Dividend';
+                    bestColor = stRes.score === mx ? 'var(--accent-cyan)' : ltRes.score === mx ? 'var(--accent-green)' : 'var(--warning)';
+                }
                 return { symbol: symbol, name: name, stScore: stRes.score, ltScore: ltRes.score, divScore: divRes.score, relevantScore: relevantScore, bestLabel: bestLabel, bestColor: bestColor };
             }).catch(function() { return null; });
         }
