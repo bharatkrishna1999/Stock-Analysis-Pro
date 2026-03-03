@@ -2760,6 +2760,21 @@ def index():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
+    <!-- Open Graph / Social Media -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Stock Analysis Pro">
+    <meta property="og:title" content="NSE Stock Analysis & Dividend Portfolio Optimizer | Stock Analysis Pro">
+    <meta property="og:description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
+    <meta property="og:url" content="https://stock-dashboard.onrender.com">
+    <meta property="og:image" content="https://stock-dashboard.onrender.com/static/og-image.png">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:locale" content="en_IN">
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="NSE Stock Analysis & Dividend Portfolio Optimizer | Stock Analysis Pro">
+    <meta name="twitter:description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
+    <meta name="twitter:image" content="https://stock-dashboard.onrender.com/static/og-image.png">
     <title>NSE Stock Analysis & Dividend Portfolio Optimizer | Stock Analysis Pro</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
