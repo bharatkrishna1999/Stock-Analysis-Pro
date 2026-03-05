@@ -2752,8 +2752,304 @@ def ticker_names_api():
     return resp
 
 @app.route('/')
-def index():
-    # Using your exact working HTML
+def landing():
+    html = '''<!DOCTYPE html>
+<html lang="en-IN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Institutional-grade fundamental and technical analysis on 500+ NSE-listed securities. Fair value estimates, risk profiling, and actionable verdicts.">
+    <title>Stock Analysis Pro — Equity Research & Analysis Platform</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root { --bg: #0d0f14; --bg-card: #131822; --bg-section: #0f1118; --gold: #C9A84C; --gold-light: rgba(201,168,76,0.15); --gold-border: rgba(201,168,76,0.25); --text: #E8EDF2; --text-sec: #90A4BE; --text-muted: #607B96; --border: #1e2535; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+        a { text-decoration: none; color: inherit; }
+
+        /* NAV */
+        nav { position: sticky; top: 0; z-index: 100; background: var(--bg); border-bottom: 1px solid var(--border); }
+        .nav-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; height: 64px; padding: 0 32px; }
+        .brand { display: flex; align-items: center; gap: 10px; font-family: 'Space Grotesk', sans-serif; font-size: 1.1em; font-weight: 700; }
+        .brand-icon { width: 36px; height: 36px; background: var(--gold); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
+        .brand-icon svg { width: 20px; height: 20px; }
+        .nav-links { display: flex; align-items: center; gap: 32px; }
+        .nav-links a { color: var(--text-sec); font-size: 0.9em; font-weight: 500; transition: color 0.2s; }
+        .nav-links a:hover { color: var(--text); }
+        .nav-cta { padding: 10px 24px; background: transparent; border: 1.5px solid var(--gold); color: var(--gold); border-radius: 6px; font-weight: 600; font-size: 0.88em; transition: all 0.25s; font-family: 'Space Grotesk', sans-serif; }
+        .nav-cta:hover { background: var(--gold); color: var(--bg); }
+        .mobile-toggle { display: none; background: none; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; cursor: pointer; }
+        .mobile-toggle span { display: block; width: 20px; height: 2px; background: var(--text); margin: 4px 0; border-radius: 1px; }
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .mobile-toggle { display: block; }
+            .nav-inner { padding: 0 20px; }
+        }
+
+        /* HERO */
+        .hero { text-align: center; padding: 100px 32px 80px; max-width: 900px; margin: 0 auto; }
+        .hero-label { display: inline-block; font-size: 0.75em; font-weight: 600; letter-spacing: 2.5px; text-transform: uppercase; color: var(--gold); margin-bottom: 28px; }
+        .hero h1 { font-family: 'Playfair Display', serif; font-size: 3.8em; font-weight: 700; line-height: 1.15; margin-bottom: 28px; letter-spacing: -0.5px; }
+        .hero h1 em { font-style: italic; color: var(--gold); }
+        .hero p { color: var(--text-sec); font-size: 1.1em; max-width: 600px; margin: 0 auto 40px; line-height: 1.75; }
+        .hero-btns { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+        .btn-primary { display: inline-flex; align-items: center; gap: 8px; padding: 16px 36px; background: var(--gold); color: var(--bg); border: none; border-radius: 8px; font-size: 1em; font-weight: 700; cursor: pointer; transition: all 0.25s; font-family: 'Space Grotesk', sans-serif; }
+        .btn-primary:hover { filter: brightness(1.1); transform: translateY(-1px); box-shadow: 0 8px 30px rgba(201,168,76,0.3); }
+        .btn-secondary { display: inline-flex; align-items: center; gap: 8px; padding: 16px 36px; background: transparent; color: var(--text); border: 1.5px solid var(--border); border-radius: 8px; font-size: 1em; font-weight: 600; cursor: pointer; transition: all 0.25s; font-family: 'Space Grotesk', sans-serif; }
+        .btn-secondary:hover { border-color: var(--text-sec); background: rgba(255,255,255,0.03); }
+        @media (max-width: 768px) {
+            .hero { padding: 60px 20px 50px; }
+            .hero h1 { font-size: 2.3em; }
+            .hero p { font-size: 1em; }
+        }
+
+        /* STATS BAR */
+        .stats { max-width: 1000px; margin: 0 auto; padding: 50px 32px; display: flex; justify-content: center; gap: 80px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+        .stat { text-align: center; }
+        .stat-val { font-family: 'Playfair Display', serif; font-size: 2.2em; font-weight: 700; color: var(--text); }
+        .stat-label { font-size: 0.82em; color: var(--text-muted); margin-top: 4px; }
+        @media (max-width: 768px) {
+            .stats { gap: 30px; flex-wrap: wrap; padding: 30px 20px; }
+            .stat-val { font-size: 1.6em; }
+        }
+
+        /* PILLARS */
+        .pillars { background: var(--bg-section); padding: 90px 32px; }
+        .pillars-inner { max-width: 1100px; margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
+        .pillar { text-align: center; }
+        .pillar-icon { width: 56px; height: 56px; border-radius: 50%; border: 1.5px solid var(--border); display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; }
+        .pillar-icon svg { width: 24px; height: 24px; stroke: var(--gold); fill: none; stroke-width: 1.5; }
+        .pillar h3 { font-family: 'Space Grotesk', sans-serif; font-size: 0.82em; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 14px; }
+        .pillar p { color: var(--text-sec); font-size: 0.92em; line-height: 1.7; max-width: 320px; margin: 0 auto; }
+        @media (max-width: 768px) {
+            .pillars-inner { grid-template-columns: 1fr; gap: 40px; }
+            .pillars { padding: 60px 20px; }
+        }
+
+        /* METHODOLOGY */
+        .methodology { padding: 90px 32px; max-width: 1100px; margin: 0 auto; }
+        .section-label { font-size: 0.75em; font-weight: 600; letter-spacing: 2.5px; text-transform: uppercase; color: var(--gold); margin-bottom: 14px; text-align: center; }
+        .section-title { font-family: 'Playfair Display', serif; font-size: 2.4em; font-weight: 700; text-align: center; margin-bottom: 50px; font-style: italic; }
+        .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+        .step { padding: 32px 28px; border-left: 2px solid var(--border); }
+        .step-num { font-family: 'Space Grotesk', sans-serif; font-size: 0.85em; font-weight: 700; color: var(--gold); margin-bottom: 14px; }
+        .step h3 { font-family: 'Space Grotesk', sans-serif; font-size: 1.15em; font-weight: 700; margin-bottom: 12px; }
+        .step p { color: var(--text-sec); font-size: 0.9em; line-height: 1.7; }
+        @media (max-width: 768px) {
+            .methodology { padding: 60px 20px; }
+            .section-title { font-size: 1.8em; margin-bottom: 36px; }
+            .steps { grid-template-columns: 1fr; }
+        }
+
+        /* TOOLS */
+        .tools { background: var(--bg-section); padding: 90px 32px; }
+        .tools-inner { max-width: 1100px; margin: 0 auto; }
+        .tool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+        .tool-card { background: var(--bg-card); padding: 36px 30px; transition: background 0.25s; }
+        .tool-card:hover { background: var(--bg); }
+        .tool-icon { margin-bottom: 18px; }
+        .tool-icon svg { width: 28px; height: 28px; stroke: var(--gold); fill: none; stroke-width: 1.5; }
+        .tool-card h3 { font-family: 'Space Grotesk', sans-serif; font-size: 1.05em; font-weight: 700; margin-bottom: 10px; }
+        .tool-card p { color: var(--text-sec); font-size: 0.88em; line-height: 1.65; }
+        @media (max-width: 768px) {
+            .tools { padding: 60px 20px; }
+            .tool-grid { grid-template-columns: 1fr; }
+        }
+
+        /* CTA */
+        .cta { padding: 100px 32px; text-align: center; }
+        .cta h2 { font-family: 'Playfair Display', serif; font-size: 2.4em; font-weight: 700; font-style: italic; margin-bottom: 18px; }
+        .cta p { color: var(--text-sec); font-size: 1.05em; max-width: 560px; margin: 0 auto 36px; line-height: 1.7; }
+        @media (max-width: 768px) {
+            .cta { padding: 60px 20px; }
+            .cta h2 { font-size: 1.8em; }
+        }
+
+        /* FOOTER */
+        footer { border-top: 1px solid var(--border); padding: 32px; }
+        .footer-inner { max-width: 1200px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
+        .footer-brand { display: flex; align-items: center; gap: 8px; font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 0.95em; }
+        .footer-brand .brand-icon { width: 28px; height: 28px; border-radius: 6px; }
+        .footer-brand .brand-icon svg { width: 16px; height: 16px; }
+        .footer-note { color: var(--text-muted); font-size: 0.82em; }
+        @media (max-width: 768px) {
+            .footer-inner { flex-direction: column; gap: 12px; text-align: center; }
+        }
+    </style>
+</head>
+<body>
+    <!-- NAV -->
+    <nav>
+        <div class="nav-inner">
+            <a class="brand" href="/">
+                <div class="brand-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#0d0f14" stroke-width="2.5"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg>
+                </div>
+                Stock Analysis Pro
+            </a>
+            <div class="nav-links">
+                <a href="#methodology">Methodology</a>
+                <a href="#tools">Research Tools</a>
+                <a href="#trust">Why Trust Us</a>
+                <a class="nav-cta" href="/app">Access Platform</a>
+            </div>
+            <button class="mobile-toggle" onclick="document.getElementById('mob-menu').classList.toggle('mob-open')">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+        <div id="mob-menu" style="display:none;padding:12px 20px;border-top:1px solid var(--border);">
+            <a href="#methodology" style="display:block;padding:12px 0;color:var(--text-sec);font-size:0.95em;">Methodology</a>
+            <a href="#tools" style="display:block;padding:12px 0;color:var(--text-sec);font-size:0.95em;">Research Tools</a>
+            <a href="#trust" style="display:block;padding:12px 0;color:var(--text-sec);font-size:0.95em;">Why Trust Us</a>
+            <a href="/app" style="display:block;padding:12px 0;color:var(--gold);font-weight:600;font-size:0.95em;">Access Platform</a>
+        </div>
+    </nav>
+    <script>
+        const mt = document.getElementById('mob-menu');
+        document.querySelector('.mobile-toggle').addEventListener('click', () => {
+            mt.style.display = mt.style.display === 'none' ? 'block' : 'none';
+        });
+    </script>
+
+    <!-- HERO -->
+    <section class="hero">
+        <div class="hero-label">Equity Research &amp; Analysis Platform</div>
+        <h1>Informed decisions for <em>every investment.</em></h1>
+        <p>Institutional-grade fundamental and technical analysis on 500+ NSE-listed securities. Fair value estimates, risk profiling, and actionable verdicts &mdash; distilled for clarity.</p>
+        <div class="hero-btns">
+            <a class="btn-primary" href="/app">Start Research &nbsp;&rarr;</a>
+            <a class="btn-secondary" href="#tools">Explore Capabilities</a>
+        </div>
+    </section>
+
+    <!-- STATS -->
+    <section class="stats">
+        <div class="stat"><div class="stat-val">500+</div><div class="stat-label">Securities Covered</div></div>
+        <div class="stat"><div class="stat-val">4-in-1</div><div class="stat-label">Unified Score Model</div></div>
+        <div class="stat"><div class="stat-val">Live</div><div class="stat-label">Market Data Feed</div></div>
+        <div class="stat"><div class="stat-val">6</div><div class="stat-label">Research Modules</div></div>
+    </section>
+
+    <!-- TRUST PILLARS -->
+    <section class="pillars" id="trust">
+        <div class="pillars-inner">
+            <div class="pillar">
+                <div class="pillar-icon">
+                    <svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <h3>Data Integrity</h3>
+                <p>All analysis is derived from verified NSE market data, ensuring accuracy you can rely on for portfolio decisions.</p>
+            </div>
+            <div class="pillar">
+                <div class="pillar-icon">
+                    <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                </div>
+                <h3>Institutional Methodology</h3>
+                <p>Our models employ the same quantitative frameworks used by professional fund managers and research desks.</p>
+            </div>
+            <div class="pillar">
+                <div class="pillar-icon">
+                    <svg viewBox="0 0 24 24"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg>
+                </div>
+                <h3>Transparent Signals</h3>
+                <p>Every recommendation is fully explainable. No black boxes &mdash; you see exactly what drives each verdict.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- METHODOLOGY -->
+    <section class="methodology" id="methodology">
+        <div class="section-label">Methodology</div>
+        <div class="section-title">Research in three steps</div>
+        <div class="steps">
+            <div class="step">
+                <div class="step-num">01</div>
+                <h3>Select a security</h3>
+                <p>Enter any NSE ticker or browse by sector to begin analysis.</p>
+            </div>
+            <div class="step">
+                <div class="step-num">02</div>
+                <h3>Review the analysis</h3>
+                <p>Our engine runs fundamental, technical, and risk models simultaneously.</p>
+            </div>
+            <div class="step">
+                <div class="step-num">03</div>
+                <h3>Act with confidence</h3>
+                <p>Read the unified verdict, examine supporting data, and make your decision.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- TOOLS -->
+    <section class="tools" id="tools">
+        <div class="tools-inner">
+            <div class="section-label">Research Tools</div>
+            <div class="section-title">Comprehensive analysis suite</div>
+            <div class="tool-grid">
+                <div class="tool-card">
+                    <div class="tool-icon"><svg viewBox="0 0 24 24"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg></div>
+                    <h3>Investment Verdict</h3>
+                    <p>A unified score combining technical signals, DCF valuation, dividend metrics, and market correlation into a single actionable recommendation.</p>
+                </div>
+                <div class="tool-card">
+                    <div class="tool-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+                    <h3>Technical Analysis</h3>
+                    <p>Comprehensive indicator suite including RSI, MACD, Bollinger Bands, and momentum oscillators &mdash; computed in real time across 500+ securities.</p>
+                </div>
+                <div class="tool-card">
+                    <div class="tool-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></div>
+                    <h3>DCF Valuation</h3>
+                    <p>Rigorous discounted cash-flow modelling to estimate intrinsic value and identify pricing inefficiencies in the market.</p>
+                </div>
+                <div class="tool-card">
+                    <div class="tool-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="12" x2="16" y2="12"/></svg></div>
+                    <h3>Dividend Analysis</h3>
+                    <p>Sector-level yield screening and payout sustainability analysis to construct resilient income-generating portfolios.</p>
+                </div>
+                <div class="tool-card">
+                    <div class="tool-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><line x1="8.6" y1="7.5" x2="15.4" y2="10.5"/><line x1="8.6" y1="16.5" x2="15.4" y2="13.5"/></svg></div>
+                    <h3>Market Correlation</h3>
+                    <p>HSIC-powered non-linear dependence analysis revealing hidden systematic risk exposure relative to Nifty 50.</p>
+                </div>
+                <div class="tool-card">
+                    <div class="tool-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+                    <h3>Universe Scanner</h3>
+                    <p>Filter the entire NSE universe by sector, fundamental metrics, and technical signals to surface high-conviction opportunities.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="cta">
+        <h2>Begin your research</h2>
+        <p>Access institutional-quality analysis on 500+ NSE-listed securities. No account required to get started.</p>
+        <a class="btn-primary" href="/app">Launch Platform &nbsp;&rarr;</a>
+    </section>
+
+    <!-- FOOTER -->
+    <footer>
+        <div class="footer-inner">
+            <div class="footer-brand">
+                <div class="brand-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#0d0f14" stroke-width="2.5"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg>
+                </div>
+                Stock Analysis Pro
+            </div>
+            <div class="footer-note">Analysis based on historical data. Past performance does not guarantee future results.</div>
+        </div>
+    </footer>
+</body>
+</html>'''
+    resp = make_response(html)
+    resp.headers['Cache-Control'] = 'public, max-age=600, stale-while-revalidate=1200'
+    return resp
+
+@app.route('/app')
+def dashboard():
+    # Main analysis dashboard
     html = '''<!DOCTYPE html>
 <html lang="en-IN">
 <head>
@@ -3312,7 +3608,7 @@ def index():
 <body>
     <nav class="navbar">
         <div class="navbar-inner">
-            <a class="navbar-brand" href="/">Stock Analysis <span>Pro</span></a>
+            <a class="navbar-brand" href="/">Stock Analysis <span>Pro</span></a> <a href="/app" style="margin-left:auto;margin-right:16px;padding:8px 20px;background:var(--accent-gold);color:var(--bg-dark);border-radius:6px;font-size:0.85em;font-weight:700;text-decoration:none;font-family:'Space Grotesk',sans-serif;display:none;" class="dash-home-link">Dashboard</a>
             <div class="nav-links">
                 <button class="nav-link active" data-tab="verdict" onclick="switchTab('verdict', event)">Investment Verdict</button>
                 <button class="nav-link" data-tab="analysis" onclick="switchTab('analysis', event)">Technical Analysis</button>
