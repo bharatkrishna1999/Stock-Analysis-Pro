@@ -2761,6 +2761,23 @@ def index():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
     <title>NSE Stock Analysis & Dividend Portfolio Optimizer | Stock Analysis Pro</title>
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="__BASE_URL__/">
+    <meta property="og:site_name" content="Stock Analysis Pro">
+    <meta property="og:title" content="NSE Stock Analysis &amp; Dividend Portfolio Optimizer | Stock Analysis Pro">
+    <meta property="og:description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
+    <meta property="og:image" content="__BASE_URL__/static/og-image.svg">
+    <meta property="og:image:type" content="image/svg+xml">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Stock Analysis Pro – NSE Stock Analysis &amp; Dividend Portfolio Optimizer">
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="NSE Stock Analysis &amp; Dividend Portfolio Optimizer | Stock Analysis Pro">
+    <meta name="twitter:description" content="Advanced NSE stock analysis platform with technical indicators, Nifty 50 market correlation, HSIC dependency analysis, and dividend portfolio optimization. Analyze 2000+ Indian stocks with real-time insights and risk-reward metrics.">
+    <meta name="twitter:image" content="__BASE_URL__/static/og-image.svg">
+    <meta name="twitter:image:alt" content="Stock Analysis Pro – NSE Stock Analysis &amp; Dividend Portfolio Optimizer">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
@@ -5720,6 +5737,8 @@ def index():
     </script>
 </body>
 </html>'''
+    base_url = request.host_url.rstrip('/')
+    html = html.replace('__BASE_URL__', base_url)
     resp = make_response(html)
     resp.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=600'
     return resp
