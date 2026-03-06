@@ -5804,6 +5804,16 @@ def dashboard():
             const annDiv = parseFloat(divD.annual_dividend) || 0;
             if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: '\u20b9' + annDiv.toFixed(2) + ' (' + fyLbl + ')', color: 'cyan' });
 
+            // ── Sustainability check: flag if yield was capped ─────────────────
+            if (divD.yield_capped) {
+                score -= 10;
+                const latFy = parseFloat(divD.latest_fy_dividend) || 0;
+                const prvFy = parseFloat(divD.prev_fy_dividend) || 0;
+                items.push({ label: 'Dividend Spike', value: 'Latest FY \u20b9' + latFy.toFixed(2) + ' vs prev FY \u20b9' + prvFy.toFixed(2) + ' \u2014 yield adjusted down', color: 'red' });
+            } else if (divD.prev_fy_dividend > 0) {
+                items.push({ label: 'Prev FY Div', value: '\u20b9' + parseFloat(divD.prev_fy_dividend).toFixed(2), color: 'cyan' });
+            }
+
             return { score: Math.max(0, Math.min(100, score)), items };
         }
 
