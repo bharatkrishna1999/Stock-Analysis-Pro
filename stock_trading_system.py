@@ -2466,7 +2466,7 @@ class Analyzer:
         params = {
             'conservative': {'max_weight': 0.08, 'vol_penalty': 0.15, 'min_yield': 1.0, 'min_fy_count': 2},
             'moderate':     {'max_weight': 0.15, 'vol_penalty': 0.05, 'min_yield': 0.5, 'min_fy_count': 2},
-            'aggressive':   {'max_weight': 0.30, 'vol_penalty': 0.01, 'min_yield': 0.0, 'min_fy_count': 1}
+            'aggressive':   {'max_weight': 0.30, 'vol_penalty': 0.01, 'min_yield': 0.0, 'min_fy_count': 2}
         }
         p = params.get(risk_appetite, params['moderate'])
 
@@ -5345,7 +5345,7 @@ def dashboard():
                         </table>
                     </div>
                     <div style="margin: 15px 0; padding: 10px 14px; background: rgba(0,217,255,0.06); border-left: 3px solid var(--accent-cyan); border-radius: 6px; font-size: 0.85em; color: var(--text-secondary);">
-                        <strong style="color: var(--accent-cyan);">Dividend Sustainability Check:</strong> Yields are cross-checked against the previous financial year. If a stock's latest FY dividend is ≥2x the prior FY (indicating a one-time special dividend), the yield is adjusted down to the sustainable level. Stocks marked <span style="color: var(--warning);">⚠ yield adjusted</span> had their yield capped. The <strong>Consistency</strong> column shows how many of the last 2 FYs had dividends — <span style="color: var(--accent-green);">2/2 FY</span> = consistent payer. For conservative/moderate portfolios, only stocks paying in both FYs are selected for the optimized allocation.
+                        <strong style="color: var(--accent-cyan);">Dividend Sustainability Check:</strong> Yields are cross-checked against the previous financial year. If a stock's latest FY dividend is ≥2x the prior FY (indicating a one-time special dividend), the yield is adjusted down to the sustainable level. Stocks marked <span style="color: var(--warning);">⚠ yield adjusted</span> had their yield capped. The <strong>Consistency</strong> column shows how many of the last 2 FYs had dividends — <span style="color: var(--accent-green);">2/2 FY</span> = consistent payer. Only stocks paying in both FYs are selected for the optimized allocation across all risk levels.
                     </div>
                     <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
                     ${data.dividend_results_truncated ? `<div style="margin-bottom: 10px; color: var(--warning); font-size: 0.85em;">Showing top ${data.all_dividend_stocks.length} dividend payers to reduce memory usage. ${data.dividend_stocks_found} total dividend-paying stocks found.</div>` : ''}
