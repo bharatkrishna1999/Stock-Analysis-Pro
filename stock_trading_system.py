@@ -3595,6 +3595,9 @@ def dashboard():
         .dcf-proj-table tr:hover td { background: var(--bg-card-hover); }
         .dcf-proj-table tr.tv-row td { color: var(--accent-purple); border-top: 2px solid var(--border-color); }
         .dcf-proj-table tr.total-row td { color: var(--accent-green); font-weight: 700; font-family: 'Space Grotesk', sans-serif; border-top: 2px solid var(--border-color); }
+        .dcf-proj-table tr.hist-row td { color: var(--text-secondary); background: rgba(255,200,100,0.04); }
+        .dcf-proj-table tr.hist-row td:first-child { color: var(--warning); font-weight: 600; }
+        .dcf-proj-table tr.hist-separator td { background: transparent; padding: 4px 12px; border-bottom: 2px dashed var(--border-color); border-top: 2px dashed var(--border-color); color: var(--text-muted); font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.8px; text-align: center; }
         .dcf-sensitivity { margin-top: 28px; }
         .dcf-sens-table { width: 100%; border-collapse: collapse; font-size: 0.82em; }
         .dcf-sens-table th { padding: 8px 10px; text-align: center; border-bottom: 2px solid var(--border-color); color: var(--text-muted); font-weight: 600; font-size: 0.78em; letter-spacing: 0.5px; }
@@ -5616,6 +5619,22 @@ def dashboard():
             var tbody = document.getElementById('dcf-proj-tbody');
             if (tbody) {
                 var rows = '';
+                // Historical FCF rows (last 5 years)
+                if (dcfData.fcf_history && dcfData.fcf_history.length > 0) {
+                    var hist = dcfData.fcf_history.slice(-5);
+                    hist.forEach(function(h, i) {
+                        var growthCell = '<span style="color:var(--text-muted);">—</span>';
+                        if (i > 0) {
+                            var prev = hist[i - 1].fcf;
+                            if (prev && prev !== 0) {
+                                var g = ((h.fcf - prev) / Math.abs(prev)) * 100;
+                                growthCell = '<span style="color:' + (g >= 0 ? 'var(--accent-green)' : 'var(--danger)') + ';">' + (g >= 0 ? '+' : '') + g.toFixed(1) + '%</span>';
+                            }
+                        }
+                        rows += '<tr class="hist-row"><td>FY ' + h.year + '</td><td>' + fmtCr(h.fcf) + '</td><td>' + growthCell + '</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td></tr>';
+                    });
+                    rows += '<tr class="hist-separator"><td colspan="5">\u25bc\u25bc Projections \u25bc\u25bc</td></tr>';
+                }
                 res.projections.forEach(function(p) {
                     rows += '<tr><td>Year ' + p.year + '</td><td>' + fmtCr(p.fcf) + '</td><td style="color:var(--text-secondary);">' + (p.growth * 100).toFixed(1) + '%</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + wacc, p.year)).toFixed(4) + '</td><td>' + fmtCr(p.pv) + '</td></tr>';
                 });
