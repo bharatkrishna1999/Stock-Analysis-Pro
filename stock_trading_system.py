@@ -409,6 +409,57 @@ def _fy_label(n_years_back=0):
     return f"FY{fy_end_year - 1}-{str(fy_end_year)[2:]}"
 
 
+def _compute_sustainable_dividend(dividends, current_price, max_single_pct=0.08):
+    """Compute sustainable annual dividend by comparing last 2 completed Indian FYs.
+
+    If the most recent FY's dividend is ≥ 2× the previous FY's dividend (and
+    the previous FY had meaningful dividends), the inflated year is likely a
+    one-time special dividend.  In that case use the *lower* FY figure so the
+    yield reflects what an investor can realistically expect going forward.
+
+    Returns (sustainable_dividend, latest_fy_div, prev_fy_div, was_capped).
+    """
+    if dividends is None or dividends.empty:
+        return 0.0, 0.0, 0.0, False
+
+    def _fy_sum(n_back):
+        s_str, e_str = _fy_dates(n_back)
+        s_ts, e_ts = pd.Timestamp(s_str), pd.Timestamp(e_str)
+        try:
+            if dividends.index.tz is not None:
+                s_ts = s_ts.tz_localize('UTC')
+                e_ts = e_ts.tz_localize('UTC')
+        except Exception:
+            pass
+        fy_divs = dividends[(dividends.index >= s_ts) & (dividends.index <= e_ts)]
+        # Strip corporate-action outliers (same 8% rule)
+        if not fy_divs.empty:
+            fy_divs = fy_divs[fy_divs <= current_price * max_single_pct]
+        return float(fy_divs.sum()) if not fy_divs.empty else 0.0
+
+    latest_fy = _fy_sum(0)
+    prev_fy   = _fy_sum(1)
+
+    if latest_fy <= 0:
+        return 0.0, latest_fy, prev_fy, False
+
+    # If no meaningful previous-year data, trust the latest FY as-is
+    if prev_fy <= 0:
+        return latest_fy, latest_fy, prev_fy, False
+
+    # Flag as unsustainable if latest is ≥ 2× previous FY
+    if latest_fy >= 2.0 * prev_fy:
+        return prev_fy, latest_fy, prev_fy, True
+
+    # Also flag if previous FY was the spike (user scrolled back 2 years)
+    # — use the lower of the two for a conservative estimate
+    if prev_fy >= 2.0 * latest_fy:
+        return latest_fy, latest_fy, prev_fy, False
+
+    # Both FYs are comparable — use the latest
+    return latest_fy, latest_fy, prev_fy, False
+
+
 def fetch_nse_universe():
     """Fetch the full NSE equity universe with multiple redundant sources.
 
@@ -2286,9 +2337,11 @@ class Analyzer:
     def fetch_dividend_data(self, symbols, limit_results=True, exclude_downtrend=True):
         """Fetch FY-based dividend yield, current price, and volatility for given symbols.
 
-        Annual dividend is summed over the most recently completed Indian financial year
-        (April 1 → March 31) rather than a rolling 12-month window.  This gives a clean,
-        comparable figure that aligns with how Indian companies declare dividends.
+        Annual dividend uses a *sustainable* estimate: the last two completed Indian
+        financial years (April 1 → March 31) are compared.  If the most recent FY's
+        dividend is ≥ 2× the previous FY (indicating a one-time special dividend),
+        the previous FY figure is used instead.  This prevents stocks like CHENNPETRO
+        or Vedanta from appearing with inflated yields after a one-off payout.
 
         Stocks whose current price is below their 200-day moving average (long-term
         downtrend) are excluded from results by default so the dividend optimiser never
@@ -2302,10 +2355,7 @@ class Analyzer:
             return results, dividend_found
 
         # Resolve FY window once for this call
-        fy_start_str, fy_end_str = _fy_dates(0)
         fy_lbl = _fy_label(0)
-        fy_start_ts = pd.Timestamp(fy_start_str)
-        fy_end_ts   = pd.Timestamp(fy_end_str)
 
         def _batched(iterable, size):
             for idx in range(0, len(iterable), size):
@@ -2314,11 +2364,11 @@ class Analyzer:
         for batch in _batched(symbols, 75):
             tickers = [f"{symbol}.NS" for symbol in batch]
             try:
-                # 2y covers the last complete FY for dividends AND provides enough
-                # history (~500 trading days) to compute a reliable 200-DMA
+                # 3y: covers last 2 complete FYs for sustainable-dividend comparison
+                # AND provides enough history (~500 days) for a reliable 200-DMA
                 data = yf.download(
                     tickers=tickers,
-                    period='2y',
+                    period='3y',
                     interval='1d',
                     group_by='column',
                     actions=True,
@@ -2365,27 +2415,9 @@ class Analyzer:
                     if exclude_downtrend and in_downtrend:
                         continue  # never recommend stocks in structural decline
 
-                    # ── Dividends: slice to last complete Indian FY ──────────────────
-                    if not dividends.empty:
-                        try:
-                            if dividends.index.tz is not None:
-                                d_start = fy_start_ts.tz_localize('UTC')
-                                d_end   = fy_end_ts.tz_localize('UTC')
-                            else:
-                                d_start = fy_start_ts
-                                d_end   = fy_end_ts
-                            dividends_fy = dividends[(dividends.index >= d_start) & (dividends.index <= d_end)]
-                        except Exception:
-                            dividends_fy = dividends
-                    else:
-                        dividends_fy = dividends
-
-                    # Drop one-off corporate-action entries (demergers, buybacks, rights)
-                    # that yfinance misclassifies as dividends.  Any single payment
-                    # exceeding 8 % of the current share price is not a regular dividend.
-                    if not dividends_fy.empty:
-                        dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
-                    annual_dividend = float(dividends_fy.sum()) if not dividends_fy.empty else 0.0
+                    # ── Sustainable dividend: compare last 2 FYs ─────────────────────
+                    annual_dividend, latest_fy_div, prev_fy_div, was_capped = \
+                        _compute_sustainable_dividend(dividends, current_price)
                     if annual_dividend <= 0:
                         continue
 
@@ -2403,6 +2435,9 @@ class Analyzer:
                         'volatility':      round(volatility, 2),
                         'fy_label':        fy_lbl,
                         'in_downtrend':    in_downtrend,
+                        'latest_fy_dividend': round(latest_fy_div, 2),
+                        'prev_fy_dividend':   round(prev_fy_div, 2),
+                        'yield_capped':       was_capped,
                     })
                 except Exception:
                     continue
@@ -5242,11 +5277,13 @@ def dashboard():
             }
             let allStockRows = sortedStocks.map((s, idx) => {
                 const isHL = s.symbol === dividendHighlight;
+                const cappedNote = s.yield_capped ? `<br><span style="font-size:0.75em; color: var(--warning);" title="Latest FY div ₹${fmt(s.latest_fy_dividend)} was ≥2x prev FY ₹${fmt(s.prev_fy_dividend)}. Using prev FY for sustainable yield.">⚠ yield adjusted</span>` : '';
+                const divHistory = (s.prev_fy_dividend > 0) ? `<br><span style="font-size:0.75em; color: var(--text-muted);">prev FY: ₹${fmt(s.prev_fy_dividend)}</span>` : '';
                 return `<tr style="${isHL ? 'background: rgba(0,217,255,0.1); border-left: 3px solid var(--accent-cyan);' : ''}">
-                    <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span></td>
+                    <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span>${cappedNote}</td>
                     <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
                     <td style="text-align: right;">${fmt(s.price)}</td>
-                    <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
+                    <td style="text-align: right;">${fmt(s.annual_dividend)}${divHistory}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
                     <td>${s.volatility}%</td>
                 </tr>`;
@@ -5287,6 +5324,9 @@ def dashboard():
                             </tr></thead>
                             <tbody>${allocRows}</tbody>
                         </table>
+                    </div>
+                    <div style="margin: 15px 0; padding: 10px 14px; background: rgba(0,217,255,0.06); border-left: 3px solid var(--accent-cyan); border-radius: 6px; font-size: 0.85em; color: var(--text-secondary);">
+                        <strong style="color: var(--accent-cyan);">Dividend Sustainability Check:</strong> Yields are cross-checked against the previous financial year. If a stock's latest FY dividend is ≥2x the prior FY (indicating a one-time special dividend), the yield is adjusted down to the sustainable level. Stocks marked <span style="color: var(--warning);">⚠ yield adjusted</span> had their yield capped.
                     </div>
                     <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
                     ${data.dividend_results_truncated ? `<div style="margin-bottom: 10px; color: var(--warning); font-size: 0.85em;">Showing top ${data.all_dividend_stocks.length} dividend payers to reduce memory usage. ${data.dividend_stocks_found} total dividend-paying stocks found.</div>` : ''}
@@ -6408,11 +6448,8 @@ def dividend_optimize_stream_route():
             max_results = DIVIDEND_MAX_RESULTS
             truncated = False
             last_portfolio_update = 0
-            # FY window for this streaming scan
-            _fy_s_str, _fy_e_str = _fy_dates(0)
+            # FY label for display
             _fy_lbl   = _fy_label(0)
-            _fy_s_ts  = pd.Timestamp(_fy_s_str)
-            _fy_e_ts  = pd.Timestamp(_fy_e_str)
             yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
 
             # Serve cached entries first
@@ -6472,10 +6509,11 @@ def dividend_optimize_stream_route():
             for batch in _batched(symbols_to_fetch, 75):
                 tickers = [f"{s}.NS" for s in batch]
                 try:
-                    # 2y: covers last complete FY for dividends + ~500 days for 200-DMA
+                    # 3y: covers last 2 complete FYs for sustainable-dividend
+                    # comparison AND provides enough history for 200-DMA
                     data = yf.download(
                         tickers=tickers,
-                        period='2y',
+                        period='3y',
                         interval='1d',
                         group_by='column',
                         actions=True,
@@ -6530,25 +6568,9 @@ def dividend_optimize_stream_route():
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
 
-                        # ── Dividends: slice to last complete Indian FY ──────────────
-                        if not dividends.empty:
-                            try:
-                                if dividends.index.tz is not None:
-                                    d_start = _fy_s_ts.tz_localize('UTC')
-                                    d_end   = _fy_e_ts.tz_localize('UTC')
-                                else:
-                                    d_start = _fy_s_ts
-                                    d_end   = _fy_e_ts
-                                dividends_fy = dividends[(dividends.index >= d_start) & (dividends.index <= d_end)]
-                            except Exception:
-                                dividends_fy = dividends
-                        else:
-                            dividends_fy = dividends
-
-                        # Drop one-off corporate-action entries misclassified as dividends
-                        if not dividends_fy.empty:
-                            dividends_fy = dividends_fy[dividends_fy <= current_price * 0.08]
-                        annual_dividend = float(dividends_fy.sum()) if not dividends_fy.empty else 0.0
+                        # ── Sustainable dividend: compare last 2 FYs ─────────────────
+                        annual_dividend, latest_fy_div, prev_fy_div, was_capped = \
+                            _compute_sustainable_dividend(dividends, current_price)
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -6564,6 +6586,9 @@ def dividend_optimize_stream_route():
                             'volatility':      round(volatility, 2),
                             'fy_label':        _fy_lbl,
                             'in_downtrend':    False,
+                            'latest_fy_dividend': round(latest_fy_div, 2),
+                            'prev_fy_dividend':   round(prev_fy_div, 2),
+                            'yield_capped':       was_capped,
                         }
                         dividend_found += 1
                         results.append(entry)
