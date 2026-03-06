@@ -417,10 +417,11 @@ def _compute_sustainable_dividend(dividends, current_price, max_single_pct=0.08)
     one-time special dividend.  In that case use the *lower* FY figure so the
     yield reflects what an investor can realistically expect going forward.
 
-    Returns (sustainable_dividend, latest_fy_div, prev_fy_div, was_capped).
+    Returns (sustainable_dividend, latest_fy_div, prev_fy_div, was_capped, fy_count).
+    fy_count = number of the last 2 FYs that had positive dividends (0, 1, or 2).
     """
     if dividends is None or dividends.empty:
-        return 0.0, 0.0, 0.0, False
+        return 0.0, 0.0, 0.0, False, 0
 
     def _fy_sum(n_back):
         s_str, e_str = _fy_dates(n_back)
@@ -440,24 +441,27 @@ def _compute_sustainable_dividend(dividends, current_price, max_single_pct=0.08)
     latest_fy = _fy_sum(0)
     prev_fy   = _fy_sum(1)
 
+    # Count how many of the last 2 FYs had dividends
+    fy_count = (1 if latest_fy > 0 else 0) + (1 if prev_fy > 0 else 0)
+
     if latest_fy <= 0:
-        return 0.0, latest_fy, prev_fy, False
+        return 0.0, latest_fy, prev_fy, False, fy_count
 
     # If no meaningful previous-year data, trust the latest FY as-is
     if prev_fy <= 0:
-        return latest_fy, latest_fy, prev_fy, False
+        return latest_fy, latest_fy, prev_fy, False, fy_count
 
     # Flag as unsustainable if latest is ≥ 2× previous FY
     if latest_fy >= 2.0 * prev_fy:
-        return prev_fy, latest_fy, prev_fy, True
+        return prev_fy, latest_fy, prev_fy, True, fy_count
 
     # Also flag if previous FY was the spike (user scrolled back 2 years)
     # — use the lower of the two for a conservative estimate
     if prev_fy >= 2.0 * latest_fy:
-        return latest_fy, latest_fy, prev_fy, False
+        return latest_fy, latest_fy, prev_fy, False, fy_count
 
     # Both FYs are comparable — use the latest
-    return latest_fy, latest_fy, prev_fy, False
+    return latest_fy, latest_fy, prev_fy, False, fy_count
 
 
 def fetch_nse_universe():
@@ -2416,7 +2420,7 @@ class Analyzer:
                         continue  # never recommend stocks in structural decline
 
                     # ── Sustainable dividend: compare last 2 FYs ─────────────────────
-                    annual_dividend, latest_fy_div, prev_fy_div, was_capped = \
+                    annual_dividend, latest_fy_div, prev_fy_div, was_capped, fy_count = \
                         _compute_sustainable_dividend(dividends, current_price)
                     if annual_dividend <= 0:
                         continue
@@ -2438,6 +2442,7 @@ class Analyzer:
                         'latest_fy_dividend': round(latest_fy_div, 2),
                         'prev_fy_dividend':   round(prev_fy_div, 2),
                         'yield_capped':       was_capped,
+                        'fy_count':           fy_count,
                     })
                 except Exception:
                     continue
@@ -2456,15 +2461,20 @@ class Analyzer:
         n = len(stocks_data)
         yields_arr = np.array([s['dividend_yield'] for s in stocks_data])
         vols_arr = np.array([s['volatility'] for s in stocks_data])
+        fy_counts = np.array([s.get('fy_count', 1) for s in stocks_data])
 
         params = {
-            'conservative': {'max_weight': 0.08, 'vol_penalty': 0.15, 'min_yield': 1.0},
-            'moderate':     {'max_weight': 0.15, 'vol_penalty': 0.05, 'min_yield': 0.5},
-            'aggressive':   {'max_weight': 0.30, 'vol_penalty': 0.01, 'min_yield': 0.0}
+            'conservative': {'max_weight': 0.08, 'vol_penalty': 0.15, 'min_yield': 1.0, 'min_fy_count': 2},
+            'moderate':     {'max_weight': 0.15, 'vol_penalty': 0.05, 'min_yield': 0.5, 'min_fy_count': 2},
+            'aggressive':   {'max_weight': 0.30, 'vol_penalty': 0.01, 'min_yield': 0.0, 'min_fy_count': 1}
         }
         p = params.get(risk_appetite, params['moderate'])
 
-        valid = [i for i in range(n) if yields_arr[i] >= p['min_yield']]
+        valid = [i for i in range(n)
+                 if yields_arr[i] >= p['min_yield'] and fy_counts[i] >= p['min_fy_count']]
+        if len(valid) < 3:
+            # Relax consistency requirement if not enough stocks qualify
+            valid = [i for i in range(n) if yields_arr[i] >= p['min_yield']]
         if len(valid) < 3:
             valid = list(range(min(n, 10)))
 
@@ -5123,15 +5133,20 @@ def dashboard():
             const tbody = document.getElementById('live-dividend-body');
             if (!tbody) return;
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
-            tbody.innerHTML = liveDividendEntries.map((s, idx) => `
-                <tr>
+            tbody.innerHTML = liveDividendEntries.map((s, idx) => {
+                const fc = s.fy_count || 0;
+                const fcColor = fc >= 2 ? 'var(--accent-green)' : fc === 1 ? 'var(--warning)' : 'var(--accent-red, #ef4444)';
+                const fcLabel = fc >= 2 ? fc + '/2 FY' : fc === 1 ? '1/2 FY' : 'None';
+                return `<tr>
                     <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span></td>
                     <td style="font-size:0.8em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
                     <td style="text-align: right;">${fmt(s.price)}</td>
                     <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
+                    <td style="color: ${fcColor}; font-weight: 600;">${fcLabel}</td>
                     <td>${s.volatility}%</td>
-                </tr>`).join('');
+                </tr>`;
+            }).join('');
         }
         function scheduleLiveDividendRender() {
             if (liveRenderTimer) return;
@@ -5189,7 +5204,7 @@ def dashboard():
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Consistency</th><th>Volatility</th>
                             </tr></thead>
                             <tbody id="live-dividend-body"></tbody>
                         </table>
@@ -5279,12 +5294,16 @@ def dashboard():
                 const isHL = s.symbol === dividendHighlight;
                 const cappedNote = s.yield_capped ? `<br><span style="font-size:0.75em; color: var(--warning);" title="Latest FY div ₹${fmt(s.latest_fy_dividend)} was ≥2x prev FY ₹${fmt(s.prev_fy_dividend)}. Using prev FY for sustainable yield.">⚠ yield adjusted</span>` : '';
                 const divHistory = (s.prev_fy_dividend > 0) ? `<br><span style="font-size:0.75em; color: var(--text-muted);">prev FY: ₹${fmt(s.prev_fy_dividend)}</span>` : '';
+                const fc = s.fy_count || 0;
+                const fcColor = fc >= 2 ? 'var(--accent-green)' : fc === 1 ? 'var(--warning)' : 'var(--accent-red, #ef4444)';
+                const fcLabel = fc >= 2 ? fc + '/2 FY' : fc === 1 ? '1/2 FY' : 'None';
                 return `<tr style="${isHL ? 'background: rgba(0,217,255,0.1); border-left: 3px solid var(--accent-cyan);' : ''}">
                     <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span>${cappedNote}</td>
                     <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
                     <td style="text-align: right;">${fmt(s.price)}</td>
                     <td style="text-align: right;">${fmt(s.annual_dividend)}${divHistory}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
+                    <td style="color: ${fcColor}; font-weight: 600;">${fcLabel}</td>
                     <td>${s.volatility}%</td>
                 </tr>`;
             }).join('');
@@ -5326,14 +5345,14 @@ def dashboard():
                         </table>
                     </div>
                     <div style="margin: 15px 0; padding: 10px 14px; background: rgba(0,217,255,0.06); border-left: 3px solid var(--accent-cyan); border-radius: 6px; font-size: 0.85em; color: var(--text-secondary);">
-                        <strong style="color: var(--accent-cyan);">Dividend Sustainability Check:</strong> Yields are cross-checked against the previous financial year. If a stock's latest FY dividend is ≥2x the prior FY (indicating a one-time special dividend), the yield is adjusted down to the sustainable level. Stocks marked <span style="color: var(--warning);">⚠ yield adjusted</span> had their yield capped.
+                        <strong style="color: var(--accent-cyan);">Dividend Sustainability Check:</strong> Yields are cross-checked against the previous financial year. If a stock's latest FY dividend is ≥2x the prior FY (indicating a one-time special dividend), the yield is adjusted down to the sustainable level. Stocks marked <span style="color: var(--warning);">⚠ yield adjusted</span> had their yield capped. The <strong>Consistency</strong> column shows how many of the last 2 FYs had dividends — <span style="color: var(--accent-green);">2/2 FY</span> = consistent payer. For conservative/moderate portfolios, only stocks paying in both FYs are selected for the optimized allocation.
                     </div>
                     <h3 style="color: var(--accent-purple); margin: 35px 0 15px; font-family: 'Space Grotesk', sans-serif; font-weight: 700;">All Dividend-Paying Stocks (${data.all_dividend_stocks.length} shown)</h3>
                     ${data.dividend_results_truncated ? `<div style="margin-bottom: 10px; color: var(--warning); font-size: 0.85em;">Showing top ${data.all_dividend_stocks.length} dividend payers to reduce memory usage. ${data.dividend_stocks_found} total dividend-paying stocks found.</div>` : ''}
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Consistency</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${allStockRows}</tbody>
                         </table>
@@ -6579,7 +6598,7 @@ def dividend_optimize_stream_route():
                             continue
 
                         # ── Sustainable dividend: compare last 2 FYs ─────────────────
-                        annual_dividend, latest_fy_div, prev_fy_div, was_capped = \
+                        annual_dividend, latest_fy_div, prev_fy_div, was_capped, fy_count = \
                             _compute_sustainable_dividend(dividends, current_price)
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
@@ -6599,6 +6618,7 @@ def dividend_optimize_stream_route():
                             'latest_fy_dividend': round(latest_fy_div, 2),
                             'prev_fy_dividend':   round(prev_fy_div, 2),
                             'yield_capped':       was_capped,
+                            'fy_count':           fy_count,
                         }
                         dividend_found += 1
                         results.append(entry)
