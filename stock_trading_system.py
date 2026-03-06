@@ -2775,16 +2775,59 @@ def landing():
         .brand { display: flex; align-items: center; gap: 10px; font-family: 'Space Grotesk', sans-serif; font-size: 1.1em; font-weight: 700; }
         .brand-icon { width: 36px; height: 36px; background: var(--gold); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
         .brand-icon svg { width: 20px; height: 20px; }
-        .nav-links { display: flex; align-items: center; gap: 32px; }
-        .nav-links a { color: var(--text-sec); font-size: 0.9em; font-weight: 500; transition: color 0.2s; }
-        .nav-links a:hover { color: var(--text); }
-        .nav-cta { padding: 10px 24px; background: transparent; border: 1.5px solid var(--gold); color: var(--gold); border-radius: 6px; font-weight: 600; font-size: 0.88em; transition: all 0.25s; font-family: 'Space Grotesk', sans-serif; }
-        .nav-cta:hover { background: var(--gold); color: var(--bg); }
-        .mobile-toggle { display: none; background: none; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; cursor: pointer; }
-        .mobile-toggle span { display: block; width: 20px; height: 2px; background: var(--text); margin: 4px 0; border-radius: 1px; }
-        @media (max-width: 768px) {
+        .nav-links { display: flex; align-items: center; gap: 6px; height: 100%; }
+        .nav-link-item { position: relative; height: 100%; display: flex; align-items: center; }
+        .nav-link-item > a, .nav-link-item > button { color: var(--text-sec); font-size: 0.88em; font-weight: 500; transition: color 0.2s; padding: 8px 14px; border-radius: 6px; background: none; border: none; cursor: pointer; font-family: 'Inter', sans-serif; display: flex; align-items: center; gap: 5px; }
+        .nav-link-item > a:hover, .nav-link-item > button:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+        .nav-link-item > button svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; transition: transform 0.2s; }
+        .nav-link-item:hover > button svg { transform: rotate(180deg); }
+        .nav-cta { padding: 10px 24px; background: transparent; border: 1.5px solid var(--gold) !important; color: var(--gold) !important; border-radius: 6px !important; font-weight: 600 !important; font-size: 0.88em; transition: all 0.25s; font-family: 'Space Grotesk', sans-serif !important; }
+        .nav-cta:hover { background: var(--gold) !important; color: var(--bg) !important; }
+
+        /* MEGA DROPDOWN */
+        .mega-drop { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); width: 640px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px; padding: 8px; opacity: 0; visibility: hidden; transition: opacity 0.2s, visibility 0.2s, transform 0.2s; transform: translateX(-50%) translateY(8px); box-shadow: 0 20px 60px rgba(0,0,0,0.5); pointer-events: none; }
+        .nav-link-item:hover .mega-drop { opacity: 1; visibility: visible; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+        .mega-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+        .mega-item { display: flex; gap: 14px; padding: 16px 18px; border-radius: 10px; transition: background 0.15s; }
+        .mega-item:hover { background: rgba(255,255,255,0.04); }
+        .mega-item-icon { flex-shrink: 0; width: 38px; height: 38px; border-radius: 8px; background: var(--gold-light); border: 1px solid var(--gold-border); display: flex; align-items: center; justify-content: center; }
+        .mega-item-icon svg { width: 18px; height: 18px; stroke: var(--gold); fill: none; stroke-width: 1.5; }
+        .mega-item-text h4 { font-family: 'Space Grotesk', sans-serif; font-size: 0.88em; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+        .mega-item-text p { font-size: 0.76em; color: var(--text-muted); line-height: 1.5; }
+        .mega-footer { margin-top: 4px; padding: 14px 18px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; border-radius: 0 0 10px 10px; }
+        .mega-footer span { font-size: 0.78em; color: var(--text-muted); }
+        .mega-footer a { font-size: 0.82em; font-weight: 600; color: var(--gold); display: flex; align-items: center; gap: 4px; }
+        .mega-footer a:hover { text-decoration: underline; }
+
+        /* HAMBURGER */
+        .hamburger { display: none; background: none; border: 1px solid var(--border); border-radius: 8px; width: 42px; height: 42px; cursor: pointer; position: relative; }
+        .hamburger span { display: block; width: 18px; height: 2px; background: var(--text); border-radius: 1px; position: absolute; left: 50%; transform: translateX(-50%); transition: all 0.3s; }
+        .hamburger span:nth-child(1) { top: 13px; }
+        .hamburger span:nth-child(2) { top: 20px; }
+        .hamburger span:nth-child(3) { top: 27px; }
+        .hamburger.open span:nth-child(1) { top: 20px; transform: translateX(-50%) rotate(45deg); }
+        .hamburger.open span:nth-child(2) { opacity: 0; }
+        .hamburger.open span:nth-child(3) { top: 20px; transform: translateX(-50%) rotate(-45deg); }
+
+        /* MOBILE MENU */
+        .mob-panel { display: none; position: fixed; top: 65px; left: 0; right: 0; bottom: 0; z-index: 99; background: var(--bg); overflow-y: auto; }
+        .mob-panel.open { display: block; }
+        .mob-section { padding: 16px 24px; border-bottom: 1px solid var(--border); }
+        .mob-section-label { font-size: 0.7em; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 12px; }
+        .mob-link { display: block; padding: 14px 0; color: var(--text-sec); font-size: 1em; font-weight: 500; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .mob-link:last-child { border-bottom: none; }
+        .mob-link:hover { color: var(--text); }
+        .mob-tool { display: flex; gap: 14px; padding: 14px 0; align-items: flex-start; border-bottom: 1px solid rgba(255,255,255,0.04); }
+        .mob-tool:last-child { border-bottom: none; }
+        .mob-tool-icon { flex-shrink: 0; width: 36px; height: 36px; border-radius: 8px; background: var(--gold-light); border: 1px solid var(--gold-border); display: flex; align-items: center; justify-content: center; }
+        .mob-tool-icon svg { width: 16px; height: 16px; stroke: var(--gold); fill: none; stroke-width: 1.5; }
+        .mob-tool h4 { font-family: 'Space Grotesk', sans-serif; font-size: 0.92em; font-weight: 600; color: var(--text); }
+        .mob-tool p { font-size: 0.78em; color: var(--text-muted); line-height: 1.4; margin-top: 2px; }
+        .mob-cta { display: block; margin: 20px 24px; padding: 16px; text-align: center; background: var(--gold); color: var(--bg); border-radius: 10px; font-weight: 700; font-family: 'Space Grotesk', sans-serif; font-size: 1em; }
+
+        @media (max-width: 860px) {
             .nav-links { display: none; }
-            .mobile-toggle { display: block; }
+            .hamburger { display: block; }
             .nav-inner { padding: 0 20px; }
         }
 
@@ -2847,12 +2890,14 @@ def landing():
         .tools { background: var(--bg-section); padding: 90px 32px; }
         .tools-inner { max-width: 1100px; margin: 0 auto; }
         .tool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
-        .tool-card { background: var(--bg-card); padding: 36px 30px; transition: background 0.25s; }
+        .tool-card { display: block; background: var(--bg-card); padding: 36px 30px; transition: background 0.25s; cursor: pointer; }
         .tool-card:hover { background: var(--bg); }
         .tool-icon { margin-bottom: 18px; }
         .tool-icon svg { width: 28px; height: 28px; stroke: var(--gold); fill: none; stroke-width: 1.5; }
         .tool-card h3 { font-family: 'Space Grotesk', sans-serif; font-size: 1.05em; font-weight: 700; margin-bottom: 10px; }
         .tool-card p { color: var(--text-sec); font-size: 0.88em; line-height: 1.65; }
+        .tool-card .tool-arrow { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 0.82em; font-weight: 600; color: var(--gold); opacity: 0; transition: opacity 0.2s, transform 0.2s; transform: translateX(-4px); }
+        .tool-card:hover .tool-arrow { opacity: 1; transform: translateX(0); }
         @media (max-width: 768px) {
             .tools { padding: 60px 20px; }
             .tool-grid { grid-template-columns: 1fr; }
@@ -2890,27 +2935,92 @@ def landing():
                 Stock Analysis Pro
             </a>
             <div class="nav-links">
-                <a href="#methodology">Methodology</a>
-                <a href="#tools">Research Tools</a>
-                <a href="#trust">Why Trust Us</a>
-                <a class="nav-cta" href="/app">Access Platform</a>
+                <div class="nav-link-item"><a href="#methodology">Methodology</a></div>
+                <div class="nav-link-item">
+                    <button>Research Tools <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></button>
+                    <div class="mega-drop">
+                        <div class="mega-grid">
+                            <a class="mega-item" href="/app#verdict">
+                                <div class="mega-item-icon"><svg viewBox="0 0 24 24"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg></div>
+                                <div class="mega-item-text"><h4>Investment Verdict</h4><p>Unified 4-in-1 score with actionable recommendation</p></div>
+                            </a>
+                            <a class="mega-item" href="/app#analysis">
+                                <div class="mega-item-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+                                <div class="mega-item-text"><h4>Technical Analysis</h4><p>RSI, MACD, Bollinger Bands &amp; momentum signals</p></div>
+                            </a>
+                            <a class="mega-item" href="/app#dcf">
+                                <div class="mega-item-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></div>
+                                <div class="mega-item-text"><h4>DCF Valuation</h4><p>Intrinsic value via discounted cash-flow models</p></div>
+                            </a>
+                            <a class="mega-item" href="/app#dividend">
+                                <div class="mega-item-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="12" x2="16" y2="12"/></svg></div>
+                                <div class="mega-item-text"><h4>Dividend Analyzer</h4><p>Yield screening &amp; payout sustainability</p></div>
+                            </a>
+                            <a class="mega-item" href="/app#regression">
+                                <div class="mega-item-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><line x1="8.6" y1="7.5" x2="15.4" y2="10.5"/><line x1="8.6" y1="16.5" x2="15.4" y2="13.5"/></svg></div>
+                                <div class="mega-item-text"><h4>Market Correlation</h4><p>HSIC non-linear dependency vs Nifty 50</p></div>
+                            </a>
+                            <a class="mega-item" href="/app#scanner">
+                                <div class="mega-item-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+                                <div class="mega-item-text"><h4>Universe Scanner</h4><p>Filter 500+ stocks by your criteria</p></div>
+                            </a>
+                        </div>
+                        <div class="mega-footer">
+                            <span>6 research modules available</span>
+                            <a href="/app">Open full platform &rarr;</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="nav-link-item"><a href="#trust">Why Trust Us</a></div>
+                <div class="nav-link-item"><a class="nav-cta" href="/app">Access Platform</a></div>
             </div>
-            <button class="mobile-toggle" onclick="document.getElementById('mob-menu').classList.toggle('mob-open')">
+            <button class="hamburger" id="hamburger" aria-label="Menu">
                 <span></span><span></span><span></span>
             </button>
         </div>
-        <div id="mob-menu" style="display:none;padding:12px 20px;border-top:1px solid var(--border);">
-            <a href="#methodology" style="display:block;padding:12px 0;color:var(--text-sec);font-size:0.95em;">Methodology</a>
-            <a href="#tools" style="display:block;padding:12px 0;color:var(--text-sec);font-size:0.95em;">Research Tools</a>
-            <a href="#trust" style="display:block;padding:12px 0;color:var(--text-sec);font-size:0.95em;">Why Trust Us</a>
-            <a href="/app" style="display:block;padding:12px 0;color:var(--gold);font-weight:600;font-size:0.95em;">Access Platform</a>
-        </div>
     </nav>
+
+    <!-- MOBILE PANEL -->
+    <div class="mob-panel" id="mob-panel">
+        <div class="mob-section">
+            <a class="mob-link" href="#methodology" onclick="closeMob()">Methodology</a>
+            <a class="mob-link" href="#trust" onclick="closeMob()">Why Trust Us</a>
+        </div>
+        <div class="mob-section">
+            <div class="mob-section-label">Research Tools</div>
+            <a class="mob-tool" href="/app#verdict">
+                <div class="mob-tool-icon"><svg viewBox="0 0 24 24"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg></div>
+                <div><h4>Investment Verdict</h4><p>Unified 4-in-1 score with actionable recommendation</p></div>
+            </a>
+            <a class="mob-tool" href="/app#analysis">
+                <div class="mob-tool-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
+                <div><h4>Technical Analysis</h4><p>RSI, MACD, Bollinger Bands &amp; momentum signals</p></div>
+            </a>
+            <a class="mob-tool" href="/app#dcf">
+                <div class="mob-tool-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></div>
+                <div><h4>DCF Valuation</h4><p>Intrinsic value via discounted cash-flow models</p></div>
+            </a>
+            <a class="mob-tool" href="/app#dividend">
+                <div class="mob-tool-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="12" x2="16" y2="12"/></svg></div>
+                <div><h4>Dividend Analyzer</h4><p>Yield screening &amp; payout sustainability</p></div>
+            </a>
+            <a class="mob-tool" href="/app#regression">
+                <div class="mob-tool-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><line x1="8.6" y1="7.5" x2="15.4" y2="10.5"/><line x1="8.6" y1="16.5" x2="15.4" y2="13.5"/></svg></div>
+                <div><h4>Market Correlation</h4><p>HSIC non-linear dependency vs Nifty 50</p></div>
+            </a>
+            <a class="mob-tool" href="/app#scanner">
+                <div class="mob-tool-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+                <div><h4>Universe Scanner</h4><p>Filter 500+ stocks by your criteria</p></div>
+            </a>
+        </div>
+        <a class="mob-cta" href="/app">Access Platform &rarr;</a>
+    </div>
+
     <script>
-        const mt = document.getElementById('mob-menu');
-        document.querySelector('.mobile-toggle').addEventListener('click', () => {
-            mt.style.display = mt.style.display === 'none' ? 'block' : 'none';
-        });
+    const ham = document.getElementById('hamburger');
+    const mob = document.getElementById('mob-panel');
+    ham.addEventListener('click', () => { ham.classList.toggle('open'); mob.classList.toggle('open'); document.body.style.overflow = mob.classList.contains('open') ? 'hidden' : ''; });
+    function closeMob() { ham.classList.remove('open'); mob.classList.remove('open'); document.body.style.overflow = ''; }
     </script>
 
     <!-- HERO -->
@@ -2988,36 +3098,42 @@ def landing():
             <div class="section-label">Research Tools</div>
             <div class="section-title">Comprehensive analysis suite</div>
             <div class="tool-grid">
-                <div class="tool-card">
+                <a class="tool-card" href="/app#verdict">
                     <div class="tool-icon"><svg viewBox="0 0 24 24"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg></div>
                     <h3>Investment Verdict</h3>
                     <p>A unified score combining technical signals, DCF valuation, dividend metrics, and market correlation into a single actionable recommendation.</p>
-                </div>
-                <div class="tool-card">
+                    <span class="tool-arrow">Open tool &rarr;</span>
+                </a>
+                <a class="tool-card" href="/app#analysis">
                     <div class="tool-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
                     <h3>Technical Analysis</h3>
                     <p>Comprehensive indicator suite including RSI, MACD, Bollinger Bands, and momentum oscillators &mdash; computed in real time across 500+ securities.</p>
-                </div>
-                <div class="tool-card">
+                    <span class="tool-arrow">Open tool &rarr;</span>
+                </a>
+                <a class="tool-card" href="/app#dcf">
                     <div class="tool-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/></svg></div>
                     <h3>DCF Valuation</h3>
                     <p>Rigorous discounted cash-flow modelling to estimate intrinsic value and identify pricing inefficiencies in the market.</p>
-                </div>
-                <div class="tool-card">
+                    <span class="tool-arrow">Open tool &rarr;</span>
+                </a>
+                <a class="tool-card" href="/app#dividend">
                     <div class="tool-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="12" x2="16" y2="12"/></svg></div>
                     <h3>Dividend Analysis</h3>
                     <p>Sector-level yield screening and payout sustainability analysis to construct resilient income-generating portfolios.</p>
-                </div>
-                <div class="tool-card">
+                    <span class="tool-arrow">Open tool &rarr;</span>
+                </a>
+                <a class="tool-card" href="/app#regression">
                     <div class="tool-icon"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="12" r="3"/><line x1="8.6" y1="7.5" x2="15.4" y2="10.5"/><line x1="8.6" y1="16.5" x2="15.4" y2="13.5"/></svg></div>
                     <h3>Market Correlation</h3>
                     <p>HSIC-powered non-linear dependence analysis revealing hidden systematic risk exposure relative to Nifty 50.</p>
-                </div>
-                <div class="tool-card">
+                    <span class="tool-arrow">Open tool &rarr;</span>
+                </a>
+                <a class="tool-card" href="/app#scanner">
                     <div class="tool-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
                     <h3>Universe Scanner</h3>
                     <p>Filter the entire NSE universe by sector, fundamental metrics, and technical signals to surface high-conviction opportunities.</p>
-                </div>
+                    <span class="tool-arrow">Open tool &rarr;</span>
+                </a>
             </div>
         </div>
     </section>
@@ -6012,7 +6128,13 @@ def dashboard():
         }
 
 
-        window.addEventListener('DOMContentLoaded', () => { init(); initDividendSectors(); setupCapitalInput(); loadProfile(); requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';}); });
+        window.addEventListener('DOMContentLoaded', () => {
+            init(); initDividendSectors(); setupCapitalInput(); loadProfile();
+            requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';});
+            const hash = window.location.hash.replace('#','');
+            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner'];
+            if (hash && validTabs.includes(hash)) { switchTab(hash); }
+        });
     </script>
 </body>
 </html>'''
