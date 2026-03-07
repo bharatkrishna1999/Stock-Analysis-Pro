@@ -1863,14 +1863,29 @@ class Analyzer:
         return regime, score, details
 
     def _get_sector_regime(self, symbol):
-        """Get sector regime for a stock. Falls back to neutral if sector data unavailable."""
-        sector = TICKER_TO_SECTOR.get(symbol)
-        if not sector:
-            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}'}
+        """Get sector regime for a stock. Falls back to neutral if sector data unavailable.
+
+        Returns (regime, score, details) where details always includes 'sector_name'.
+        """
+        # Look up real sector, skipping meta-sectors
+        sector = TICKER_TO_SECTOR.get(symbol, '')
+        meta = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
+        if not sector or sector in meta:
+            # Fallback: scan STOCKS for first real sector containing this symbol
+            for sn, st in STOCKS.items():
+                if sn in meta:
+                    continue
+                if symbol in st:
+                    sector = sn
+                    break
+        if not sector or sector in meta:
+            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}', 'sector_name': 'Unknown'}
         sector_ticker = SECTOR_INDEX_MAP.get(sector)
         if not sector_ticker:
-            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"'}
-        return self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"', 'sector_name': sector}
+        regime, score, details = self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+        details['sector_name'] = sector
+        return regime, score, details
 
     def _build_verdict(self, signal_result, original_signal, gated_signal,
                        gate_reason, market_regime, sector_regime, sector_name,
@@ -2239,7 +2254,7 @@ class Analyzer:
         # --- Build regime reason text ---
         reason_parts = []
         reason_parts.append(f"Market regime: {market_regime.upper()} (Nifty 50).")
-        sector_name = TICKER_TO_SECTOR.get(symbol, 'Unknown')
+        sector_name = sector_details.get('sector_name') or TICKER_TO_SECTOR.get(symbol, 'Unknown')
         reason_parts.append(f"Sector regime: {sector_regime.upper()} ({sector_name}).")
 
         alignment_labels = {
