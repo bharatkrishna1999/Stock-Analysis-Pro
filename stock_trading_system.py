@@ -4757,7 +4757,7 @@ def dashboard():
         }
 
         // ===== BROWSE BY SECTOR - Rich Card UI =====
-        const _sectorSkip = new Set(['All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate']);
+        const _sectorSkip = new Set(['Nifty 50', 'Nifty Next 50', 'Conglomerate']);
         let _activeSector = null;
         let _sectorOffset = 0;
         const _sectorPageSize = 20;
@@ -4790,14 +4790,17 @@ def dashboard():
         function initSectorBrowser() {
             const pillsEl = document.getElementById('sector-pills-container');
             if (!pillsEl) return;
-            // Build sector list: real sectors first, then Others
+            // Build sector list: All NSE first, real sectors, then Others last
             const sectorOrder = [];
             const othersEntry = [];
             Object.keys(stocks).forEach(s => {
                 if (_sectorSkip.has(s)) return;
+                if (s === 'All NSE') return;          // handled separately below
                 if (s === 'Others') { othersEntry.push(s); return; }
                 sectorOrder.push(s);
             });
+            // "All NSE" first if it exists
+            if (stocks['All NSE']) sectorOrder.unshift('All NSE');
             sectorOrder.push(...othersEntry);
 
             let pillsHtml = '';
