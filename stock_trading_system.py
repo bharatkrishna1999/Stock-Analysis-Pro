@@ -67,9 +67,9 @@ YAHOO_TICKER_ALIASES = {
 # Organized by sector for better UX, but includes 500+ stocks
 
 STOCKS = {
-    'IT Sector': ['TCS', 'INFY', 'HCLTECH', 'WIPRO', 'TECHM', 'LTIM', 'COFORGE', 'MPHASIS', 'PERSISTENT', 
-                  'MINDTREE', 'L&TTS', 'SONATSOFTW', 'TATAELXSI', 'ROLTA', 'CYIENT', 'KPITTECH', 
-                  'INTELLECT', 'MASTEK', 'ZENSAR', 'POLYCAB'],
+    'IT Sector': ['TCS', 'INFY', 'HCLTECH', 'WIPRO', 'TECHM', 'LTIM', 'COFORGE', 'MPHASIS', 'PERSISTENT',
+                  'LTTS', 'SONATSOFTW', 'TATAELXSI', 'CYIENT', 'KPITTECH',
+                  'INTELLECT', 'MASTEK', 'ZENSAR'],
     
     'Banking': ['HDFCBANK', 'ICICIBANK', 'SBIN', 'KOTAKBANK', 'AXISBANK', 'INDUSINDBK', 'BANKBARODA', 
                 'PNB', 'FEDERALBNK', 'AUBANK', 'BANDHANBNK', 'IDFCFIRSTB', 'RBLBANK', 'CANBK', 
@@ -83,31 +83,31 @@ STOCKS = {
              'ASHOKLEY', 'ESCORTS', 'FORCEMOT', 'MAHINDCIE', 'SONACOMS', 'TIINDIA'],
     
     'Auto Components': ['BOSCHLTD', 'MOTHERSON', 'BALKRISIND', 'MRF', 'APOLLOTYRE', 'EXIDEIND',
-                        'ARE&M', 'BHARAT', 'CEATLTD', 'SCHAEFFLER', 'SUPRAJIT', 'ENDURANCE'],
+                        'ARE&M', 'BHARATFORG', 'CEATLTD', 'SCHAEFFLER', 'SUPRAJIT', 'ENDURANCE'],
     
-    'Pharma': ['SUNPHARMA', 'DRREDDY', 'CIPLA', 'DIVISLAB', 'LUPIN', 'BIOCON', 'AUROPHARMA', 
-               'TORNTPHARM', 'ALKEM', 'CADILAHC', 'IPCALAB', 'GRANULES', 'GLENMARK', 'NATCOPHARMA',
+    'Pharma': ['SUNPHARMA', 'DRREDDY', 'CIPLA', 'DIVISLAB', 'LUPIN', 'BIOCON', 'AUROPHARMA',
+               'TORNTPHARM', 'ALKEM', 'ZYDUSLIFE', 'IPCALAB', 'GRANULES', 'GLENMARK', 'NATCOPHARMA',
                'JBCHEPHARM', 'LAURUSLABS', 'PFIZER', 'ABBOTINDIA', 'GLAXO', 'SANOFI'],
     
     'Healthcare': ['APOLLOHOSP', 'MAXHEALTH', 'FORTIS', 'LALPATHLAB', 'METROPOLIS', 'DRREDDY',
                    'THYROCARE', 'ASTER', 'RAINBOW'],
     
-    'Consumer Goods': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP', 
+    'Consumer Goods': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP',
                        'COLPAL', 'TATACONSUM', 'EMAMILTD', 'VBL', 'RADICO', 'UBL', 'MCDOWELL-N',
-                       'PGHH', 'GILLETTE', 'JYOTHYLAB', 'BAJAJCON', 'VINATIORGA'],
+                       'PGHH', 'GILLETTE', 'JYOTHYLAB', 'BAJAJCON'],
     
-    'Retail': ['DMART', 'TRENT', 'TITAN', 'ABFRL', 'SHOPERSTOP', 'JUBLFOOD', 'WESTLIFE', 
-               'DEVYANI', 'SPENCERS', 'VMART', 'BATA'],
+    'Retail': ['DMART', 'TRENT', 'TITAN', 'ABFRL', 'SHOPERSTOP', 'JUBLFOOD', 'WESTLIFE',
+               'DEVYANI', 'SPENCERS', 'VMART', 'BATA', 'KALYANKJIL'],
     
     'Energy - Oil & Gas': ['RELIANCE', 'ONGC', 'BPCL', 'IOC', 'GAIL', 'HINDPETRO', 'PETRONET', 
                            'OIL', 'MGL', 'IGL', 'GUJGASLTD', 'ATGL'],
     
-    'Power': ['NTPC', 'POWERGRID', 'ADANIPOWER', 'TATAPOWER', 'TORNTPOWER', 'ADANIGREEN', 
-              'NHPC', 'SJVN', 'JSW', 'CESC', 'PFC', 'RECLTD'],
+    'Power': ['NTPC', 'POWERGRID', 'ADANIPOWER', 'TATAPOWER', 'TORNTPOWER', 'ADANIGREEN',
+              'NHPC', 'SJVN', 'JSWENERGY', 'CESC', 'PFC', 'RECLTD'],
     
-    'Metals & Mining': ['TATASTEEL', 'HINDALCO', 'JSWSTEEL', 'COALINDIA', 'VEDL', 'NMDC', 'SAIL', 
-                        'NATIONALUM', 'JINDALSTEL', 'HINDZINC', 'RATNAMANI', 'WELCORP', 'WELSPUNIND',
-                        'MOIL', 'GMRINFRA'],
+    'Metals & Mining': ['TATASTEEL', 'HINDALCO', 'JSWSTEEL', 'COALINDIA', 'VEDL', 'NMDC', 'SAIL',
+                        'NATIONALUM', 'JINDALSTEL', 'HINDZINC', 'RATNAMANI', 'WELCORP',
+                        'MOIL'],
     
     'Cement': ['ULTRACEMCO', 'GRASIM', 'SHREECEM', 'AMBUJACEM', 'ACC', 'DALMIACEM', 'JKCEMENT',
                'RAMCOCEM', 'HEIDELBERG', 'ORIENTCEM', 'JKLAKSHMI', 'STARCEMENT'],
@@ -115,34 +115,34 @@ STOCKS = {
     'Real Estate': ['DLF', 'GODREJPROP', 'OBEROIRLTY', 'PRESTIGE', 'BRIGADE', 'PHOENIXLTD', 
                     'SOBHA', 'LODHA', 'MAHLIFE', 'SUNTECK'],
     
-    'Infrastructure': ['LT', 'ADANIENT', 'ADANIPORTS', 'SIEMENS', 'ABB', 'CUMMINSIND', 'VOLTAS', 
-                       'NCC', 'PNC', 'KNR', 'IRCTC', 'CONCOR', 'IRFC', 'GMR'],
+    'Infrastructure': ['LT', 'ADANIENT', 'ADANIPORTS', 'SIEMENS', 'ABB', 'CUMMINSIND', 'VOLTAS',
+                       'NCC', 'PNC', 'KNR', 'IRCTC', 'CONCOR', 'IRFC', 'GMRINFRA', 'AIAENG'],
     
-    'Telecom': ['BHARTIARTL', 'IDEA', 'TATACOMM', 'ROUTE'],
+    'Telecom': ['BHARTIARTL', 'IDEA', 'TATACOMM'],
     
     'Media': ['ZEEL', 'SUNTV', 'PVRINOX', 'SAREGAMA', 'TIPS', 'NAZARA', 'NETWORK18'],
     
-    'Chemicals': ['UPL', 'PIDILITIND', 'AARTIIND', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT', 
-                  'TATACHEM', 'BALRAMCHIN', 'ALKYLAMINE', 'CLEAN', 'NOCIL', 'TATAchemicals',
+    'Chemicals': ['UPL', 'PIDILITIND', 'AARTIIND', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT',
+                  'TATACHEM', 'ALKYLAMINE', 'CLEAN', 'NOCIL', 'VINATIORGA',
                   'ATUL', 'FINEORG', 'NAVINFLUOR'],
     
-    'Paints': ['ASIANPAINT', 'BERGER', 'KANSAINER', 'INDIGO'],
+    'Paints': ['ASIANPAINT', 'BERGEPAINT', 'KANSAINER'],
     
-    'Textiles': ['GRASIM', 'AIAENG', 'RAYMOND', 'ARVIND', 'WELSPUNIND', 'TRIDENT', 'KPR'],
+    'Textiles': ['GRASIM', 'RAYMOND', 'ARVIND', 'WELSPUNIND', 'TRIDENT', 'KPR'],
     
     'Logistics': ['CONCOR', 'VRL', 'MAHLOG', 'BLUEDART', 'TCI', 'AEGISCHEM', 'GATI'],
     
     'Aviation': ['INDIGO', 'SPICEJET'],
     
-    'Hospitality': ['INDHOTEL', 'LEMONTREE', 'CHOICEINT', 'EIH', 'CHALET', 'ITCHOTELS'],
+    'Hospitality': ['INDHOTEL', 'LEMONTREE', 'EIH', 'CHALET', 'ITCHOTELS'],
     
-    'Construction': ['LT', 'NCC', 'PNC', 'KNR', 'ASHOKA', 'SADBHAV', 'HG'],
+    'Construction': ['LT', 'NCC', 'PNC', 'KNR', 'ASHOKA', 'SADBHAV', 'HGINFRA'],
     
     'FMCG': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP',
-             'TATACONSUM', 'EMAMILTD', 'JYOTHYLAB', 'BAJAJCON', 'VBL'],
+             'TATACONSUM', 'EMAMILTD', 'JYOTHYLAB', 'BAJAJCON', 'VBL', 'BALRAMCHIN'],
     
-    'Electronics': ['DIXON', 'AMBER', 'ROUTE', 'POLYCAB', 'HAVELLS', 'CROMPTON', 'VGUARD',
-                    'KEI', 'FINOLEX', 'KALYANKJIL'],
+    'Electronics': ['DIXON', 'AMBER', 'POLYCAB', 'HAVELLS', 'CROMPTON', 'VGUARD',
+                    'KEI', 'FINOLEX'],
     
     'Conglomerate': ['RELIANCE', 'LT', 'ITC', 'ADANIENT', 'TATASTEEL', 'M&M', 'SIEMENS'],
     
@@ -904,7 +904,7 @@ COMPANY_TO_TICKER = {
     # IT Sector
     'VEDANTA': 'VEDL', 'TATA CONSULTANCY': 'TCS', 'TATA CONSULTANCY SERVICES': 'TCS', 'INFOSYS': 'INFY',
     'HCL TECH': 'HCLTECH', 'HCL TECHNOLOGIES': 'HCLTECH', 'TECH MAHINDRA': 'TECHM', 'L&T INFOTECH': 'LTIM',
-    'LTI': 'LTIM', 'MINDTREE': 'MINDTREE', 'COFORGE': 'COFORGE', 'MPHASIS': 'MPHASIS',
+    'LTI': 'LTIM', 'MINDTREE': 'LTIM', 'L&TTS': 'LTTS', 'COFORGE': 'COFORGE', 'MPHASIS': 'MPHASIS',
     'PERSISTENT': 'PERSISTENT', 'TATA ELXSI': 'TATAELXSI', 'CYIENT': 'CYIENT',
     
     # Banking
@@ -940,7 +940,7 @@ COMPANY_TO_TICKER = {
     'SUN PHARMA': 'SUNPHARMA', 'SUN PHARMACEUTICAL': 'SUNPHARMA', 'DR REDDY': 'DRREDDY',
     'DR REDDYS': 'DRREDDY', 'CIPLA': 'CIPLA', 'DIVIS': 'DIVISLAB', 'DIVIS LAB': 'DIVISLAB',
     'LUPIN': 'LUPIN', 'BIOCON': 'BIOCON', 'AUROBINDO': 'AUROPHARMA', 'TORRENT PHARMA': 'TORNTPHARM',
-    'ALKEM': 'ALKEM', 'CADILA': 'CADILAHC', 'ZYDUS': 'CADILAHC', 'IPCA': 'IPCALAB',
+    'ALKEM': 'ALKEM', 'CADILA': 'ZYDUSLIFE', 'CADILAHC': 'ZYDUSLIFE', 'ZYDUS': 'ZYDUSLIFE', 'IPCA': 'IPCALAB',
     'GRANULES': 'GRANULES', 'GLENMARK': 'GLENMARK', 'NATCO': 'NATCOPHARMA',
     
     # Healthcare
