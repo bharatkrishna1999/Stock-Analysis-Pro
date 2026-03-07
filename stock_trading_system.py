@@ -228,6 +228,12 @@ class HybridTTLCache:
             self._prune()
             self._persist_disk()
 
+    def clear(self):
+        """Wipe all entries (memory + disk)."""
+        with self.lock:
+            self.memory = {}
+            self._persist_disk()
+
 
 PRICE_HISTORY_CACHE = HybridTTLCache('price_history', PRICE_HISTORY_CACHE_TTL, max_entries=180)
 ANALYSIS_CACHE = HybridTTLCache('analysis', ANALYZE_CACHE_TTL, max_entries=180)
@@ -532,6 +538,367 @@ def add_universe_sector(stocks_dict):
 
 add_universe_sector(STOCKS)
 
+# ===== DYNAMIC SECTOR CLASSIFICATION FOR UNASSIGNED STOCKS =====
+# Maps yfinance sector/industry strings to our sector names in STOCKS dict.
+
+SECTOR_CACHE_FILE = os.path.join(_SCRIPT_DIR, ".sector_classification_cache.json")
+
+# yfinance sector field -> our sector name
+YF_SECTOR_MAP = {
+    'Technology': 'IT Sector',
+    'Financial Services': 'Financial Services',
+    'Healthcare': 'Healthcare',
+    'Consumer Cyclical': 'Consumer Goods',
+    'Consumer Defensive': 'FMCG',
+    'Basic Materials': 'Chemicals',
+    'Energy': 'Energy - Oil & Gas',
+    'Industrials': 'Infrastructure',
+    'Real Estate': 'Real Estate',
+    'Communication Services': 'Telecom',
+    'Utilities': 'Power',
+}
+
+# yfinance industry field -> our sector name (overrides YF_SECTOR_MAP when matched)
+YF_INDUSTRY_MAP = {
+    # Banking
+    'Banks—Regional': 'Banking',
+    'Banks—Diversified': 'Banking',
+    'Banks - Regional': 'Banking',
+    'Banks - Diversified': 'Banking',
+    # Pharma & Healthcare
+    'Drug Manufacturers—General': 'Pharma',
+    'Drug Manufacturers—Specialty & Generic': 'Pharma',
+    'Drug Manufacturers - General': 'Pharma',
+    'Drug Manufacturers - Specialty & Generic': 'Pharma',
+    'Pharmaceutical Retailers': 'Pharma',
+    'Biotechnology': 'Pharma',
+    'Diagnostics & Research': 'Healthcare',
+    'Medical Instruments & Supplies': 'Healthcare',
+    'Medical Devices': 'Healthcare',
+    'Medical Care Facilities': 'Healthcare',
+    'Medical Distribution': 'Healthcare',
+    'Health Information Services': 'Healthcare',
+    'Healthcare Plans': 'Healthcare',
+    # Auto
+    'Auto Manufacturers': 'Auto',
+    'Auto - Manufacturers': 'Auto',
+    'Auto Parts': 'Auto Components',
+    'Auto - Parts': 'Auto Components',
+    'Auto & Truck Dealerships': 'Auto',
+    'Farm & Heavy Construction Machinery': 'Auto Components',
+    'Recreational Vehicles': 'Auto',
+    # Metals & Mining
+    'Steel': 'Metals & Mining',
+    'Aluminum': 'Metals & Mining',
+    'Copper': 'Metals & Mining',
+    'Other Industrial Metals & Mining': 'Metals & Mining',
+    'Gold': 'Metals & Mining',
+    'Silver': 'Metals & Mining',
+    'Coking Coal': 'Metals & Mining',
+    'Thermal Coal': 'Metals & Mining',
+    'Industrial Metals & Minerals': 'Metals & Mining',
+    # Cement & Building Materials
+    'Building Materials': 'Cement',
+    'Building Products & Equipment': 'Cement',
+    # Media & Entertainment
+    'Entertainment': 'Media',
+    'Broadcasting': 'Media',
+    'Electronic Gaming & Multimedia': 'Media',
+    'Publishing': 'Media',
+    'Advertising Agencies': 'Media',
+    'Internet Content & Information': 'Media',
+    # Aviation
+    'Airlines': 'Aviation',
+    'Airports & Air Services': 'Aviation',
+    # Hospitality
+    'Lodging': 'Hospitality',
+    'Resorts & Casinos': 'Hospitality',
+    'Restaurants': 'Hospitality',
+    'Travel Services': 'Hospitality',
+    # Textiles & Apparel
+    'Textile Manufacturing': 'Textiles',
+    'Apparel Manufacturing': 'Textiles',
+    'Apparel Retail': 'Textiles',
+    'Footwear & Accessories': 'Retail',
+    # Logistics
+    'Integrated Freight & Logistics': 'Logistics',
+    'Marine Shipping': 'Logistics',
+    'Trucking': 'Logistics',
+    'Railroads': 'Logistics',
+    # Retail
+    'Specialty Retail': 'Retail',
+    'Department Stores': 'Retail',
+    'Luxury Goods': 'Retail',
+    'Grocery Stores': 'Retail',
+    'Home Improvement Retail': 'Retail',
+    'Internet Retail': 'Retail',
+    'Discount Stores': 'Retail',
+    # Insurance & Financial Services
+    'Insurance—Life': 'Financial Services',
+    'Insurance—Diversified': 'Financial Services',
+    'Insurance—Property & Casualty': 'Financial Services',
+    'Insurance—Reinsurance': 'Financial Services',
+    'Insurance—Specialty': 'Financial Services',
+    'Insurance - Life': 'Financial Services',
+    'Insurance - Diversified': 'Financial Services',
+    'Insurance - Property & Casualty': 'Financial Services',
+    'Insurance - Reinsurance': 'Financial Services',
+    'Insurance - Specialty': 'Financial Services',
+    'Insurance Brokers': 'Financial Services',
+    'Capital Markets': 'Financial Services',
+    'Asset Management': 'Financial Services',
+    'Financial Data & Stock Exchanges': 'Financial Services',
+    'Credit Services': 'Financial Services',
+    'Mortgage Finance': 'Financial Services',
+    'Financial Conglomerates': 'Financial Services',
+    'Shell Companies': 'Financial Services',
+    # Chemicals
+    'Specialty Chemicals': 'Chemicals',
+    'Chemicals': 'Chemicals',
+    'Agricultural Inputs': 'Chemicals',
+    'Chemicals - Major Diversified': 'Chemicals',
+    # FMCG
+    'Packaged Foods': 'FMCG',
+    'Beverages—Non-Alcoholic': 'FMCG',
+    'Beverages—Brewers': 'FMCG',
+    'Beverages—Wineries & Distilleries': 'FMCG',
+    'Beverages - Non-Alcoholic': 'FMCG',
+    'Beverages - Brewers': 'FMCG',
+    'Beverages - Wineries & Distilleries': 'FMCG',
+    'Tobacco': 'FMCG',
+    'Household & Personal Products': 'FMCG',
+    'Personal Products & Services': 'FMCG',
+    'Confectioners': 'FMCG',
+    'Meat Products': 'FMCG',
+    'Farm Products': 'FMCG',
+    # Consumer Goods
+    'Furnishings, Fixtures & Appliances': 'Consumer Goods',
+    'Home Furnishings & Fixtures': 'Consumer Goods',
+    'Packaging & Containers': 'Consumer Goods',
+    'Paper & Paper Products': 'Consumer Goods',
+    'Rubber & Plastics': 'Consumer Goods',
+    'Leisure': 'Consumer Goods',
+    # Paints
+    'Paints': 'Paints',
+    # Power / Utilities
+    'Utilities—Regulated Electric': 'Power',
+    'Utilities—Renewable': 'Power',
+    'Utilities—Diversified': 'Power',
+    'Utilities—Independent Power Producers': 'Power',
+    'Utilities—Regulated Gas': 'Power',
+    'Utilities—Regulated Water': 'Power',
+    'Utilities - Regulated Electric': 'Power',
+    'Utilities - Renewable': 'Power',
+    'Utilities - Diversified': 'Power',
+    'Utilities - Independent Power Producers': 'Power',
+    'Utilities - Regulated Gas': 'Power',
+    'Utilities - Regulated Water': 'Power',
+    'Independent Power Producers': 'Power',
+    'Solar': 'Power',
+    # Oil & Gas specifics
+    'Oil & Gas E&P': 'Energy - Oil & Gas',
+    'Oil & Gas Integrated': 'Energy - Oil & Gas',
+    'Oil & Gas Refining & Marketing': 'Energy - Oil & Gas',
+    'Oil & Gas Equipment & Services': 'Energy - Oil & Gas',
+    'Oil & Gas Drilling': 'Energy - Oil & Gas',
+    'Oil & Gas Midstream': 'Energy - Oil & Gas',
+    # Electronics & Electrical
+    'Consumer Electronics': 'Electronics',
+    'Electronic Components': 'Electronics',
+    'Electrical Equipment & Parts': 'Electronics',
+    'Scientific & Technical Instruments': 'Electronics',
+    'Semiconductor Equipment & Materials': 'Electronics',
+    'Semiconductors': 'Electronics',
+    # Construction & Infrastructure
+    'Engineering & Construction': 'Construction',
+    'Infrastructure Operations': 'Infrastructure',
+    'Rental & Leasing Services': 'Infrastructure',
+    'Waste Management': 'Infrastructure',
+    'Conglomerates': 'Infrastructure',
+    'Industrial Distribution': 'Infrastructure',
+    'Diversified Industrials': 'Infrastructure',
+    'Pollution & Treatment Controls': 'Infrastructure',
+    'Security & Protection Services': 'Infrastructure',
+    'Staffing & Employment Services': 'Infrastructure',
+    'Consulting Services': 'Infrastructure',
+    'Business Equipment & Supplies': 'Infrastructure',
+    'Specialty Business Services': 'Infrastructure',
+    # IT Sector
+    'Software—Application': 'IT Sector',
+    'Software—Infrastructure': 'IT Sector',
+    'Software - Application': 'IT Sector',
+    'Software - Infrastructure': 'IT Sector',
+    'Information Technology Services': 'IT Sector',
+    'Computer Hardware': 'IT Sector',
+    'Communication Equipment': 'IT Sector',
+    'Data Storage': 'IT Sector',
+    'IT Consulting & Other Services': 'IT Sector',
+    # Telecom
+    'Telecom Services': 'Telecom',
+    'Telecommunication Services': 'Telecom',
+    # Real Estate
+    'Real Estate—Development': 'Real Estate',
+    'Real Estate—Diversified': 'Real Estate',
+    'Real Estate - Development': 'Real Estate',
+    'Real Estate - Diversified': 'Real Estate',
+    'Real Estate Services': 'Real Estate',
+    'REIT—Diversified': 'Real Estate',
+    'REIT—Specialty': 'Real Estate',
+    'REIT - Diversified': 'Real Estate',
+    'REIT - Specialty': 'Real Estate',
+    # Education (-> Others)
+    'Education & Training Services': 'Others',
+}
+
+
+def _load_sector_cache():
+    """Load cached sector classifications from disk."""
+    try:
+        if os.path.exists(SECTOR_CACHE_FILE):
+            with open(SECTOR_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            mapping = data.get("mapping", {})
+            if mapping:
+                print(f"  [sectors] Loaded {len(mapping)} cached sector classifications")
+                return mapping
+    except Exception as e:
+        print(f"  [sectors] Failed to load sector cache: {e}")
+    return {}
+
+
+def _save_sector_cache(mapping):
+    """Persist sector classifications to disk."""
+    try:
+        with open(SECTOR_CACHE_FILE, "w") as f:
+            json.dump({
+                "mapping": mapping,
+                "saved_at": datetime.utcnow().isoformat(),
+                "count": len(mapping),
+            }, f)
+        print(f"  [sectors] Saved {len(mapping)} sector classifications to cache")
+    except Exception as e:
+        print(f"  [sectors] Failed to save sector cache: {e}")
+
+
+def _resolve_sector(yf_sector, yf_industry):
+    """Map yfinance sector/industry to our sector name. Industry takes priority.
+
+    Falls back to 'Others' if yfinance provides a sector but we have no mapping,
+    so every stock with yfinance data gets classified.
+    """
+    if yf_industry and yf_industry in YF_INDUSTRY_MAP:
+        return YF_INDUSTRY_MAP[yf_industry]
+    if yf_sector and yf_sector in YF_SECTOR_MAP:
+        return YF_SECTOR_MAP[yf_sector]
+    # If yfinance returned *some* sector but we don't have a mapping, use Others
+    if yf_sector:
+        return 'Others'
+    return None
+
+
+def _fetch_sector_for_symbol(symbol):
+    """Fetch sector classification for a single symbol from yfinance."""
+    try:
+        ns_sym = symbol if symbol.endswith('.NS') else symbol + '.NS'
+        info = yf.Ticker(ns_sym).info
+        yf_sector = info.get('sector', '')
+        yf_industry = info.get('industry', '')
+        resolved = _resolve_sector(yf_sector, yf_industry)
+        return resolved, yf_sector, yf_industry
+    except Exception:
+        return None, '', ''
+
+
+def classify_unassigned_stocks(stocks_dict, max_fetch=0, workers=16):
+    """Classify stocks that are only in 'All NSE' into proper sectors.
+
+    Uses a disk cache so that yfinance is only called for new/unknown symbols.
+    Set max_fetch=0 (default) to fetch ALL uncached symbols. First run may
+    take a few minutes but subsequent startups use the cache instantly.
+    """
+    universe_key = UNIVERSE_SECTOR_NAME
+    if universe_key not in stocks_dict:
+        return
+
+    # Collect symbols already assigned to a real sector
+    skip_sectors = {universe_key, 'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
+    already_assigned = set()
+    for sector_name, tickers in stocks_dict.items():
+        if sector_name not in skip_sectors:
+            already_assigned.update(tickers)
+
+    # Symbols that need classification
+    universe_symbols = set(stocks_dict.get(universe_key, []))
+    unassigned = sorted(universe_symbols - already_assigned)
+
+    if not unassigned:
+        print("  [sectors] All stocks already have sector assignments")
+        return
+
+    print(f"  [sectors] {len(unassigned)} stocks need sector classification")
+
+    # Load cache
+    cache = _load_sector_cache()
+
+    # Split into cached vs needs-fetch
+    # Also re-fetch stocks cached as "Others" — expanded mappings may classify them now
+    to_fetch = []
+    for sym in unassigned:
+        if sym not in cache:
+            to_fetch.append(sym)
+        elif cache[sym] in ('Others', ''):
+            to_fetch.append(sym)
+            del cache[sym]  # remove so they get re-fetched and re-applied
+
+    # Apply cached classifications first
+    assigned_count = 0
+    for sym in unassigned:
+        if sym in cache:
+            sector = cache[sym]
+            if not sector:
+                sector = 'Others'           # re-map old empty cache entries
+                cache[sym] = sector
+            if sector in stocks_dict:
+                stocks_dict[sector].append(sym)
+            else:
+                stocks_dict[sector] = [sym]
+            assigned_count += 1
+
+    if assigned_count:
+        print(f"  [sectors] Applied {assigned_count} cached sector assignments")
+
+    # Fetch new classifications (no cap by default — all uncached get fetched)
+    fetch_batch = to_fetch[:max_fetch] if max_fetch > 0 else to_fetch
+    if fetch_batch:
+        print(f"  [sectors] Fetching sectors for {len(fetch_batch)} new symbols from yfinance...")
+
+        def _fetch_one(sym):
+            resolved, yf_sec, yf_ind = _fetch_sector_for_symbol(sym)
+            return sym, resolved, yf_sec, yf_ind
+
+        new_assigned = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_fetch_one, fetch_batch))
+
+        for sym, resolved, yf_sec, yf_ind in results:
+            # If yfinance returned nothing at all, assign to Others so no stock is left orphaned
+            if not resolved:
+                resolved = 'Others'
+            cache[sym] = resolved
+            if resolved in stocks_dict:
+                stocks_dict[resolved].append(sym)
+            else:
+                stocks_dict[resolved] = [sym]
+            new_assigned += 1
+
+        print(f"  [sectors] Newly classified {new_assigned}/{len(fetch_batch)} stocks")
+
+        _save_sector_cache(cache)
+
+
+# Run classification before deduplication
+classify_unassigned_stocks(STOCKS)
+
 # Enhanced company name mapping with MANY more variations
 COMPANY_TO_TICKER = {
     # IT Sector
@@ -711,10 +1078,18 @@ print(
 
 # ===== TICKER-TO-SECTOR REVERSE MAPPING =====
 TICKER_TO_SECTOR = {}
+_SKIP_SECTORS_FOR_MAP = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
 for _sector_name, _sector_tickers in STOCKS.items():
+    if _sector_name in _SKIP_SECTORS_FOR_MAP:
+        continue
     for _t in _sector_tickers:
         if _t not in TICKER_TO_SECTOR:
             TICKER_TO_SECTOR[_t] = _sector_name
+
+# Clear stale analysis & regime disk caches so old "All NSE" entries don't persist
+ANALYSIS_CACHE.clear()
+REGIME_CACHE.clear()
+print("  [cache] Cleared analysis + regime caches (sector mapping updated)")
 
 # ===== SECTOR INDEX MAP (Yahoo Finance tickers for NSE sectoral indices) =====
 SECTOR_INDEX_MAP = {
@@ -1499,14 +1874,31 @@ class Analyzer:
         return regime, score, details
 
     def _get_sector_regime(self, symbol):
-        """Get sector regime for a stock. Falls back to neutral if sector data unavailable."""
-        sector = TICKER_TO_SECTOR.get(symbol)
-        if not sector:
-            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}'}
+        """Get sector regime for a stock. Falls back to neutral if sector data unavailable.
+
+        Returns (regime, score, details) where details always includes 'sector_name'.
+        """
+        # Look up real sector, skipping meta-sectors
+        sector = TICKER_TO_SECTOR.get(symbol, '')
+        meta = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
+        if not sector or sector in meta:
+            # Fallback: scan STOCKS for first real sector containing this symbol
+            for sn, st in STOCKS.items():
+                if sn in meta:
+                    continue
+                if symbol in st:
+                    sector = sn
+                    break
+        if not sector or sector in meta:
+            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}', 'sector_name': 'Unknown'}
         sector_ticker = SECTOR_INDEX_MAP.get(sector)
         if not sector_ticker:
-            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"'}
-        return self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"', 'sector_name': sector}
+        regime, score, details = self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+        # Copy so we don't mutate the cached dict in _fetch_regime
+        details = dict(details)
+        details['sector_name'] = sector
+        return regime, score, details
 
     def _build_verdict(self, signal_result, original_signal, gated_signal,
                        gate_reason, market_regime, sector_regime, sector_name,
@@ -1875,7 +2267,7 @@ class Analyzer:
         # --- Build regime reason text ---
         reason_parts = []
         reason_parts.append(f"Market regime: {market_regime.upper()} (Nifty 50).")
-        sector_name = TICKER_TO_SECTOR.get(symbol, 'Unknown')
+        sector_name = sector_details.get('sector_name') or TICKER_TO_SECTOR.get(symbol, 'Unknown')
         reason_parts.append(f"Sector regime: {sector_regime.upper()} ({sector_name}).")
 
         alignment_labels = {
@@ -3268,6 +3660,29 @@ def dashboard():
         .category { margin-bottom: 20px; }
         .category h3 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
         .stocks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        /* ===== Browse by Sector - Pill Tabs + Stock Cards ===== */
+        .sector-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+        .sector-pill { padding: 7px 16px; border-radius: 20px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); font-size: 0.82em; font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; }
+        .sector-pill:hover { border-color: var(--accent-cyan); color: var(--text-primary); background: transparent; }
+        .sector-pill.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(201,168,76,0.1); }
+        .stock-cards-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; min-height: 120px; }
+        .stock-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px 18px; cursor: pointer; transition: all 0.25s; position: relative; overflow: hidden; }
+        .stock-card:hover { border-color: rgba(201,168,76,0.45); background: var(--bg-card-hover); transform: translateY(-2px); }
+        .stock-card .sc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+        .stock-card .sc-symbol { font-weight: 700; font-size: 0.95em; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
+        .stock-card .sc-change { font-size: 0.78em; font-weight: 600; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+        .stock-card .sc-change.up { color: var(--accent-green); background: rgba(46,204,140,0.12); }
+        .stock-card .sc-change.down { color: var(--danger); background: rgba(239,68,68,0.12); }
+        .stock-card .sc-name { font-size: 0.78em; color: var(--text-muted); margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .stock-card .sc-price { font-size: 1.15em; font-weight: 700; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
+        .stock-card .sc-mcap { font-size: 0.72em; color: var(--text-muted); text-align: right; margin-top: 2px; }
+        .stock-card .sc-bottom { display: flex; justify-content: space-between; align-items: flex-end; }
+        .stock-card.sc-loading .sc-price, .stock-card.sc-loading .sc-change, .stock-card.sc-loading .sc-mcap { color: transparent; background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-card-hover) 50%, var(--border-color) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .sector-load-more { display: block; width: 100%; padding: 12px; margin-top: 12px; background: transparent; border: 1px dashed var(--border-color); border-radius: 8px; color: var(--text-secondary); font-size: 0.88em; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .sector-load-more:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); background: transparent; }
+        @media (max-width: 900px) { .stock-cards-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 500px) { .stock-cards-grid { grid-template-columns: 1fr; } .sector-pills { gap: 6px; } .sector-pill { font-size: 0.75em; padding: 5px 12px; } }
         button { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); font-size: 0.9em; }
         button:hover { background: var(--accent-gold); color: var(--bg-dark); border-color: var(--accent-gold); }
         #result-view { display: none; }
@@ -3804,16 +4219,16 @@ def dashboard():
     <main class="container">
         <div id="analysis-tab" class="tab-content">
             <div id="search-view">
-                <div class="grid">
-                    <div class="card">
-                        <h2>Search Any NSE Stock</h2>
-                        <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
-                        <div class="suggestions" id="suggestions"></div>
-                    </div>
-                    <div class="card">
-                        <h2>Browse by Sector</h2>
-                        <div id="categories" style="max-height: 500px; overflow-y: auto;"></div>
-                    </div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h2>Search Any NSE Stock</h2>
+                    <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
+                    <div class="suggestions" id="suggestions"></div>
+                </div>
+                <div class="card">
+                    <h2>Browse by Sector</h2>
+                    <div id="sector-pills-container" class="sector-pills"></div>
+                    <div id="sector-cards-container" class="stock-cards-grid"></div>
+                    <button id="sector-load-more-btn" class="sector-load-more" style="display:none;" onclick="loadMoreSectorStocks()">Load more stocks</button>
                 </div>
             </div>
             <div id="result-view">
@@ -4477,20 +4892,125 @@ def dashboard():
             }).catch(function() { return null; });
         }
 
+        // ===== BROWSE BY SECTOR - Rich Card UI =====
+        const _sectorSkip = new Set(['Nifty 50', 'Nifty Next 50', 'Conglomerate']);
+        let _activeSector = null;
+        let _sectorOffset = 0;
+        const _sectorPageSize = 20;
+        const _sectorQuoteCache = {};
+
+        function _formatMcap(mcap) {
+            if (!mcap) return '';
+            if (mcap >= 1e12) return '\u20B9' + (mcap / 1e12).toFixed(1) + 'L Cr';
+            if (mcap >= 1e9) return '\u20B9' + (mcap / 1e7 / 100).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' Cr';
+            if (mcap >= 1e7) return '\u20B9' + (mcap / 1e7).toFixed(0) + ' Cr';
+            return '';
+        }
+
+        function _stockCardHtml(sym, quote) {
+            const name = (quote && quote.name) || getStockName(sym);
+            const price = (quote && quote.price) ? '\u20B9' + quote.price.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '';
+            const chg = (quote && quote.change_pct) || 0;
+            const chgStr = chg >= 0 ? '+' + chg.toFixed(2) + '%' : chg.toFixed(2) + '%';
+            const chgClass = chg >= 0 ? 'up' : 'down';
+            const chgIcon = chg >= 0 ? '\u2197' : '\u2198';
+            const mcap = (quote && quote.mcap) ? _formatMcap(quote.mcap) : '';
+            const loadingClass = quote ? '' : ' sc-loading';
+            return `<div class="stock-card${loadingClass}" onclick="analyze('${sym}')" data-sym="${sym}">
+                <div class="sc-top"><span class="sc-symbol">${sym}</span><span class="sc-change ${chgClass}">${chgIcon} ${chgStr}</span></div>
+                <div class="sc-name">${name}</div>
+                <div class="sc-bottom"><span class="sc-price">${price || '\u20B9---'}</span><span class="sc-mcap">${mcap}</span></div>
+            </div>`;
+        }
+
+        function initSectorBrowser() {
+            const pillsEl = document.getElementById('sector-pills-container');
+            if (!pillsEl) return;
+            // Build sector list: All NSE first, real sectors, then Others last
+            const sectorOrder = [];
+            const othersEntry = [];
+            Object.keys(stocks).forEach(s => {
+                if (_sectorSkip.has(s)) return;
+                if (s === 'All NSE') return;          // handled separately below
+                if (s === 'Others') { othersEntry.push(s); return; }
+                sectorOrder.push(s);
+            });
+            // "All NSE" first if it exists
+            if (stocks['All NSE']) sectorOrder.unshift('All NSE');
+            sectorOrder.push(...othersEntry);
+
+            let pillsHtml = '';
+            sectorOrder.forEach((s, i) => {
+                const active = i === 0 ? ' active' : '';
+                pillsHtml += `<button class="sector-pill${active}" data-sector="${s}" onclick="switchSector('${s.replace(/'/g, "\\'")}')">${s} (${stocks[s].length})</button>`;
+            });
+            pillsEl.innerHTML = pillsHtml;
+
+            // Load first sector
+            if (sectorOrder.length) switchSector(sectorOrder[0]);
+        }
+
+        function switchSector(sector) {
+            _activeSector = sector;
+            _sectorOffset = 0;
+            // Update pill active state
+            document.querySelectorAll('.sector-pill').forEach(p => {
+                p.classList.toggle('active', p.dataset.sector === sector);
+            });
+            const container = document.getElementById('sector-cards-container');
+            container.innerHTML = '';
+            _renderSectorPage(sector, true);
+        }
+
+        function _renderSectorPage(sector, fresh) {
+            const container = document.getElementById('sector-cards-container');
+            const btn = document.getElementById('sector-load-more-btn');
+            const tickers = stocks[sector] || [];
+            const page = tickers.slice(_sectorOffset, _sectorOffset + _sectorPageSize);
+
+            if (!page.length) { btn.style.display = 'none'; return; }
+
+            // Render placeholder cards immediately
+            let cardsHtml = '';
+            page.forEach(sym => {
+                const cached = _sectorQuoteCache[sym];
+                cardsHtml += _stockCardHtml(sym, cached || null);
+            });
+            if (fresh) container.innerHTML = cardsHtml;
+            else container.insertAdjacentHTML('beforeend', cardsHtml);
+
+            _sectorOffset += page.length;
+            btn.style.display = (_sectorOffset < tickers.length) ? 'block' : 'none';
+            btn.textContent = 'Load more (' + (tickers.length - _sectorOffset) + ' remaining)';
+
+            // Fetch live quotes for uncached symbols
+            const uncached = page.filter(s => !_sectorQuoteCache[s]);
+            if (uncached.length) {
+                fetch('/sector-quotes?sector=' + encodeURIComponent(sector) + '&offset=' + (_sectorOffset - page.length) + '&limit=' + page.length)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (_activeSector !== sector) return; // user switched away
+                        (data.quotes || []).forEach(q => {
+                            _sectorQuoteCache[q.symbol] = q;
+                            const card = container.querySelector('[data-sym="' + q.symbol + '"]');
+                            if (card) {
+                                card.outerHTML = _stockCardHtml(q.symbol, q);
+                            }
+                        });
+                    }).catch(() => {});
+            }
+        }
+
+        function loadMoreSectorStocks() {
+            if (_activeSector) _renderSectorPage(_activeSector, false);
+        }
+
         let currentTab = 'analysis';
         let loadedTabs = new Set();
         function ensureTabLoaded(tab) {
             if (loadedTabs.has(tab)) return;
             if (tab === 'analysis') {
-                const cat = document.getElementById('categories');
-                let allHtml = '';
-                Object.entries(stocks).forEach(([name, list]) => {
-                    let html = `<div class="category"><h3>${name} (${list.length})</h3><div class="stocks">`;
-                    list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
-                    html += '</div></div>';
-                    allHtml += html;
-                });
-                cat.innerHTML = allHtml;
+                initSectorBrowser();
                 setupAutocomplete('search', 'suggestions', 'analyze');
             } else if (tab === 'regression') {
                 setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
@@ -5422,7 +5942,9 @@ def dashboard():
         function initDividendSectors() {
             const grid = document.getElementById('sector-grid');
             if (!grid) return;
+            const skipDiv = new Set(['All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate']);
             Object.keys(stocks).forEach(sector => {
+                if (skipDiv.has(sector)) return;
                 const label = document.createElement('label');
                 label.innerHTML = '<input type="checkbox" class="sector-cb" value="' + sector + '"> ' + sector + ' (' + stocks[sector].length + ')';
                 grid.appendChild(label);
@@ -6705,6 +7227,121 @@ def dividend_optimize_stream_route():
             yield f"data: {json.dumps(payload)}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+@app.route('/refresh-sectors')
+def refresh_sectors_route():
+    """Admin endpoint: re-classify unassigned stocks by fetching sectors from yfinance.
+
+    Query params:
+      max_fetch - max symbols to look up (default 500, cap 2000)
+      force     - if 'true', clear cache and re-fetch all unassigned
+    """
+    max_fetch = min(int(request.args.get('max_fetch', 500)), 2000)
+    force = request.args.get('force', '').lower() == 'true'
+
+    if force and os.path.exists(SECTOR_CACHE_FILE):
+        os.remove(SECTOR_CACHE_FILE)
+
+    # Rebuild classification on a copy of current STOCKS, then merge
+    global STOCKS, ALL_VALID_TICKERS, TICKER_TO_SECTOR
+
+    # Re-run classification
+    classify_unassigned_stocks(STOCKS, max_fetch=max_fetch, workers=8)
+
+    # Re-deduplicate
+    NIFTY_50_STOCKS_LOCAL = list(STOCKS.get('Nifty 50', []))
+    STOCKS = deduplicate_stocks(STOCKS)
+    ALL_VALID_TICKERS = set()
+    for sector_stocks in STOCKS.values():
+        ALL_VALID_TICKERS.update(sector_stocks)
+
+    # Rebuild reverse mapping (skip meta-sectors so stocks get real sector names)
+    TICKER_TO_SECTOR = {}
+    _skip_meta = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
+    for _sn, _st in STOCKS.items():
+        if _sn in _skip_meta:
+            continue
+        for _t in _st:
+            if _t not in TICKER_TO_SECTOR:
+                TICKER_TO_SECTOR[_t] = _sn
+
+    # Purge stale caches so new sector mappings take effect immediately
+    ANALYSIS_CACHE.clear()
+    REGIME_CACHE.clear()
+
+    # Count unassigned
+    skip = {UNIVERSE_SECTOR_NAME, 'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
+    assigned = set()
+    for sn, st in STOCKS.items():
+        if sn not in skip:
+            assigned.update(st)
+    universe = set(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+    still_unassigned = len(universe - assigned)
+
+    return jsonify({
+        'status': 'ok',
+        'total_stocks': len(ALL_VALID_TICKERS),
+        'sectors': len(STOCKS),
+        'still_unassigned': still_unassigned,
+        'force': force,
+        'max_fetch': max_fetch,
+        'sector_counts': {s: len(t) for s, t in sorted(STOCKS.items()) if s != UNIVERSE_SECTOR_NAME},
+    })
+
+
+@app.route('/sector-quotes')
+def sector_quotes_route():
+    """Return batch price data for stocks in a sector (used by Browse by Sector cards).
+
+    Query params:
+      sector  - sector name (required)
+      offset  - start index for pagination (default 0)
+      limit   - max stocks to return (default 20, cap 40)
+    """
+    sector = request.args.get('sector', '').strip()
+    offset = int(request.args.get('offset', 0))
+    limit = min(int(request.args.get('limit', 20)), 40)
+
+    if not sector or sector not in STOCKS:
+        return jsonify({'error': 'Invalid sector', 'quotes': []})
+
+    tickers = STOCKS[sector]
+    page = tickers[offset:offset + limit]
+    quotes = []
+
+    for sym in page:
+        ns_sym = sym + '.NS'
+        try:
+            info = yf.Ticker(ns_sym).info
+            price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+            prev_close = info.get('regularMarketPreviousClose') or info.get('previousClose') or 0
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
+            mcap = info.get('marketCap') or 0
+            name = info.get('shortName') or info.get('longName') or TICKER_TO_NAME.get(sym, sym)
+            quotes.append({
+                'symbol': sym,
+                'name': name,
+                'price': round(price, 2),
+                'change_pct': round(change_pct, 2),
+                'mcap': mcap,
+            })
+        except Exception:
+            quotes.append({
+                'symbol': sym,
+                'name': TICKER_TO_NAME.get(sym, sym),
+                'price': 0,
+                'change_pct': 0,
+                'mcap': 0,
+            })
+
+    return jsonify({
+        'sector': sector,
+        'total': len(tickers),
+        'offset': offset,
+        'limit': limit,
+        'quotes': quotes,
+    })
+
 
 @app.route('/duplicates')
 def duplicates_route():
