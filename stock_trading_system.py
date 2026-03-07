@@ -1072,7 +1072,10 @@ print(
 
 # ===== TICKER-TO-SECTOR REVERSE MAPPING =====
 TICKER_TO_SECTOR = {}
+_SKIP_SECTORS_FOR_MAP = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
 for _sector_name, _sector_tickers in STOCKS.items():
+    if _sector_name in _SKIP_SECTORS_FOR_MAP:
+        continue
     for _t in _sector_tickers:
         if _t not in TICKER_TO_SECTOR:
             TICKER_TO_SECTOR[_t] = _sector_name
@@ -7224,9 +7227,12 @@ def refresh_sectors_route():
     for sector_stocks in STOCKS.values():
         ALL_VALID_TICKERS.update(sector_stocks)
 
-    # Rebuild reverse mapping
+    # Rebuild reverse mapping (skip meta-sectors so stocks get real sector names)
     TICKER_TO_SECTOR = {}
+    _skip_meta = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
     for _sn, _st in STOCKS.items():
+        if _sn in _skip_meta:
+            continue
         for _t in _st:
             if _t not in TICKER_TO_SECTOR:
                 TICKER_TO_SECTOR[_t] = _sn
