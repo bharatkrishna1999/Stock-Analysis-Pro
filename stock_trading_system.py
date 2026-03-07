@@ -559,18 +559,28 @@ YF_INDUSTRY_MAP = {
     'Banks—Diversified': 'Banking',
     'Banks - Regional': 'Banking',
     'Banks - Diversified': 'Banking',
-    # Pharma
+    # Pharma & Healthcare
     'Drug Manufacturers—General': 'Pharma',
     'Drug Manufacturers—Specialty & Generic': 'Pharma',
     'Drug Manufacturers - General': 'Pharma',
     'Drug Manufacturers - Specialty & Generic': 'Pharma',
     'Pharmaceutical Retailers': 'Pharma',
     'Biotechnology': 'Pharma',
+    'Diagnostics & Research': 'Healthcare',
+    'Medical Instruments & Supplies': 'Healthcare',
+    'Medical Devices': 'Healthcare',
+    'Medical Care Facilities': 'Healthcare',
+    'Medical Distribution': 'Healthcare',
+    'Health Information Services': 'Healthcare',
+    'Healthcare Plans': 'Healthcare',
     # Auto
     'Auto Manufacturers': 'Auto',
     'Auto - Manufacturers': 'Auto',
     'Auto Parts': 'Auto Components',
     'Auto - Parts': 'Auto Components',
+    'Auto & Truck Dealerships': 'Auto',
+    'Farm & Heavy Construction Machinery': 'Auto Components',
+    'Recreational Vehicles': 'Auto',
     # Metals & Mining
     'Steel': 'Metals & Mining',
     'Aluminum': 'Metals & Mining',
@@ -580,65 +590,158 @@ YF_INDUSTRY_MAP = {
     'Silver': 'Metals & Mining',
     'Coking Coal': 'Metals & Mining',
     'Thermal Coal': 'Metals & Mining',
-    # Cement
+    'Industrial Metals & Minerals': 'Metals & Mining',
+    # Cement & Building Materials
     'Building Materials': 'Cement',
-    # Media
+    'Building Products & Equipment': 'Cement',
+    # Media & Entertainment
     'Entertainment': 'Media',
     'Broadcasting': 'Media',
     'Electronic Gaming & Multimedia': 'Media',
     'Publishing': 'Media',
+    'Advertising Agencies': 'Media',
+    'Internet Content & Information': 'Media',
     # Aviation
     'Airlines': 'Aviation',
+    'Airports & Air Services': 'Aviation',
     # Hospitality
     'Lodging': 'Hospitality',
     'Resorts & Casinos': 'Hospitality',
     'Restaurants': 'Hospitality',
-    # Textiles
+    'Travel Services': 'Hospitality',
+    # Textiles & Apparel
     'Textile Manufacturing': 'Textiles',
     'Apparel Manufacturing': 'Textiles',
+    'Apparel Retail': 'Textiles',
     'Footwear & Accessories': 'Retail',
     # Logistics
     'Integrated Freight & Logistics': 'Logistics',
     'Marine Shipping': 'Logistics',
     'Trucking': 'Logistics',
+    'Railroads': 'Logistics',
     # Retail
     'Specialty Retail': 'Retail',
     'Department Stores': 'Retail',
     'Luxury Goods': 'Retail',
     'Grocery Stores': 'Retail',
-    # Insurance (-> Financial Services)
+    'Home Improvement Retail': 'Retail',
+    'Internet Retail': 'Retail',
+    'Discount Stores': 'Retail',
+    # Insurance & Financial Services
     'Insurance—Life': 'Financial Services',
     'Insurance—Diversified': 'Financial Services',
+    'Insurance—Property & Casualty': 'Financial Services',
+    'Insurance—Reinsurance': 'Financial Services',
+    'Insurance—Specialty': 'Financial Services',
     'Insurance - Life': 'Financial Services',
     'Insurance - Diversified': 'Financial Services',
+    'Insurance - Property & Casualty': 'Financial Services',
+    'Insurance - Reinsurance': 'Financial Services',
+    'Insurance - Specialty': 'Financial Services',
     'Insurance Brokers': 'Financial Services',
-    # Capital Markets (-> Financial Services)
     'Capital Markets': 'Financial Services',
     'Asset Management': 'Financial Services',
     'Financial Data & Stock Exchanges': 'Financial Services',
     'Credit Services': 'Financial Services',
-    # Paints
+    'Mortgage Finance': 'Financial Services',
+    'Financial Conglomerates': 'Financial Services',
+    'Shell Companies': 'Financial Services',
+    # Chemicals
     'Specialty Chemicals': 'Chemicals',
+    'Chemicals': 'Chemicals',
+    'Agricultural Inputs': 'Chemicals',
+    'Chemicals - Major Diversified': 'Chemicals',
+    # FMCG
+    'Packaged Foods': 'FMCG',
+    'Beverages—Non-Alcoholic': 'FMCG',
+    'Beverages—Brewers': 'FMCG',
+    'Beverages—Wineries & Distilleries': 'FMCG',
+    'Beverages - Non-Alcoholic': 'FMCG',
+    'Beverages - Brewers': 'FMCG',
+    'Beverages - Wineries & Distilleries': 'FMCG',
+    'Tobacco': 'FMCG',
+    'Household & Personal Products': 'FMCG',
+    'Personal Products & Services': 'FMCG',
+    'Confectioners': 'FMCG',
+    'Meat Products': 'FMCG',
+    'Farm Products': 'FMCG',
+    # Consumer Goods
+    'Furnishings, Fixtures & Appliances': 'Consumer Goods',
+    'Home Furnishings & Fixtures': 'Consumer Goods',
+    'Packaging & Containers': 'Consumer Goods',
+    'Paper & Paper Products': 'Consumer Goods',
+    'Rubber & Plastics': 'Consumer Goods',
+    'Leisure': 'Consumer Goods',
+    # Paints
+    'Paints': 'Paints',
     # Power / Utilities
     'Utilities—Regulated Electric': 'Power',
     'Utilities—Renewable': 'Power',
     'Utilities—Diversified': 'Power',
+    'Utilities—Independent Power Producers': 'Power',
+    'Utilities—Regulated Gas': 'Power',
+    'Utilities—Regulated Water': 'Power',
     'Utilities - Regulated Electric': 'Power',
     'Utilities - Renewable': 'Power',
     'Utilities - Diversified': 'Power',
+    'Utilities - Independent Power Producers': 'Power',
+    'Utilities - Regulated Gas': 'Power',
+    'Utilities - Regulated Water': 'Power',
     'Independent Power Producers': 'Power',
+    'Solar': 'Power',
     # Oil & Gas specifics
     'Oil & Gas E&P': 'Energy - Oil & Gas',
     'Oil & Gas Integrated': 'Energy - Oil & Gas',
     'Oil & Gas Refining & Marketing': 'Energy - Oil & Gas',
     'Oil & Gas Equipment & Services': 'Energy - Oil & Gas',
-    # Electronics
+    'Oil & Gas Drilling': 'Energy - Oil & Gas',
+    'Oil & Gas Midstream': 'Energy - Oil & Gas',
+    # Electronics & Electrical
     'Consumer Electronics': 'Electronics',
     'Electronic Components': 'Electronics',
     'Electrical Equipment & Parts': 'Electronics',
-    # Construction
+    'Scientific & Technical Instruments': 'Electronics',
+    'Semiconductor Equipment & Materials': 'Electronics',
+    'Semiconductors': 'Electronics',
+    # Construction & Infrastructure
     'Engineering & Construction': 'Construction',
     'Infrastructure Operations': 'Infrastructure',
+    'Rental & Leasing Services': 'Infrastructure',
+    'Waste Management': 'Infrastructure',
+    'Conglomerates': 'Infrastructure',
+    'Industrial Distribution': 'Infrastructure',
+    'Diversified Industrials': 'Infrastructure',
+    'Pollution & Treatment Controls': 'Infrastructure',
+    'Security & Protection Services': 'Infrastructure',
+    'Staffing & Employment Services': 'Infrastructure',
+    'Consulting Services': 'Infrastructure',
+    'Business Equipment & Supplies': 'Infrastructure',
+    'Specialty Business Services': 'Infrastructure',
+    # IT Sector
+    'Software—Application': 'IT Sector',
+    'Software—Infrastructure': 'IT Sector',
+    'Software - Application': 'IT Sector',
+    'Software - Infrastructure': 'IT Sector',
+    'Information Technology Services': 'IT Sector',
+    'Computer Hardware': 'IT Sector',
+    'Communication Equipment': 'IT Sector',
+    'Data Storage': 'IT Sector',
+    'IT Consulting & Other Services': 'IT Sector',
+    # Telecom
+    'Telecom Services': 'Telecom',
+    'Telecommunication Services': 'Telecom',
+    # Real Estate
+    'Real Estate—Development': 'Real Estate',
+    'Real Estate—Diversified': 'Real Estate',
+    'Real Estate - Development': 'Real Estate',
+    'Real Estate - Diversified': 'Real Estate',
+    'Real Estate Services': 'Real Estate',
+    'REIT—Diversified': 'Real Estate',
+    'REIT—Specialty': 'Real Estate',
+    'REIT - Diversified': 'Real Estate',
+    'REIT - Specialty': 'Real Estate',
+    # Education (-> Others)
+    'Education & Training Services': 'Others',
 }
 
 
@@ -700,12 +803,12 @@ def _fetch_sector_for_symbol(symbol):
         return None, '', ''
 
 
-def classify_unassigned_stocks(stocks_dict, max_fetch=200, workers=8):
+def classify_unassigned_stocks(stocks_dict, max_fetch=0, workers=16):
     """Classify stocks that are only in 'All NSE' into proper sectors.
 
     Uses a disk cache so that yfinance is only called for new/unknown symbols.
-    At most *max_fetch* new symbols are looked up per startup to keep boot
-    time reasonable (~30-60s for 200 stocks).
+    Set max_fetch=0 (default) to fetch ALL uncached symbols. First run may
+    take a few minutes but subsequent startups use the cache instantly.
     """
     universe_key = UNIVERSE_SECTOR_NAME
     if universe_key not in stocks_dict:
@@ -732,28 +835,34 @@ def classify_unassigned_stocks(stocks_dict, max_fetch=200, workers=8):
     cache = _load_sector_cache()
 
     # Split into cached vs needs-fetch
+    # Also re-fetch stocks cached as "Others" — expanded mappings may classify them now
     to_fetch = []
     for sym in unassigned:
         if sym not in cache:
             to_fetch.append(sym)
+        elif cache[sym] in ('Others', ''):
+            to_fetch.append(sym)
+            del cache[sym]  # remove so they get re-fetched and re-applied
 
     # Apply cached classifications first
     assigned_count = 0
     for sym in unassigned:
         if sym in cache:
             sector = cache[sym]
-            if sector and sector in stocks_dict:
+            if not sector:
+                sector = 'Others'           # re-map old empty cache entries
+                cache[sym] = sector
+            if sector in stocks_dict:
                 stocks_dict[sector].append(sym)
-                assigned_count += 1
-            elif sector and sector not in stocks_dict:
+            else:
                 stocks_dict[sector] = [sym]
-                assigned_count += 1
+            assigned_count += 1
 
     if assigned_count:
         print(f"  [sectors] Applied {assigned_count} cached sector assignments")
 
-    # Fetch new classifications (capped per startup)
-    fetch_batch = to_fetch[:max_fetch]
+    # Fetch new classifications (no cap by default — all uncached get fetched)
+    fetch_batch = to_fetch[:max_fetch] if max_fetch > 0 else to_fetch
     if fetch_batch:
         print(f"  [sectors] Fetching sectors for {len(fetch_batch)} new symbols from yfinance...")
 
@@ -766,23 +875,19 @@ def classify_unassigned_stocks(stocks_dict, max_fetch=200, workers=8):
             results = list(executor.map(_fetch_one, fetch_batch))
 
         for sym, resolved, yf_sec, yf_ind in results:
-            # Always cache the result (even None) so we don't re-fetch
-            cache[sym] = resolved if resolved else ''
-            if resolved:
-                if resolved in stocks_dict:
-                    stocks_dict[resolved].append(sym)
-                else:
-                    stocks_dict[resolved] = [sym]
-                new_assigned += 1
+            # If yfinance returned nothing at all, assign to Others so no stock is left orphaned
+            if not resolved:
+                resolved = 'Others'
+            cache[sym] = resolved
+            if resolved in stocks_dict:
+                stocks_dict[resolved].append(sym)
+            else:
+                stocks_dict[resolved] = [sym]
+            new_assigned += 1
 
         print(f"  [sectors] Newly classified {new_assigned}/{len(fetch_batch)} stocks")
 
-        if len(to_fetch) > max_fetch:
-            print(f"  [sectors] {len(to_fetch) - max_fetch} stocks deferred to next startup")
-
         _save_sector_cache(cache)
-    elif to_fetch:
-        print(f"  [sectors] {len(to_fetch)} stocks still unclassified (will fetch on next startup)")
 
 
 # Run classification before deduplication
