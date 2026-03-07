@@ -228,6 +228,12 @@ class HybridTTLCache:
             self._prune()
             self._persist_disk()
 
+    def clear(self):
+        """Wipe all entries (memory + disk)."""
+        with self.lock:
+            self.memory = {}
+            self._persist_disk()
+
 
 PRICE_HISTORY_CACHE = HybridTTLCache('price_history', PRICE_HISTORY_CACHE_TTL, max_entries=180)
 ANALYSIS_CACHE = HybridTTLCache('analysis', ANALYZE_CACHE_TTL, max_entries=180)
@@ -1080,6 +1086,11 @@ for _sector_name, _sector_tickers in STOCKS.items():
         if _t not in TICKER_TO_SECTOR:
             TICKER_TO_SECTOR[_t] = _sector_name
 
+# Clear stale analysis & regime disk caches so old "All NSE" entries don't persist
+ANALYSIS_CACHE.clear()
+REGIME_CACHE.clear()
+print("  [cache] Cleared analysis + regime caches (sector mapping updated)")
+
 # ===== SECTOR INDEX MAP (Yahoo Finance tickers for NSE sectoral indices) =====
 SECTOR_INDEX_MAP = {
     'IT Sector': '^CNXIT',
@@ -1884,6 +1895,8 @@ class Analyzer:
         if not sector_ticker:
             return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"', 'sector_name': sector}
         regime, score, details = self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+        # Copy so we don't mutate the cached dict in _fetch_regime
+        details = dict(details)
         details['sector_name'] = sector
         return regime, score, details
 
@@ -7251,6 +7264,10 @@ def refresh_sectors_route():
         for _t in _st:
             if _t not in TICKER_TO_SECTOR:
                 TICKER_TO_SECTOR[_t] = _sn
+
+    # Purge stale caches so new sector mappings take effect immediately
+    ANALYSIS_CACHE.clear()
+    REGIME_CACHE.clear()
 
     # Count unassigned
     skip = {UNIVERSE_SECTOR_NAME, 'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
