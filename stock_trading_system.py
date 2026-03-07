@@ -532,6 +532,255 @@ def add_universe_sector(stocks_dict):
 
 add_universe_sector(STOCKS)
 
+# ===== DYNAMIC SECTOR CLASSIFICATION FOR UNASSIGNED STOCKS =====
+# Maps yfinance sector/industry strings to our sector names in STOCKS dict.
+
+SECTOR_CACHE_FILE = os.path.join(_SCRIPT_DIR, ".sector_classification_cache.json")
+
+# yfinance sector field -> our sector name
+YF_SECTOR_MAP = {
+    'Technology': 'IT Sector',
+    'Financial Services': 'Financial Services',
+    'Healthcare': 'Healthcare',
+    'Consumer Cyclical': 'Consumer Goods',
+    'Consumer Defensive': 'FMCG',
+    'Basic Materials': 'Chemicals',
+    'Energy': 'Energy - Oil & Gas',
+    'Industrials': 'Infrastructure',
+    'Real Estate': 'Real Estate',
+    'Communication Services': 'Telecom',
+    'Utilities': 'Power',
+}
+
+# yfinance industry field -> our sector name (overrides YF_SECTOR_MAP when matched)
+YF_INDUSTRY_MAP = {
+    # Banking
+    'Banks—Regional': 'Banking',
+    'Banks—Diversified': 'Banking',
+    'Banks - Regional': 'Banking',
+    'Banks - Diversified': 'Banking',
+    # Pharma
+    'Drug Manufacturers—General': 'Pharma',
+    'Drug Manufacturers—Specialty & Generic': 'Pharma',
+    'Drug Manufacturers - General': 'Pharma',
+    'Drug Manufacturers - Specialty & Generic': 'Pharma',
+    'Pharmaceutical Retailers': 'Pharma',
+    'Biotechnology': 'Pharma',
+    # Auto
+    'Auto Manufacturers': 'Auto',
+    'Auto - Manufacturers': 'Auto',
+    'Auto Parts': 'Auto Components',
+    'Auto - Parts': 'Auto Components',
+    # Metals & Mining
+    'Steel': 'Metals & Mining',
+    'Aluminum': 'Metals & Mining',
+    'Copper': 'Metals & Mining',
+    'Other Industrial Metals & Mining': 'Metals & Mining',
+    'Gold': 'Metals & Mining',
+    'Silver': 'Metals & Mining',
+    'Coking Coal': 'Metals & Mining',
+    'Thermal Coal': 'Metals & Mining',
+    # Cement
+    'Building Materials': 'Cement',
+    # Media
+    'Entertainment': 'Media',
+    'Broadcasting': 'Media',
+    'Electronic Gaming & Multimedia': 'Media',
+    'Publishing': 'Media',
+    # Aviation
+    'Airlines': 'Aviation',
+    # Hospitality
+    'Lodging': 'Hospitality',
+    'Resorts & Casinos': 'Hospitality',
+    'Restaurants': 'Hospitality',
+    # Textiles
+    'Textile Manufacturing': 'Textiles',
+    'Apparel Manufacturing': 'Textiles',
+    'Footwear & Accessories': 'Retail',
+    # Logistics
+    'Integrated Freight & Logistics': 'Logistics',
+    'Marine Shipping': 'Logistics',
+    'Trucking': 'Logistics',
+    # Retail
+    'Specialty Retail': 'Retail',
+    'Department Stores': 'Retail',
+    'Luxury Goods': 'Retail',
+    'Grocery Stores': 'Retail',
+    # Insurance (-> Financial Services)
+    'Insurance—Life': 'Financial Services',
+    'Insurance—Diversified': 'Financial Services',
+    'Insurance - Life': 'Financial Services',
+    'Insurance - Diversified': 'Financial Services',
+    'Insurance Brokers': 'Financial Services',
+    # Capital Markets (-> Financial Services)
+    'Capital Markets': 'Financial Services',
+    'Asset Management': 'Financial Services',
+    'Financial Data & Stock Exchanges': 'Financial Services',
+    'Credit Services': 'Financial Services',
+    # Paints
+    'Specialty Chemicals': 'Chemicals',
+    # Power / Utilities
+    'Utilities—Regulated Electric': 'Power',
+    'Utilities—Renewable': 'Power',
+    'Utilities—Diversified': 'Power',
+    'Utilities - Regulated Electric': 'Power',
+    'Utilities - Renewable': 'Power',
+    'Utilities - Diversified': 'Power',
+    'Independent Power Producers': 'Power',
+    # Oil & Gas specifics
+    'Oil & Gas E&P': 'Energy - Oil & Gas',
+    'Oil & Gas Integrated': 'Energy - Oil & Gas',
+    'Oil & Gas Refining & Marketing': 'Energy - Oil & Gas',
+    'Oil & Gas Equipment & Services': 'Energy - Oil & Gas',
+    # Electronics
+    'Consumer Electronics': 'Electronics',
+    'Electronic Components': 'Electronics',
+    'Electrical Equipment & Parts': 'Electronics',
+    # Construction
+    'Engineering & Construction': 'Construction',
+    'Infrastructure Operations': 'Infrastructure',
+}
+
+
+def _load_sector_cache():
+    """Load cached sector classifications from disk."""
+    try:
+        if os.path.exists(SECTOR_CACHE_FILE):
+            with open(SECTOR_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            mapping = data.get("mapping", {})
+            if mapping:
+                print(f"  [sectors] Loaded {len(mapping)} cached sector classifications")
+                return mapping
+    except Exception as e:
+        print(f"  [sectors] Failed to load sector cache: {e}")
+    return {}
+
+
+def _save_sector_cache(mapping):
+    """Persist sector classifications to disk."""
+    try:
+        with open(SECTOR_CACHE_FILE, "w") as f:
+            json.dump({
+                "mapping": mapping,
+                "saved_at": datetime.utcnow().isoformat(),
+                "count": len(mapping),
+            }, f)
+        print(f"  [sectors] Saved {len(mapping)} sector classifications to cache")
+    except Exception as e:
+        print(f"  [sectors] Failed to save sector cache: {e}")
+
+
+def _resolve_sector(yf_sector, yf_industry):
+    """Map yfinance sector/industry to our sector name. Industry takes priority."""
+    if yf_industry and yf_industry in YF_INDUSTRY_MAP:
+        return YF_INDUSTRY_MAP[yf_industry]
+    if yf_sector and yf_sector in YF_SECTOR_MAP:
+        return YF_SECTOR_MAP[yf_sector]
+    return None
+
+
+def _fetch_sector_for_symbol(symbol):
+    """Fetch sector classification for a single symbol from yfinance."""
+    try:
+        ns_sym = symbol if symbol.endswith('.NS') else symbol + '.NS'
+        info = yf.Ticker(ns_sym).info
+        yf_sector = info.get('sector', '')
+        yf_industry = info.get('industry', '')
+        resolved = _resolve_sector(yf_sector, yf_industry)
+        return resolved, yf_sector, yf_industry
+    except Exception:
+        return None, '', ''
+
+
+def classify_unassigned_stocks(stocks_dict, max_fetch=200, workers=8):
+    """Classify stocks that are only in 'All NSE' into proper sectors.
+
+    Uses a disk cache so that yfinance is only called for new/unknown symbols.
+    At most *max_fetch* new symbols are looked up per startup to keep boot
+    time reasonable (~30-60s for 200 stocks).
+    """
+    universe_key = UNIVERSE_SECTOR_NAME
+    if universe_key not in stocks_dict:
+        return
+
+    # Collect symbols already assigned to a real sector
+    skip_sectors = {universe_key, 'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
+    already_assigned = set()
+    for sector_name, tickers in stocks_dict.items():
+        if sector_name not in skip_sectors:
+            already_assigned.update(tickers)
+
+    # Symbols that need classification
+    universe_symbols = set(stocks_dict.get(universe_key, []))
+    unassigned = sorted(universe_symbols - already_assigned)
+
+    if not unassigned:
+        print("  [sectors] All stocks already have sector assignments")
+        return
+
+    print(f"  [sectors] {len(unassigned)} stocks need sector classification")
+
+    # Load cache
+    cache = _load_sector_cache()
+
+    # Split into cached vs needs-fetch
+    to_fetch = []
+    for sym in unassigned:
+        if sym not in cache:
+            to_fetch.append(sym)
+
+    # Apply cached classifications first
+    assigned_count = 0
+    for sym in unassigned:
+        if sym in cache:
+            sector = cache[sym]
+            if sector and sector in stocks_dict:
+                stocks_dict[sector].append(sym)
+                assigned_count += 1
+            elif sector and sector not in stocks_dict:
+                stocks_dict[sector] = [sym]
+                assigned_count += 1
+
+    if assigned_count:
+        print(f"  [sectors] Applied {assigned_count} cached sector assignments")
+
+    # Fetch new classifications (capped per startup)
+    fetch_batch = to_fetch[:max_fetch]
+    if fetch_batch:
+        print(f"  [sectors] Fetching sectors for {len(fetch_batch)} new symbols from yfinance...")
+
+        def _fetch_one(sym):
+            resolved, yf_sec, yf_ind = _fetch_sector_for_symbol(sym)
+            return sym, resolved, yf_sec, yf_ind
+
+        new_assigned = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_fetch_one, fetch_batch))
+
+        for sym, resolved, yf_sec, yf_ind in results:
+            # Always cache the result (even None) so we don't re-fetch
+            cache[sym] = resolved if resolved else ''
+            if resolved:
+                if resolved in stocks_dict:
+                    stocks_dict[resolved].append(sym)
+                else:
+                    stocks_dict[resolved] = [sym]
+                new_assigned += 1
+
+        print(f"  [sectors] Newly classified {new_assigned}/{len(fetch_batch)} stocks")
+
+        if len(to_fetch) > max_fetch:
+            print(f"  [sectors] {len(to_fetch) - max_fetch} stocks deferred to next startup")
+
+        _save_sector_cache(cache)
+    elif to_fetch:
+        print(f"  [sectors] {len(to_fetch)} stocks still unclassified (will fetch on next startup)")
+
+
+# Run classification before deduplication
+classify_unassigned_stocks(STOCKS)
+
 # Enhanced company name mapping with MANY more variations
 COMPANY_TO_TICKER = {
     # IT Sector
@@ -6705,6 +6954,60 @@ def dividend_optimize_stream_route():
             yield f"data: {json.dumps(payload)}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+@app.route('/refresh-sectors')
+def refresh_sectors_route():
+    """Admin endpoint: re-classify unassigned stocks by fetching sectors from yfinance.
+
+    Query params:
+      max_fetch - max symbols to look up (default 500, cap 2000)
+      force     - if 'true', clear cache and re-fetch all unassigned
+    """
+    max_fetch = min(int(request.args.get('max_fetch', 500)), 2000)
+    force = request.args.get('force', '').lower() == 'true'
+
+    if force and os.path.exists(SECTOR_CACHE_FILE):
+        os.remove(SECTOR_CACHE_FILE)
+
+    # Rebuild classification on a copy of current STOCKS, then merge
+    global STOCKS, ALL_VALID_TICKERS, TICKER_TO_SECTOR
+
+    # Re-run classification
+    classify_unassigned_stocks(STOCKS, max_fetch=max_fetch, workers=8)
+
+    # Re-deduplicate
+    NIFTY_50_STOCKS_LOCAL = list(STOCKS.get('Nifty 50', []))
+    STOCKS = deduplicate_stocks(STOCKS)
+    ALL_VALID_TICKERS = set()
+    for sector_stocks in STOCKS.values():
+        ALL_VALID_TICKERS.update(sector_stocks)
+
+    # Rebuild reverse mapping
+    TICKER_TO_SECTOR = {}
+    for _sn, _st in STOCKS.items():
+        for _t in _st:
+            if _t not in TICKER_TO_SECTOR:
+                TICKER_TO_SECTOR[_t] = _sn
+
+    # Count unassigned
+    skip = {UNIVERSE_SECTOR_NAME, 'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
+    assigned = set()
+    for sn, st in STOCKS.items():
+        if sn not in skip:
+            assigned.update(st)
+    universe = set(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+    still_unassigned = len(universe - assigned)
+
+    return jsonify({
+        'status': 'ok',
+        'total_stocks': len(ALL_VALID_TICKERS),
+        'sectors': len(STOCKS),
+        'still_unassigned': still_unassigned,
+        'force': force,
+        'max_fetch': max_fetch,
+        'sector_counts': {s: len(t) for s, t in sorted(STOCKS.items()) if s != UNIVERSE_SECTOR_NAME},
+    })
+
 
 @app.route('/duplicates')
 def duplicates_route():
