@@ -3524,6 +3524,29 @@ def dashboard():
         .category { margin-bottom: 20px; }
         .category h3 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
         .stocks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        /* ===== Browse by Sector - Pill Tabs + Stock Cards ===== */
+        .sector-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+        .sector-pill { padding: 7px 16px; border-radius: 20px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); font-size: 0.82em; font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; }
+        .sector-pill:hover { border-color: var(--accent-cyan); color: var(--text-primary); background: transparent; }
+        .sector-pill.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(201,168,76,0.1); }
+        .stock-cards-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; min-height: 120px; }
+        .stock-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px 18px; cursor: pointer; transition: all 0.25s; position: relative; overflow: hidden; }
+        .stock-card:hover { border-color: rgba(201,168,76,0.45); background: var(--bg-card-hover); transform: translateY(-2px); }
+        .stock-card .sc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+        .stock-card .sc-symbol { font-weight: 700; font-size: 0.95em; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
+        .stock-card .sc-change { font-size: 0.78em; font-weight: 600; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+        .stock-card .sc-change.up { color: var(--accent-green); background: rgba(46,204,140,0.12); }
+        .stock-card .sc-change.down { color: var(--danger); background: rgba(239,68,68,0.12); }
+        .stock-card .sc-name { font-size: 0.78em; color: var(--text-muted); margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .stock-card .sc-price { font-size: 1.15em; font-weight: 700; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
+        .stock-card .sc-mcap { font-size: 0.72em; color: var(--text-muted); text-align: right; margin-top: 2px; }
+        .stock-card .sc-bottom { display: flex; justify-content: space-between; align-items: flex-end; }
+        .stock-card.sc-loading .sc-price, .stock-card.sc-loading .sc-change, .stock-card.sc-loading .sc-mcap { color: transparent; background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-card-hover) 50%, var(--border-color) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .sector-load-more { display: block; width: 100%; padding: 12px; margin-top: 12px; background: transparent; border: 1px dashed var(--border-color); border-radius: 8px; color: var(--text-secondary); font-size: 0.88em; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .sector-load-more:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); background: transparent; }
+        @media (max-width: 900px) { .stock-cards-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 500px) { .stock-cards-grid { grid-template-columns: 1fr; } .sector-pills { gap: 6px; } .sector-pill { font-size: 0.75em; padding: 5px 12px; } }
         button { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); font-size: 0.9em; }
         button:hover { background: var(--accent-gold); color: var(--bg-dark); border-color: var(--accent-gold); }
         #result-view { display: none; }
@@ -4060,16 +4083,16 @@ def dashboard():
     <main class="container">
         <div id="analysis-tab" class="tab-content">
             <div id="search-view">
-                <div class="grid">
-                    <div class="card">
-                        <h2>Search Any NSE Stock</h2>
-                        <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
-                        <div class="suggestions" id="suggestions"></div>
-                    </div>
-                    <div class="card">
-                        <h2>Browse by Sector</h2>
-                        <div id="categories" style="max-height: 500px; overflow-y: auto;"></div>
-                    </div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h2>Search Any NSE Stock</h2>
+                    <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
+                    <div class="suggestions" id="suggestions"></div>
+                </div>
+                <div class="card">
+                    <h2>Browse by Sector</h2>
+                    <div id="sector-pills-container" class="sector-pills"></div>
+                    <div id="sector-cards-container" class="stock-cards-grid"></div>
+                    <button id="sector-load-more-btn" class="sector-load-more" style="display:none;" onclick="loadMoreSectorStocks()">Load more stocks</button>
                 </div>
             </div>
             <div id="result-view">
@@ -4733,22 +4756,122 @@ def dashboard():
             }).catch(function() { return null; });
         }
 
+        // ===== BROWSE BY SECTOR - Rich Card UI =====
+        const _sectorSkip = new Set(['All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate']);
+        let _activeSector = null;
+        let _sectorOffset = 0;
+        const _sectorPageSize = 20;
+        const _sectorQuoteCache = {};
+
+        function _formatMcap(mcap) {
+            if (!mcap) return '';
+            if (mcap >= 1e12) return '\u20B9' + (mcap / 1e12).toFixed(1) + 'L Cr';
+            if (mcap >= 1e9) return '\u20B9' + (mcap / 1e7 / 100).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' Cr';
+            if (mcap >= 1e7) return '\u20B9' + (mcap / 1e7).toFixed(0) + ' Cr';
+            return '';
+        }
+
+        function _stockCardHtml(sym, quote) {
+            const name = (quote && quote.name) || getStockName(sym);
+            const price = (quote && quote.price) ? '\u20B9' + quote.price.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '';
+            const chg = (quote && quote.change_pct) || 0;
+            const chgStr = chg >= 0 ? '+' + chg.toFixed(2) + '%' : chg.toFixed(2) + '%';
+            const chgClass = chg >= 0 ? 'up' : 'down';
+            const chgIcon = chg >= 0 ? '\u2197' : '\u2198';
+            const mcap = (quote && quote.mcap) ? _formatMcap(quote.mcap) : '';
+            const loadingClass = quote ? '' : ' sc-loading';
+            return `<div class="stock-card${loadingClass}" onclick="analyze('${sym}')" data-sym="${sym}">
+                <div class="sc-top"><span class="sc-symbol">${sym}</span><span class="sc-change ${chgClass}">${chgIcon} ${chgStr}</span></div>
+                <div class="sc-name">${name}</div>
+                <div class="sc-bottom"><span class="sc-price">${price || '\u20B9---'}</span><span class="sc-mcap">${mcap}</span></div>
+            </div>`;
+        }
+
+        function initSectorBrowser() {
+            const pillsEl = document.getElementById('sector-pills-container');
+            if (!pillsEl) return;
+            // Build sector list: real sectors first, then Others
+            const sectorOrder = [];
+            const othersEntry = [];
+            Object.keys(stocks).forEach(s => {
+                if (_sectorSkip.has(s)) return;
+                if (s === 'Others') { othersEntry.push(s); return; }
+                sectorOrder.push(s);
+            });
+            sectorOrder.push(...othersEntry);
+
+            let pillsHtml = '';
+            sectorOrder.forEach((s, i) => {
+                const active = i === 0 ? ' active' : '';
+                pillsHtml += `<button class="sector-pill${active}" data-sector="${s}" onclick="switchSector('${s.replace(/'/g, "\\'")}')">${s} (${stocks[s].length})</button>`;
+            });
+            pillsEl.innerHTML = pillsHtml;
+
+            // Load first sector
+            if (sectorOrder.length) switchSector(sectorOrder[0]);
+        }
+
+        function switchSector(sector) {
+            _activeSector = sector;
+            _sectorOffset = 0;
+            // Update pill active state
+            document.querySelectorAll('.sector-pill').forEach(p => {
+                p.classList.toggle('active', p.dataset.sector === sector);
+            });
+            const container = document.getElementById('sector-cards-container');
+            container.innerHTML = '';
+            _renderSectorPage(sector, true);
+        }
+
+        function _renderSectorPage(sector, fresh) {
+            const container = document.getElementById('sector-cards-container');
+            const btn = document.getElementById('sector-load-more-btn');
+            const tickers = stocks[sector] || [];
+            const page = tickers.slice(_sectorOffset, _sectorOffset + _sectorPageSize);
+
+            if (!page.length) { btn.style.display = 'none'; return; }
+
+            // Render placeholder cards immediately
+            let cardsHtml = '';
+            page.forEach(sym => {
+                const cached = _sectorQuoteCache[sym];
+                cardsHtml += _stockCardHtml(sym, cached || null);
+            });
+            if (fresh) container.innerHTML = cardsHtml;
+            else container.insertAdjacentHTML('beforeend', cardsHtml);
+
+            _sectorOffset += page.length;
+            btn.style.display = (_sectorOffset < tickers.length) ? 'block' : 'none';
+            btn.textContent = 'Load more (' + (tickers.length - _sectorOffset) + ' remaining)';
+
+            // Fetch live quotes for uncached symbols
+            const uncached = page.filter(s => !_sectorQuoteCache[s]);
+            if (uncached.length) {
+                fetch('/sector-quotes?sector=' + encodeURIComponent(sector) + '&offset=' + (_sectorOffset - page.length) + '&limit=' + page.length)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (_activeSector !== sector) return; // user switched away
+                        (data.quotes || []).forEach(q => {
+                            _sectorQuoteCache[q.symbol] = q;
+                            const card = container.querySelector('[data-sym="' + q.symbol + '"]');
+                            if (card) {
+                                card.outerHTML = _stockCardHtml(q.symbol, q);
+                            }
+                        });
+                    }).catch(() => {});
+            }
+        }
+
+        function loadMoreSectorStocks() {
+            if (_activeSector) _renderSectorPage(_activeSector, false);
+        }
+
         let currentTab = 'analysis';
         let loadedTabs = new Set();
         function ensureTabLoaded(tab) {
             if (loadedTabs.has(tab)) return;
             if (tab === 'analysis') {
-                const cat = document.getElementById('categories');
-                const skipSectors = new Set(['All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate']);
-                let allHtml = '';
-                Object.entries(stocks).forEach(([name, list]) => {
-                    if (skipSectors.has(name)) return;
-                    let html = `<div class="category"><h3>${name} (${list.length})</h3><div class="stocks">`;
-                    list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
-                    html += '</div></div>';
-                    allHtml += html;
-                });
-                cat.innerHTML = allHtml;
+                initSectorBrowser();
                 setupAutocomplete('search', 'suggestions', 'analyze');
             } else if (tab === 'regression') {
                 setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
@@ -7017,6 +7140,60 @@ def refresh_sectors_route():
         'force': force,
         'max_fetch': max_fetch,
         'sector_counts': {s: len(t) for s, t in sorted(STOCKS.items()) if s != UNIVERSE_SECTOR_NAME},
+    })
+
+
+@app.route('/sector-quotes')
+def sector_quotes_route():
+    """Return batch price data for stocks in a sector (used by Browse by Sector cards).
+
+    Query params:
+      sector  - sector name (required)
+      offset  - start index for pagination (default 0)
+      limit   - max stocks to return (default 20, cap 40)
+    """
+    sector = request.args.get('sector', '').strip()
+    offset = int(request.args.get('offset', 0))
+    limit = min(int(request.args.get('limit', 20)), 40)
+
+    if not sector or sector not in STOCKS:
+        return jsonify({'error': 'Invalid sector', 'quotes': []})
+
+    tickers = STOCKS[sector]
+    page = tickers[offset:offset + limit]
+    quotes = []
+
+    for sym in page:
+        ns_sym = sym + '.NS'
+        try:
+            info = yf.Ticker(ns_sym).info
+            price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+            prev_close = info.get('regularMarketPreviousClose') or info.get('previousClose') or 0
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
+            mcap = info.get('marketCap') or 0
+            name = info.get('shortName') or info.get('longName') or TICKER_TO_NAME.get(sym, sym)
+            quotes.append({
+                'symbol': sym,
+                'name': name,
+                'price': round(price, 2),
+                'change_pct': round(change_pct, 2),
+                'mcap': mcap,
+            })
+        except Exception:
+            quotes.append({
+                'symbol': sym,
+                'name': TICKER_TO_NAME.get(sym, sym),
+                'price': 0,
+                'change_pct': 0,
+                'mcap': 0,
+            })
+
+    return jsonify({
+        'sector': sector,
+        'total': len(tickers),
+        'offset': offset,
+        'limit': limit,
+        'quotes': quotes,
     })
 
 
