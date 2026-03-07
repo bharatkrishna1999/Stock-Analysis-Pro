@@ -672,11 +672,18 @@ def _save_sector_cache(mapping):
 
 
 def _resolve_sector(yf_sector, yf_industry):
-    """Map yfinance sector/industry to our sector name. Industry takes priority."""
+    """Map yfinance sector/industry to our sector name. Industry takes priority.
+
+    Falls back to 'Others' if yfinance provides a sector but we have no mapping,
+    so every stock with yfinance data gets classified.
+    """
     if yf_industry and yf_industry in YF_INDUSTRY_MAP:
         return YF_INDUSTRY_MAP[yf_industry]
     if yf_sector and yf_sector in YF_SECTOR_MAP:
         return YF_SECTOR_MAP[yf_sector]
+    # If yfinance returned *some* sector but we don't have a mapping, use Others
+    if yf_sector:
+        return 'Others'
     return None
 
 
@@ -4732,8 +4739,10 @@ def dashboard():
             if (loadedTabs.has(tab)) return;
             if (tab === 'analysis') {
                 const cat = document.getElementById('categories');
+                const skipSectors = new Set(['All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate']);
                 let allHtml = '';
                 Object.entries(stocks).forEach(([name, list]) => {
+                    if (skipSectors.has(name)) return;
                     let html = `<div class="category"><h3>${name} (${list.length})</h3><div class="stocks">`;
                     list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
                     html += '</div></div>';
@@ -5671,7 +5680,9 @@ def dashboard():
         function initDividendSectors() {
             const grid = document.getElementById('sector-grid');
             if (!grid) return;
+            const skipDiv = new Set(['All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate']);
             Object.keys(stocks).forEach(sector => {
+                if (skipDiv.has(sector)) return;
                 const label = document.createElement('label');
                 label.innerHTML = '<input type="checkbox" class="sector-cb" value="' + sector + '"> ' + sector + ' (' + stocks[sector].length + ')';
                 grid.appendChild(label);
