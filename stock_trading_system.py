@@ -19,7 +19,6 @@ import time
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from scipy import stats
 from datetime import datetime, timedelta, date
 import warnings
 import matplotlib
@@ -47,8 +46,6 @@ app.config['COMPRESS_MIN_SIZE'] = 500
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
 DIVIDEND_MAX_RESULTS = 150
-DIVIDEND_BATCH_SIZE = 50
-DIVIDEND_MAX_WORKERS = 4
 
 DEFAULT_ANALYSIS_PERIOD = '6mo'
 DEFAULT_ANALYSIS_INTERVAL = '1d'
@@ -361,32 +358,6 @@ def _save_universe_cache(symbols, source):
         print(f"  [cache] Saved {len(symbols)} symbols to disk (source: {source})")
     except Exception as e:
         print(f"  [cache] Failed to save cache: {e}")
-
-
-def _compute_split_adjusted_dividend(dividends, splits):
-    """Adjust historical dividends to current share count using split data."""
-    if dividends is None or dividends.empty:
-        return 0.0
-    if splits is None or splits.empty:
-        return float(dividends.sum())
-
-    splits = splits[splits > 0].sort_index()
-    if splits.empty:
-        return float(dividends.sum())
-
-    split_dates = splits.index
-    split_values = splits.values
-    cumulative_from_end = np.cumprod(split_values[::-1])[::-1]
-
-    adjusted_total = 0.0
-    for div_date, div_value in dividends.items():
-        idx = split_dates.searchsorted(div_date, side="right")
-        if idx < len(split_values):
-            factor = cumulative_from_end[idx]
-        else:
-            factor = 1.0
-        adjusted_total += float(div_value) / factor
-    return float(adjusted_total)
 
 
 def _fy_dates(n_years_back=0):
@@ -2784,21 +2755,9 @@ class Analyzer:
                     if isinstance(data.columns, pd.MultiIndex):
                         close_series = data['Close'][ticker_symbol].dropna()
                         dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
-                        if 'Stock Splits' in data.columns.get_level_values(0):
-                            splits = data['Stock Splits'][ticker_symbol].dropna()
-                        elif 'Splits' in data.columns.get_level_values(0):
-                            splits = data['Splits'][ticker_symbol].dropna()
-                        else:
-                            splits = pd.Series(dtype=float)
                     else:
                         close_series = data['Close'].dropna()
                         dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
-                        if 'Stock Splits' in data.columns:
-                            splits = data['Stock Splits'].dropna()
-                        elif 'Splits' in data.columns:
-                            splits = data['Splits'].dropna()
-                        else:
-                            splits = pd.Series(dtype=float)
                     if close_series.empty or len(close_series) < 10:
                         continue
                     # Use latest close as current price (for yield denominator)
@@ -7106,21 +7065,9 @@ def dividend_optimize_stream_route():
                         if isinstance(data.columns, pd.MultiIndex):
                             close_series = data['Close'][ticker_symbol].dropna()
                             dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
-                            if 'Stock Splits' in data.columns.get_level_values(0):
-                                splits = data['Stock Splits'][ticker_symbol].dropna()
-                            elif 'Splits' in data.columns.get_level_values(0):
-                                splits = data['Splits'][ticker_symbol].dropna()
-                            else:
-                                splits = pd.Series(dtype=float)
                         else:
                             close_series = data['Close'].dropna()
                             dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
-                            if 'Stock Splits' in data.columns:
-                                splits = data['Stock Splits'].dropna()
-                            elif 'Splits' in data.columns:
-                                splits = data['Splits'].dropna()
-                            else:
-                                splits = pd.Series(dtype=float)
                         if close_series.empty or len(close_series) < 10:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
