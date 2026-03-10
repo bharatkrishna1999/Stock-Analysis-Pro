@@ -5946,6 +5946,13 @@ def dashboard():
             return sign + '\u20b9' + Math.round(abs).toLocaleString('en-IN');
         }
 
+        var _FINANCIAL_SECTORS = ['financial services', 'banking', 'insurance', 'financial'];
+        function isFinancialSector(sector) {
+            if (!sector) return false;
+            var s = sector.toLowerCase();
+            return _FINANCIAL_SECTORS.some(function(fs) { return s.indexOf(fs) !== -1; });
+        }
+
         function runDCF(fcf, g1, g2, wacc, tg, years, debt, cash, shares) {
             var phase1Yrs = Math.min(5, years);
             var projections = [], currentFCF = fcf, sumPV = 0;
@@ -6070,7 +6077,10 @@ def dashboard():
             var tg   = parseFloat(document.getElementById('dcf-tg').value) / 100;
             var adj  = parseFloat(document.getElementById('dcf-fcf-adj').value) / 100;
             var fcf  = dcfData.current_fcf * adj;
-            var res  = runDCF(fcf, g1, g2, wacc, tg, _dcfYears, dcfData.total_debt, dcfData.cash, dcfData.shares_outstanding);
+            var _isFin = isFinancialSector(dcfData.sector);
+            var _debt = _isFin ? 0 : dcfData.total_debt;
+            var _cash = _isFin ? 0 : dcfData.cash;
+            var res  = runDCF(fcf, g1, g2, wacc, tg, _dcfYears, _debt, _cash, dcfData.shares_outstanding);
             var price = dcfData.current_price;
             var intrinsic = res.intrinsic;
             var ivEl = document.getElementById('dcf-intrinsic-val');
@@ -6122,11 +6132,11 @@ def dashboard():
                 });
                 rows += '<tr class="tv-row"><td>Terminal Value</td><td>' + fmtCr(res.terminalValue) + '</td><td style="color:var(--text-secondary);">@TG ' + (tg*100).toFixed(2) + '%</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + wacc, _dcfYears)).toFixed(4) + '</td><td>' + fmtCr(res.terminalPV) + '</td></tr>';
                 rows += '<tr class="total-row"><td>Enterprise Value</td><td colspan="3"></td><td>' + fmtCr(res.enterpriseValue) + '</td></tr>';
-                rows += '<tr class="total-row"><td>Equity Value (\u2212Debt +Cash)</td><td colspan="3"></td><td>' + fmtCr(res.equityValue) + '</td></tr>';
+                rows += '<tr class="total-row"><td>' + (_isFin ? 'Equity Value (Financial \u2014 no debt adj.)' : 'Equity Value (\u2212Debt +Cash)') + '</td><td colspan="3"></td><td>' + fmtCr(res.equityValue) + '</td></tr>';
                 rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td></tr>';
                 tbody.innerHTML = rows;
             }
-            renderDCFSensitivity(price, wacc, tg, fcf, g1, g2, _dcfYears, dcfData.total_debt, dcfData.cash, dcfData.shares_outstanding);
+            renderDCFSensitivity(price, wacc, tg, fcf, g1, g2, _dcfYears, _debt, _cash, dcfData.shares_outstanding);
         }
 
         function renderDCFSensitivity(price, baseWACC, baseTG, fcf, g1, g2, years, debt, cash, shares) {
@@ -6224,7 +6234,8 @@ def dashboard():
             if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
                 const g1 = dcfD.suggested_growth_rate || 0.1;
                 const g2 = Math.max(g1 * 0.5, 0.04);
-                const res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, dcfD.total_debt || 0, dcfD.cash || 0, dcfD.shares_outstanding);
+                const _isFin2 = isFinancialSector(dcfD.sector);
+                const res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, _isFin2 ? 0 : (dcfD.total_debt || 0), _isFin2 ? 0 : (dcfD.cash || 0), dcfD.shares_outstanding);
                 const up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
                 if (up >= 30) score += 25; else if (up >= 15) score += 12; else if (up >= 0) score += 5; else if (up < -20) score -= 15; else score -= 5;
                 items.push({ label: 'DCF Upside', value: (up >= 0 ? '+' : '') + up.toFixed(0) + '%', color: up >= 15 ? 'green' : up >= 0 ? 'yellow' : 'red' });
@@ -6443,7 +6454,8 @@ def dashboard():
             if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
                 var g1 = dcfD.suggested_growth_rate || 0.1;
                 var g2 = Math.max(g1 * 0.5, 0.04);
-                var res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, dcfD.total_debt || 0, dcfD.cash || 0, dcfD.shares_outstanding);
+                var _isF3 = isFinancialSector(dcfD.sector);
+                var res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, _isF3 ? 0 : (dcfD.total_debt || 0), _isF3 ? 0 : (dcfD.cash || 0), dcfD.shares_outstanding);
                 var up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
                 var ivStr = '\u20b9' + res.intrinsic.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                 h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;">
