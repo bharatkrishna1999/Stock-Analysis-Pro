@@ -28,9 +28,11 @@ import base64
 import requests
 import logging
 import gc
+import traceback
 from scipy.optimize import minimize as scipy_minimize
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+import anthropic
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
@@ -42,6 +44,7 @@ app = Flask(__name__)
 Compress(app)
 app.config['COMPRESS_MIMETYPES'] = ['text/html', 'text/css', 'application/javascript', 'application/json']
 app.config['COMPRESS_MIN_SIZE'] = 500
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10 MB max upload
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
@@ -4087,6 +4090,7 @@ def dashboard():
         #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; }
         #capital-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(46, 204, 140, 0.1); }
         @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .result-card { animation: slideIn 0.5s ease; }
         @media (max-width: 768px) {
             .grid { grid-template-columns: 1fr; }
@@ -4363,6 +4367,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
+                <button class="nav-link" data-tab="portfolio" onclick="switchTab('portfolio', event)">Portfolio Advice</button>
             </div>
             <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
                 <span></span><span></span><span></span>
@@ -4377,6 +4382,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
         <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
+        <button class="mobile-menu-item" data-tab="portfolio" onclick="switchTab('portfolio', event); closeMobileMenu()">Portfolio Advice</button>
     </div>
     <header>
         <div class="container">
@@ -4634,6 +4640,47 @@ def dashboard():
                 <div class="sc-stat-row" id="sc-stat-row"></div>
             </div>
             <div id="scanner-results-area" style="margin-top:18px;max-width:860px;margin-left:auto;margin-right:auto;"></div>
+        </div>
+
+        <div id="portfolio-tab" class="tab-content">
+            <div class="card" style="max-width:860px;margin:0 auto;">
+                <h2 style="margin-bottom:4px;">Portfolio Advice</h2>
+                <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:22px;line-height:1.5;">Upload your Groww holdings report and get AI-powered portfolio analysis — performance review, improvement areas, forward outlook, and actionable recommendations.</p>
+
+                <div style="margin-bottom:18px;">
+                    <label style="display:block;font-size:0.82em;color:var(--text-muted);margin-bottom:6px;font-weight:600;">Anthropic API Key <span style="font-weight:400;color:var(--text-secondary);">(required for AI analysis — never stored)</span></label>
+                    <input type="password" id="portfolio-api-key" placeholder="sk-ant-..." style="width:100%;padding:10px 14px;background:var(--bg-dark);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:var(--text-primary);font-size:0.9em;font-family:inherit;">
+                    <p style="font-size:0.72em;color:var(--text-secondary);margin-top:4px;">Get your key at <a href="https://console.anthropic.com/settings/keys" target="_blank" style="color:var(--accent-cyan);">console.anthropic.com</a>. Your key is sent directly to Anthropic and is never saved.</p>
+                </div>
+
+                <div style="margin-bottom:18px;">
+                    <label style="display:block;font-size:0.82em;color:var(--text-muted);margin-bottom:6px;font-weight:600;">How to get your Groww report</label>
+                    <div style="background:var(--bg-dark);border-radius:10px;padding:14px 18px;font-size:0.82em;color:var(--text-secondary);line-height:1.7;">
+                        <strong style="color:var(--text-primary);">From Groww App/Web:</strong><br>
+                        1. Go to <strong>Stocks</strong> tab &rarr; tap <strong>Holdings</strong><br>
+                        2. Tap the <strong>download / export</strong> icon (top right)<br>
+                        3. Choose <strong>CSV</strong> or <strong>Excel</strong> format<br>
+                        4. Upload the downloaded file below<br><br>
+                        <strong style="color:var(--text-primary);">Supported formats:</strong> .csv, .xlsx, .xls
+                    </div>
+                </div>
+
+                <div id="portfolio-upload-area" style="border:2px dashed rgba(201,168,76,0.3);border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:all 0.3s;margin-bottom:18px;" onclick="document.getElementById('portfolio-file-input').click();" ondragover="event.preventDefault();this.style.borderColor='var(--accent-gold)';this.style.background='rgba(201,168,76,0.05)';" ondragleave="this.style.borderColor='rgba(201,168,76,0.3)';this.style.background='transparent';" ondrop="event.preventDefault();this.style.borderColor='rgba(201,168,76,0.3)';this.style.background='transparent';handlePortfolioDrop(event);">
+                    <div style="font-size:2.5em;margin-bottom:8px;opacity:0.6;">&#128196;</div>
+                    <div style="color:var(--text-primary);font-weight:600;margin-bottom:4px;">Drop your Groww report here</div>
+                    <div style="color:var(--text-secondary);font-size:0.82em;">or click to browse files</div>
+                    <div id="portfolio-file-name" style="color:var(--accent-gold);font-size:0.85em;margin-top:10px;font-weight:600;display:none;"></div>
+                    <input type="file" id="portfolio-file-input" accept=".csv,.xlsx,.xls" style="display:none;" onchange="handlePortfolioFile(this);">
+                </div>
+
+                <button id="portfolio-analyze-btn" onclick="analyzePortfolio()" style="width:100%;padding:14px;background:var(--accent-gold);color:var(--bg-dark);border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity 0.2s;" onmouseenter="this.style.opacity='0.9'" onmouseleave="this.style.opacity='1'">Analyze My Portfolio</button>
+                <div id="portfolio-loading" style="display:none;text-align:center;padding:30px;">
+                    <div style="display:inline-block;width:36px;height:36px;border:3px solid rgba(201,168,76,0.2);border-top-color:var(--accent-gold);border-radius:50%;animation:spin 0.8s linear infinite;"></div>
+                    <p style="color:var(--text-secondary);margin-top:12px;font-size:0.88em;">Analyzing your portfolio with AI... This may take 15-30 seconds.</p>
+                </div>
+                <div id="portfolio-error" style="display:none;background:rgba(255,77,77,0.1);border:1px solid rgba(255,77,77,0.3);border-radius:10px;padding:14px;margin-top:14px;color:#ff6b6b;font-size:0.88em;"></div>
+            </div>
+            <div id="portfolio-results" style="display:none;max-width:860px;margin:18px auto 0;"></div>
         </div>
     </main>
     <script>
@@ -6983,11 +7030,152 @@ def dashboard():
         }
 
 
+        // ===== PORTFOLIO ADVICE TAB =====
+        let portfolioFile = null;
+
+        function handlePortfolioFile(input) {
+            if (input.files && input.files[0]) {
+                portfolioFile = input.files[0];
+                const nameEl = document.getElementById('portfolio-file-name');
+                nameEl.textContent = portfolioFile.name + ' (' + (portfolioFile.size / 1024).toFixed(1) + ' KB)';
+                nameEl.style.display = 'block';
+                document.getElementById('portfolio-upload-area').style.borderColor = 'var(--accent-gold)';
+            }
+        }
+
+        function handlePortfolioDrop(event) {
+            const files = event.dataTransfer.files;
+            if (files && files[0]) {
+                const input = document.getElementById('portfolio-file-input');
+                input.files = files;
+                handlePortfolioFile(input);
+            }
+        }
+
+        function analyzePortfolio() {
+            const apiKey = document.getElementById('portfolio-api-key').value.trim();
+            if (!apiKey) {
+                showPortfolioError('Please enter your Anthropic API key above.');
+                return;
+            }
+            if (!portfolioFile) {
+                showPortfolioError('Please upload your Groww holdings report first.');
+                return;
+            }
+
+            const btn = document.getElementById('portfolio-analyze-btn');
+            const loading = document.getElementById('portfolio-loading');
+            const errorEl = document.getElementById('portfolio-error');
+            const resultsEl = document.getElementById('portfolio-results');
+
+            btn.style.display = 'none';
+            loading.style.display = 'block';
+            errorEl.style.display = 'none';
+            resultsEl.style.display = 'none';
+
+            const formData = new FormData();
+            formData.append('report', portfolioFile);
+            formData.append('api_key', apiKey);
+
+            fetch('/portfolio-advice', { method: 'POST', body: formData })
+                .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+                .then(function(res) {
+                    btn.style.display = 'block';
+                    loading.style.display = 'none';
+                    if (!res.ok) {
+                        showPortfolioError(res.data.error || 'Something went wrong.');
+                        return;
+                    }
+                    renderPortfolioResults(res.data);
+                })
+                .catch(function(e) {
+                    btn.style.display = 'block';
+                    loading.style.display = 'none';
+                    showPortfolioError('Network error: ' + e.message);
+                });
+        }
+
+        function showPortfolioError(msg) {
+            const el = document.getElementById('portfolio-error');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        function renderPortfolioResults(data) {
+            const resultsEl = document.getElementById('portfolio-results');
+
+            // Summary cards
+            let summaryHTML = '<div class="card" style="margin-bottom:16px;"><h2 style="margin-bottom:14px;">Portfolio Summary</h2>';
+            summaryHTML += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:16px;">';
+
+            summaryHTML += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+            summaryHTML += '<div style="font-size:0.75em;color:var(--text-muted);margin-bottom:4px;">Holdings</div>';
+            summaryHTML += '<div style="font-size:1.4em;font-weight:700;color:var(--accent-gold);">' + data.holdings_count + '</div></div>';
+
+            if (data.total_invested > 0) {
+                summaryHTML += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+                summaryHTML += '<div style="font-size:0.75em;color:var(--text-muted);margin-bottom:4px;">Invested</div>';
+                summaryHTML += '<div style="font-size:1.4em;font-weight:700;color:var(--text-primary);">' + formatCurrency(data.total_invested) + '</div></div>';
+            }
+            if (data.total_current > 0) {
+                summaryHTML += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+                summaryHTML += '<div style="font-size:0.75em;color:var(--text-muted);margin-bottom:4px;">Current Value</div>';
+                summaryHTML += '<div style="font-size:1.4em;font-weight:700;color:var(--text-primary);">' + formatCurrency(data.total_current) + '</div></div>';
+            }
+            if (data.total_invested > 0) {
+                const pnlPct = ((data.total_pnl / data.total_invested) * 100).toFixed(1);
+                const pnlColor = data.total_pnl >= 0 ? '#4ade80' : '#ff6b6b';
+                summaryHTML += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+                summaryHTML += '<div style="font-size:0.75em;color:var(--text-muted);margin-bottom:4px;">Total P&L</div>';
+                summaryHTML += '<div style="font-size:1.4em;font-weight:700;color:' + pnlColor + ';">' + formatCurrency(data.total_pnl) + ' (' + (data.total_pnl >= 0 ? '+' : '') + pnlPct + '%)</div></div>';
+            }
+            summaryHTML += '</div></div>';
+
+            // AI Analysis
+            let adviceHTML = '<div class="card"><h2 style="margin-bottom:14px;">AI Portfolio Analysis</h2>';
+            adviceHTML += '<div id="portfolio-advice-content" style="line-height:1.8;color:var(--text-secondary);font-size:0.9em;">';
+            adviceHTML += renderMarkdown(data.advice);
+            adviceHTML += '</div></div>';
+
+            resultsEl.innerHTML = summaryHTML + adviceHTML;
+            resultsEl.style.display = 'block';
+
+            // Style the rendered markdown
+            resultsEl.querySelectorAll('h2').forEach(function(h) {
+                h.style.cssText = 'color:var(--accent-gold);font-size:1.15em;margin:24px 0 10px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.06);';
+            });
+            resultsEl.querySelectorAll('strong').forEach(function(s) {
+                s.style.color = 'var(--text-primary)';
+            });
+        }
+
+        function formatCurrency(val) {
+            if (Math.abs(val) >= 10000000) return (val < 0 ? '-' : '') + String.fromCharCode(8377) + (Math.abs(val) / 10000000).toFixed(2) + ' Cr';
+            if (Math.abs(val) >= 100000) return (val < 0 ? '-' : '') + String.fromCharCode(8377) + (Math.abs(val) / 100000).toFixed(2) + ' L';
+            return (val < 0 ? '-' : '') + String.fromCharCode(8377) + Math.abs(val).toLocaleString('en-IN', {maximumFractionDigits: 0});
+        }
+
+        function renderMarkdown(text) {
+            // Simple markdown renderer for AI output
+            let html = text
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/^### (.+)$/gm, '<h3 style="color:var(--accent-cyan);font-size:1em;margin:18px 0 8px;">$1</h3>')
+                .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                .replace(/^# (.+)$/gm, '<h1 style="color:var(--accent-gold);font-size:1.3em;margin:20px 0 10px;">$1</h1>')
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/^- (.+)$/gm, '<li style="margin:4px 0;margin-left:20px;">$1</li>')
+                .replace(/^(\d+)\. (.+)$/gm, '<li style="margin:4px 0;margin-left:20px;list-style-type:decimal;">$1. $2</li>')
+                .replace(/\n\n/g, '<br><br>')
+                .replace(/\n/g, '<br>');
+            return html;
+        }
+
         window.addEventListener('DOMContentLoaded', () => {
             init(); initDividendSectors(); setupCapitalInput(); loadProfile();
             requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';});
             const hash = window.location.hash.replace('#','');
-            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner'];
+            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner','portfolio'];
             if (hash && validTabs.includes(hash)) { switchTab(hash); }
         });
     </script>
@@ -8034,6 +8222,226 @@ def prefilter_stream_route():
         yield f"data: {json.dumps({'type': 'done', 'checked': checked, 'passed': passed})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+# ===== PORTFOLIO ADVICE (Groww Report Upload + AI) =====
+
+def parse_groww_report(file_storage):
+    """Parse uploaded Groww report (CSV or Excel) and return a structured DataFrame."""
+    filename = file_storage.filename.lower()
+    try:
+        if filename.endswith('.csv'):
+            df = pd.read_csv(file_storage)
+        elif filename.endswith(('.xlsx', '.xls')):
+            import openpyxl  # noqa: F401
+            df = pd.read_excel(file_storage, engine='openpyxl')
+        else:
+            return None, "Unsupported file format. Please upload a CSV or Excel (.xlsx) file."
+
+        if df.empty:
+            return None, "The uploaded file is empty."
+
+        # Normalize column names: strip whitespace, lowercase
+        df.columns = [c.strip() for c in df.columns]
+
+        return df, None
+    except Exception as e:
+        return None, f"Failed to parse file: {str(e)}"
+
+
+def enrich_portfolio_with_live_data(df):
+    """Try to match stocks in the report to NSE tickers and fetch live prices."""
+    # Detect the symbol / stock name column
+    col_map = {}
+    lower_cols = {c.lower(): c for c in df.columns}
+
+    # Common Groww column names
+    symbol_keys = ['symbol', 'stock symbol', 'ticker', 'scrip', 'stock name', 'name', 'instrument', 'company', 'company name']
+    qty_keys = ['quantity', 'qty', 'shares', 'no. of shares', 'units', 'total quantity']
+    avg_keys = ['avg. cost', 'avg cost', 'average price', 'buy price', 'buy avg', 'purchase price', 'avg price', 'average cost']
+    ltp_keys = ['ltp', 'current price', 'market price', 'current value', 'last price', 'close price', 'present value']
+    invested_keys = ['invested value', 'invested', 'total cost', 'cost', 'investment', 'buy value', 'investment value']
+    current_val_keys = ['current value', 'present value', 'market value', 'current val', 'value']
+    pnl_keys = ['p&l', 'pnl', 'profit/loss', 'profit & loss', 'returns', 'gain/loss', 'unrealized p&l', 'total p&l']
+
+    def find_col(keys):
+        for k in keys:
+            if k in lower_cols:
+                return lower_cols[k]
+        return None
+
+    col_map['symbol'] = find_col(symbol_keys)
+    col_map['qty'] = find_col(qty_keys)
+    col_map['avg_price'] = find_col(avg_keys)
+    col_map['ltp'] = find_col(ltp_keys)
+    col_map['invested'] = find_col(invested_keys)
+    col_map['current_val'] = find_col(current_val_keys)
+    col_map['pnl'] = find_col(pnl_keys)
+
+    enrichment = []
+    symbol_col = col_map.get('symbol')
+    if not symbol_col:
+        # Fallback: use first column as symbol
+        symbol_col = df.columns[0]
+
+    for _, row in df.iterrows():
+        stock_name = str(row[symbol_col]).strip()
+        if not stock_name or stock_name.lower() == 'nan':
+            continue
+
+        entry = {'stock': stock_name}
+        for key in ['qty', 'avg_price', 'ltp', 'invested', 'current_val', 'pnl']:
+            mapped = col_map.get(key)
+            if mapped and mapped in row.index:
+                val = row[mapped]
+                try:
+                    entry[key] = float(str(val).replace(',', '').replace('₹', '').replace('INR', '').strip())
+                except (ValueError, TypeError):
+                    entry[key] = str(val)
+        enrichment.append(entry)
+
+    # Try to fetch live CMP for recognized tickers
+    for entry in enrichment:
+        stock = entry['stock']
+        # Try normalizing
+        try:
+            normalized, _ = Analyzer.normalize_symbol(stock)
+            if normalized:
+                ticker_obj = yf.Ticker(normalized + '.NS')
+                hist = ticker_obj.history(period='5d')
+                if not hist.empty:
+                    entry['live_price'] = round(float(hist['Close'].iloc[-1]), 2)
+                    entry['nse_symbol'] = normalized
+        except Exception:
+            pass
+
+    return enrichment
+
+
+@app.route('/portfolio-advice', methods=['POST'])
+def portfolio_advice_route():
+    """Handle Groww report upload and return AI-powered portfolio advice."""
+    api_key = request.form.get('api_key', '').strip()
+    if not api_key:
+        return jsonify({'error': 'Please provide your Anthropic API key to get AI-powered advice.'}), 400
+
+    if 'report' not in request.files:
+        return jsonify({'error': 'No file uploaded. Please select a Groww report file.'}), 400
+
+    file = request.files['report']
+    if not file.filename:
+        return jsonify({'error': 'No file selected.'}), 400
+
+    # Parse the report
+    df, err = parse_groww_report(file)
+    if err:
+        return jsonify({'error': err}), 400
+
+    # Enrich with live data
+    portfolio = enrich_portfolio_with_live_data(df)
+    if not portfolio:
+        return jsonify({'error': 'Could not extract any stock holdings from the uploaded file. Please check the file format.'}), 400
+
+    # Build summary for Claude
+    summary_lines = []
+    total_invested = 0
+    total_current = 0
+    total_pnl = 0
+
+    for entry in portfolio:
+        line = f"- {entry['stock']}"
+        if 'nse_symbol' in entry:
+            line += f" ({entry['nse_symbol']})"
+        if isinstance(entry.get('qty'), (int, float)):
+            line += f" | Qty: {entry['qty']}"
+        if isinstance(entry.get('avg_price'), (int, float)):
+            line += f" | Avg Price: ₹{entry['avg_price']:.2f}"
+        if isinstance(entry.get('live_price'), (int, float)):
+            line += f" | CMP: ₹{entry['live_price']:.2f}"
+        elif isinstance(entry.get('ltp'), (int, float)):
+            line += f" | LTP: ₹{entry['ltp']:.2f}"
+        if isinstance(entry.get('invested'), (int, float)):
+            total_invested += entry['invested']
+            line += f" | Invested: ₹{entry['invested']:,.2f}"
+        if isinstance(entry.get('current_val'), (int, float)):
+            total_current += entry['current_val']
+        if isinstance(entry.get('pnl'), (int, float)):
+            total_pnl += entry['pnl']
+            pnl_pct = ''
+            if isinstance(entry.get('invested'), (int, float)) and entry['invested'] > 0:
+                pnl_pct = f" ({entry['pnl']/entry['invested']*100:+.1f}%)"
+            line += f" | P&L: ₹{entry['pnl']:,.2f}{pnl_pct}"
+        summary_lines.append(line)
+
+    portfolio_text = '\n'.join(summary_lines)
+    totals_text = ''
+    if total_invested > 0:
+        totals_text = f"\n\nPortfolio Totals:\n- Total Invested: ₹{total_invested:,.2f}\n- Total Current Value: ₹{total_current:,.2f}\n- Total P&L: ₹{total_pnl:,.2f} ({total_pnl/total_invested*100:+.1f}%)"
+
+    # Also include the raw columns so Claude can see the full data
+    raw_columns = list(df.columns)
+    raw_preview = df.head(30).to_string(index=False)
+
+    prompt = f"""You are an expert Indian stock market portfolio analyst. A user has uploaded their Groww brokerage report. Analyze the portfolio thoroughly and provide actionable advice.
+
+Here is the parsed portfolio data:
+{portfolio_text}
+{totals_text}
+
+Raw file columns: {raw_columns}
+Raw data preview (first 30 rows):
+{raw_preview}
+
+Please provide a comprehensive analysis with the following sections. Use markdown formatting with clear headings:
+
+## Portfolio Overview
+Summarize the portfolio: number of stocks, total invested, current value, overall return, sector distribution.
+
+## Performance Review — How It's Done So Far
+Analyze the performance of each holding. Identify the best and worst performers. Comment on whether the overall return is good relative to Nifty 50 benchmarks.
+
+## What Could Have Been Done Better
+Identify mistakes or suboptimal decisions: over-concentration, poor timing, holding losers too long, missing sector diversification, etc. Be honest but constructive.
+
+## Forward Outlook — How It's Expected To Go
+Based on current market conditions and the stocks held, give a forward-looking outlook. Which holdings look promising? Which are concerning?
+
+## Action Plan — What To Do Now
+Give specific, actionable recommendations:
+- Which stocks to hold, add more, or exit
+- Rebalancing suggestions
+- New stocks to consider adding (with brief reasoning)
+- Risk management tips
+
+## Portfolio Health Score
+Give an overall score out of 10 with a brief justification.
+
+Be specific, use numbers, and reference actual stock names. Keep the tone professional but conversational. If any data is missing or unclear, note it and work with what's available."""
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        advice_text = message.content[0].text
+
+        return jsonify({
+            'advice': advice_text,
+            'holdings_count': len(portfolio),
+            'total_invested': round(total_invested, 2),
+            'total_current': round(total_current, 2),
+            'total_pnl': round(total_pnl, 2),
+            'portfolio': portfolio
+        })
+
+    except anthropic.AuthenticationError:
+        return jsonify({'error': 'Invalid API key. Please check your Anthropic API key and try again.'}), 401
+    except anthropic.RateLimitError:
+        return jsonify({'error': 'Rate limit exceeded. Please wait a moment and try again.'}), 429
+    except Exception as e:
+        return jsonify({'error': f'AI analysis failed: {str(e)}'}), 500
 
 
 if __name__ == '__main__':
