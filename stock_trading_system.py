@@ -7157,17 +7157,21 @@ def dashboard():
 
         function renderMarkdown(text) {
             // Simple markdown renderer for AI output
-            let html = text
-                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                .replace(/^### (.+)$/gm, '<h3 style="color:var(--accent-cyan);font-size:1em;margin:18px 0 8px;">$1</h3>')
-                .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-                .replace(/^# (.+)$/gm, '<h1 style="color:var(--accent-gold);font-size:1.3em;margin:20px 0 10px;">$1</h1>')
-                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-                .replace(/\*(.+?)\*/g, '<em>$1</em>')
-                .replace(/^- (.+)$/gm, '<li style="margin:4px 0;margin-left:20px;">$1</li>')
-                .replace(/^(\d+)\. (.+)$/gm, '<li style="margin:4px 0;margin-left:20px;list-style-type:decimal;">$1. $2</li>')
-                .replace(/\n\n/g, '<br><br>')
-                .replace(/\n/g, '<br>');
+            var lines = text.split(String.fromCharCode(10));
+            var html = '';
+            for (var i = 0; i < lines.length; i++) {
+                var line = lines[i];
+                line = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                if (/^### (.+)/.test(line)) { html += '<h3 style="color:var(--accent-cyan);font-size:1em;margin:18px 0 8px;">' + line.replace(/^### /, '') + '</h3>'; }
+                else if (/^## (.+)/.test(line)) { html += '<h2>' + line.replace(/^## /, '') + '</h2>'; }
+                else if (/^# (.+)/.test(line)) { html += '<h1 style="color:var(--accent-gold);font-size:1.3em;margin:20px 0 10px;">' + line.replace(/^# /, '') + '</h1>'; }
+                else if (/^- (.+)/.test(line)) { html += '<li style="margin:4px 0;margin-left:20px;">' + line.replace(/^- /, '') + '</li>'; }
+                else if (/^[0-9]+\. (.+)/.test(line)) { html += '<li style="margin:4px 0;margin-left:20px;list-style-type:decimal;">' + line + '</li>'; }
+                else if (line.trim() === '') { html += '<br>'; }
+                else { html += '<p style="margin:4px 0;">' + line + '</p>'; }
+            }
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
             return html;
         }
 
