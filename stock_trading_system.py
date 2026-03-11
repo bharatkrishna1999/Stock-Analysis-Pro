@@ -15,6 +15,7 @@ from flask_compress import Compress
 import json
 import os
 import pickle
+import re
 import time
 import yfinance as yf
 import pandas as pd
@@ -4344,6 +4345,17 @@ def dashboard():
         @media (max-width:480px) { .scan-scores { display:none; } .scan-main-score { font-size:1.2em; } }
         /* Profile badge on verdict overall */
         .profile-match-badge { display:inline-block;margin-top:10px;padding:4px 12px;border-radius:20px;font-size:0.78em;font-weight:700;background:rgba(201,168,76,0.15);color:var(--accent-cyan);border:1px solid rgba(201,168,76,0.3); }
+        .portfolio-upload-card { max-width: 920px; margin: 0 auto 18px; }
+        .portfolio-upload-area { border:1px dashed var(--border-color); border-radius:12px; background:var(--bg-dark); padding:18px; }
+        .portfolio-upload-area textarea { width:100%; min-height:220px; resize:vertical; border:1px solid var(--border-color); border-radius:10px; background:var(--bg-card); color:var(--text-primary); padding:14px; font-family:'Inter',sans-serif; font-size:0.92em; }
+        .portfolio-upload-actions { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
+        .portfolio-upload-btn { padding:10px 14px; border-radius:8px; border:1px solid rgba(201,168,76,0.35); background:rgba(201,168,76,0.12); color:var(--accent-cyan); font-family:'Space Grotesk',sans-serif; font-weight:700; cursor:pointer; }
+        .portfolio-upload-note { font-size:0.8em; color:var(--text-muted); margin-top:10px; line-height:1.5; }
+        .portfolio-report { margin-top:14px; display:grid; gap:12px; }
+        .portfolio-report-block { background:var(--bg-dark); border:1px solid var(--border-color); border-radius:10px; padding:14px; }
+        .portfolio-report-block h3 { margin:0 0 8px; font-size:0.95em; color:var(--accent-cyan); font-family:'Space Grotesk',sans-serif; }
+        .portfolio-report-block p, .portfolio-report-block li { color:var(--text-secondary); font-size:0.9em; line-height:1.65; }
+        .portfolio-report-block ul { margin:0; padding-left:18px; }
         @media (max-width:768px) {
             .vd-score-grid { grid-template-columns:1fr; }
             .vd-metrics { grid-template-columns:1fr 1fr; }
@@ -4362,6 +4374,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dcf" onclick="switchTab('dcf', event)">DCF Valuation</button>
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
+                <button class="nav-link" data-tab="portfolio" onclick="switchTab('portfolio', event)">&#128193; Portfolio Coach</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
             </div>
             <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
@@ -4376,6 +4389,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dcf" onclick="switchTab('dcf', event); closeMobileMenu()">DCF Valuation</button>
         <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
+        <button class="mobile-menu-item" data-tab="portfolio" onclick="switchTab('portfolio', event); closeMobileMenu()">&#128193; Portfolio Coach</button>
         <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
     </div>
     <header>
@@ -4546,6 +4560,27 @@ def dashboard():
                 <div id="verdict-result"></div>
             </div>
         </div>
+
+        <div id="portfolio-tab" class="tab-content">
+            <div class="card portfolio-upload-card">
+                <h2>Groww Portfolio Coach</h2>
+                <p style="color:var(--text-muted);margin-bottom:12px;">Paste your Groww portfolio report text (holdings, invested value, current value, P/L, allocation) and get an actionable summary.</p>
+                <div class="portfolio-upload-area">
+                    <textarea id="portfolio-report-input" placeholder="Paste report text here...
+Example:
+HDFCBANK Qty 20 Avg 1550 LTP 1678 P/L 2560
+TCS Qty 8 Avg 3760 LTP 4020 P/L 2080
+..."></textarea>
+                    <div class="portfolio-upload-actions">
+                        <button class="portfolio-upload-btn" onclick="analyzePortfolioReport()">Analyze Report</button>
+                        <button class="portfolio-upload-btn" onclick="document.getElementById('portfolio-report-input').value='';document.getElementById('portfolio-report-output').innerHTML='';">Clear</button>
+                    </div>
+                    <div class="portfolio-upload-note">This tool is educational and heuristic-based, not investment advice. Verify decisions with your advisor.</div>
+                </div>
+                <div id="portfolio-report-output" class="portfolio-report"></div>
+            </div>
+        </div>
+
         <div id="scanner-tab" class="tab-content">
             <div class="card" style="max-width:860px;margin:0 auto 0;">
                 <h2 style="margin-bottom:4px;">&#127919; Build Your Top-20 Portfolio</h2>
@@ -5196,6 +5231,7 @@ def dashboard():
                 document.getElementById('verdict-search').addEventListener('keypress', (e) => {
                     if (e.key === 'Enter') fetchVerdictData();
                 });
+            } else if (tab === 'portfolio') {
             }
             loadedTabs.add(tab);
         }
@@ -6982,20 +7018,172 @@ def dashboard():
             verdictPollRegression(symbol, 0);
         }
 
+        function renderPortfolioBlock(title, items, isList) {
+            if (!items || (Array.isArray(items) && items.length === 0)) return '';
+            var body = isList
+                ? '<ul>' + items.map(function(i){ return '<li>' + i + '</li>'; }).join('') + '</ul>'
+                : '<p>' + items + '</p>';
+            return '<div class="portfolio-report-block"><h3>' + title + '</h3>' + body + '</div>';
+        }
+
+        function analyzePortfolioReport() {
+            var input = document.getElementById('portfolio-report-input');
+            var out = document.getElementById('portfolio-report-output');
+            if (!input || !out) return;
+            var raw = (input.value || '').trim();
+            if (!raw) {
+                out.innerHTML = '<div class="error">Please paste your Groww report first.</div>';
+                return;
+            }
+            out.innerHTML = '<div class="loading">⏳ Reading your portfolio report...</div>';
+            fetch('/portfolio-advice', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ report_text: raw })
+            })
+            .then(function(r){ return r.json(); })
+            .then(function(data){
+                if (data.error) {
+                    out.innerHTML = '<div class="error">❌ ' + data.error + '</div>';
+                    return;
+                }
+                var html = '';
+                html += renderPortfolioBlock('How it has done so far', data.performance_summary, false);
+                html += renderPortfolioBlock('What could have been done better', data.what_could_be_better, true);
+                html += renderPortfolioBlock('How it may go forward', data.forward_expectation, false);
+                html += renderPortfolioBlock('What to do now', data.action_plan, true);
+                html += renderPortfolioBlock('Risk notes', data.risk_notes, true);
+                out.innerHTML = html;
+            })
+            .catch(function(e){
+                out.innerHTML = '<div class="error">❌ ' + e.message + '</div>';
+            });
+        }
+
 
         window.addEventListener('DOMContentLoaded', () => {
             init(); initDividendSectors(); setupCapitalInput(); loadProfile();
             requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';});
             const hash = window.location.hash.replace('#','');
-            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner'];
+            const validTabs = ['verdict','analysis','dcf','dividend','regression','portfolio','scanner'];
             if (hash && validTabs.includes(hash)) { switchTab(hash); }
         });
     </script>
 </body>
 </html>'''
     resp = make_response(html)
+
     resp.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=600'
     return resp
+
+
+def _extract_signed_percentages(text):
+    vals = []
+    for m in re.finditer(r'([-+]?\d+(?:\.\d+)?)\s*%', text):
+        try:
+            vals.append(float(m.group(1)))
+        except Exception:
+            pass
+    return vals
+
+
+def _extract_signed_amounts(text):
+    vals = []
+    for m in re.finditer(r'([-+]?\d[\d,]*(?:\.\d+)?)', text):
+        raw = m.group(1).replace(',', '')
+        if '.' in raw:
+            continue
+        try:
+            vals.append(float(raw))
+        except Exception:
+            pass
+    return vals
+
+
+def _portfolio_advice_from_text(report_text):
+    lines = [ln.strip() for ln in report_text.splitlines() if ln.strip()]
+    amounts = _extract_signed_amounts(report_text)
+    percentages = _extract_signed_percentages(report_text)
+    pos_pct = [p for p in percentages if p > 0]
+    neg_pct = [p for p in percentages if p < 0]
+
+    inferred_total = max(amounts) if amounts else None
+    avg_gain = sum(pos_pct) / len(pos_pct) if pos_pct else 0
+    avg_loss = sum(neg_pct) / len(neg_pct) if neg_pct else 0
+
+    concentration_hints = [
+        ln for ln in lines
+        if ('%' in ln and any(k in ln.lower() for k in ['allocation', 'weight', 'portfolio', 'holding']))
+    ]
+
+    performance_parts = []
+    if pos_pct or neg_pct:
+        performance_parts.append(
+            f"Detected {len(pos_pct)} profitable and {len(neg_pct)} loss-making percentage entries in the report."
+        )
+    if pos_pct:
+        performance_parts.append(f"Average positive move captured is about {avg_gain:.1f}%.")
+    if neg_pct:
+        performance_parts.append(f"Average negative move among laggards is about {avg_loss:.1f}%.")
+    if inferred_total:
+        performance_parts.append(f"Largest parsed amount in your report is roughly ₹{inferred_total:,.0f}, used as a rough scale proxy.")
+
+    if not performance_parts:
+        performance_parts.append(
+            "I could parse only limited structured numbers. Paste holdings with quantity, invested value, current value, P/L and weights for more precise insights."
+        )
+
+    better = [
+        "Use allocation caps (for example 25-30% max in one stock and 40% max in one sector) to reduce concentration risk.",
+        "Define exit rules early: trim if thesis breaks, not only when drawdown feels uncomfortable.",
+        "Review laggards quarterly with a thesis checklist (earnings, debt, valuation, sector trend).",
+        "Add staggered SIP/top-up logic instead of lump-sum timing to improve cost averaging."
+    ]
+    if concentration_hints:
+        better.insert(0, "Your report appears to contain allocation/weight lines—consider rebalancing if top holdings dominate portfolio risk.")
+
+    if avg_gain > 8 and avg_loss > -6:
+        forward = "Current momentum looks healthy in aggregate, but expect mean reversion; returns may moderate unless earnings growth continues."
+    elif avg_loss <= -10:
+        forward = "Portfolio has visible drawdown pressure. Near-term path can remain volatile; recovery likely depends on business quality and position sizing discipline."
+    else:
+        forward = "Portfolio seems mixed. Forward performance may depend more on stock selection quality and rebalancing discipline than on broad market direction alone."
+
+    actions = [
+        "Segment holdings into: core compounders, tactical bets, and exit candidates.",
+        "Rebalance monthly or when any holding breaches your target weight by >5%.",
+        "Prioritize adding to high-conviction quality names on declines instead of averaging weak thesis positions.",
+        "Keep 5-15% cash buffer (as per risk profile) for better entries during corrections."
+    ]
+
+    risks = [
+        "This output is rule-based from pasted text and may miss context from full broker statements.",
+        "Corporate actions, taxes, and dividends can materially change true return interpretation.",
+        "Use this as a decision aid, not as personalized investment advice."
+    ]
+
+    return {
+        'performance_summary': ' '.join(performance_parts),
+        'what_could_be_better': better,
+        'forward_expectation': forward,
+        'action_plan': actions,
+        'risk_notes': risks
+    }
+
+
+@app.route('/portfolio-advice', methods=['POST'])
+def portfolio_advice_route():
+    payload = request.get_json(silent=True) or {}
+    report_text = (payload.get('report_text') or '').strip()
+    if not report_text:
+        return jsonify({'error': 'Please provide Groww report text in report_text.'}), 400
+    if len(report_text) < 20:
+        return jsonify({'error': 'Report text looks too short. Please paste a fuller report snapshot.'}), 400
+    try:
+        return jsonify(_portfolio_advice_from_text(report_text))
+    except Exception as e:
+        return jsonify({'error': f'Unable to generate portfolio advice: {str(e)}'}), 500
+
 
 @app.route('/analyze')
 def analyze_route():
