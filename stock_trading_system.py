@@ -8319,103 +8319,361 @@ def prefilter_stream_route():
 
 # ===== PORTFOLIO ADVICE (Groww Report Upload + AI) =====
 
-def parse_groww_report(file_storage):
-    """Parse uploaded Groww report (CSV or Excel) and return a structured DataFrame."""
+def _read_file_bytes(file_storage):
+    """Read file bytes from a Flask FileStorage object, handling seek."""
+    file_storage.seek(0)
+    return file_storage.read()
+
+
+def _read_raw_rows(file_storage):
+    """Read raw rows from a CSV or Excel upload.  Returns list[list[str]]."""
+    import io, csv
     filename = file_storage.filename.lower()
+    raw_bytes = _read_file_bytes(file_storage)
+
+    if filename.endswith('.csv'):
+        text = raw_bytes.decode('utf-8', errors='replace')
+        reader = csv.reader(io.StringIO(text))
+        return [row for row in reader]
+
+    # Excel — try multiple engines
+    for engine in ['openpyxl', 'xlrd', None]:
+        try:
+            buf = io.BytesIO(raw_bytes)
+            tmp = pd.read_excel(buf, engine=engine, header=None, dtype=str) if engine else pd.read_excel(buf, header=None, dtype=str)
+            return tmp.fillna('').values.tolist()
+        except Exception:
+            continue
+    # Last resort: treat as CSV
+    text = raw_bytes.decode('utf-8', errors='replace')
+    reader = csv.reader(io.StringIO(text))
+    return [row for row in reader]
+
+
+def _parse_groww_pnl_sections(raw_rows):
+    """
+    Parse the Groww P&L report which has multiple sections:
+      - Metadata (client code, date range)
+      - Summary
+      - Realised trades (with its own header row)
+      - Unrealised trades (with its own header row)
+      - Charges
+      - Disclaimer
+    Returns a list of dicts with keys like stock_name, qty, buy_price,
+    sell_price, buy_value, sell_value, pnl, pnl_pct, trade_type.
+    """
+    # Normalise every cell to stripped string
+    rows = [[str(c).strip() for c in r] for r in raw_rows]
+
+    # --- Detect section headers by finding rows whose first cell matches
+    # known Groww section markers ---
+    SECTION_MARKERS = {
+        'realised trades', 'realised trade', 'realized trades',
+        'unrealised trades', 'unrealised trade', 'unrealized trades',
+    }
+    SKIP_MARKERS = {
+        'unique client code', 'p&l statement', 'summary', 'p&l', 'charges',
+        'realised p&l', 'unrealised p&l', 'realized p&l', 'unrealized p&l',
+        'sebi charges', 'stamp duty', 'ipft charges', 'brokerage',
+        'dp charges', 'unpledge charges', 'total', 'disclaimer',
+        'disclaimer:', 'groww invest tech',
+    }
+
+    # Locate the header row for each trade section.
+    # A trade-section header row contains 'stock name' (or 'stock') in the first cell.
+    trade_sections = []   # list of (header_row_idx, header_cols)
+    for i, row in enumerate(rows):
+        first = row[0].lower() if row else ''
+        if first in SECTION_MARKERS:
+            # Next non-empty row should be the column header row
+            for j in range(i + 1, min(i + 4, len(rows))):
+                if rows[j] and rows[j][0].lower().replace(' ', '') != '':
+                    hdr_lower = [c.lower().strip() for c in rows[j]]
+                    if any('stock' in h for h in hdr_lower):
+                        trade_sections.append((j, hdr_lower, rows[j]))
+                    break
+
+    # If no section markers found, look for any row with 'stock name' as first cell
+    if not trade_sections:
+        for i, row in enumerate(rows):
+            if row and row[0].lower().strip() in ('stock name', 'stock', 'symbol', 'stock symbol', 'scrip name', 'company name', 'instrument'):
+                hdr_lower = [c.lower().strip() for c in row]
+                trade_sections.append((i, hdr_lower, row))
+
+    # If STILL no sections found, fall back to treating the whole file as a
+    # single table with the first row as header
+    if not trade_sections:
+        if rows:
+            hdr_lower = [c.lower().strip() for c in rows[0]]
+            trade_sections.append((0, hdr_lower, rows[0]))
+
+    # --- Parse each trade section ---
+    parsed_trades = []
+    for sec_idx, (hdr_idx, hdr_lower, _hdr_raw) in enumerate(trade_sections):
+        # Find end of section: next section header, or end of rows
+        next_hdr = trade_sections[sec_idx + 1][0] if sec_idx + 1 < len(trade_sections) else len(rows)
+
+        # Map column indices for known fields
+        def _find_col(candidates):
+            for cand in candidates:
+                for ci, h in enumerate(hdr_lower):
+                    if cand == h or cand in h:
+                        return ci
+            return None
+
+        col_stock = _find_col(['stock name', 'stock', 'symbol', 'scrip', 'instrument', 'company name', 'company'])
+        col_qty = _find_col(['quantity', 'qty', 'total quantity', 'no. of shares'])
+        col_buy_price = _find_col(['buy price', 'buy avg', 'avg. cost', 'avg cost', 'average price', 'purchase price', 'avg price', 'buy rate'])
+        col_sell_price = _find_col(['sell/transfer price', 'sell price', 'transfer price'])
+        col_present_price = _find_col(['present price', 'current price', 'ltp', 'market price', 'close price', 'last price', 'cmp'])
+        col_buy_val = _find_col(['buy value', 'invested value', 'invested', 'total cost', 'cost', 'investment value'])
+        col_sell_val = _find_col(['sell value', 'sell/transfer value'])
+        col_present_val = _find_col(['present value', 'current value', 'market value'])
+        col_pnl = _find_col(['p&l', 'pnl', 'profit/loss', 'realised p&l', 'unrealised p&l', 'realized p&l', 'unrealized p&l', 'profit & loss', 'gain/loss', 'total p&l'])
+        col_pnl_pct = _find_col(['p&l(%)', 'pnl(%)', 'pnl %', 'p&l %', 'returns(%)', 'returns %'])
+        col_isin = _find_col(['isin'])
+        col_trade_type = _find_col(['trade type', 'type'])
+
+        if col_stock is None:
+            col_stock = 0  # fallback
+
+        for ri in range(hdr_idx + 1, next_hdr):
+            row = rows[ri]
+            if not row or len(row) <= col_stock:
+                continue
+            stock_name = row[col_stock].strip()
+            if not stock_name or stock_name.lower() == 'nan':
+                continue
+
+            # Skip known non-stock rows
+            name_lower = stock_name.lower()
+            skip = False
+            for marker in SKIP_MARKERS:
+                if name_lower.startswith(marker):
+                    skip = True
+                    break
+            if skip:
+                continue
+            # Also skip if it looks like a long disclaimer sentence
+            if len(stock_name) > 60 and ' ' in stock_name:
+                continue
+            # Skip "Stock name" (repeated header)
+            if name_lower in ('stock name', 'stock', 'symbol'):
+                continue
+
+            def _num(col_idx):
+                if col_idx is None or col_idx >= len(row):
+                    return None
+                val = row[col_idx].replace(',', '').replace('₹', '').replace('INR', '').replace('%', '').strip()
+                if not val or val.lower() == 'nan' or val == '-' or val == '--':
+                    return None
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return None
+
+            trade = {
+                'stock_name': stock_name,
+                'isin': row[col_isin].strip() if col_isin is not None and col_isin < len(row) else '',
+                'qty': _num(col_qty),
+                'buy_price': _num(col_buy_price),
+                'sell_price': _num(col_sell_price),
+                'present_price': _num(col_present_price),
+                'buy_value': _num(col_buy_val),
+                'sell_value': _num(col_sell_val),
+                'present_value': _num(col_present_val),
+                'pnl': _num(col_pnl),
+                'pnl_pct': _num(col_pnl_pct),
+                'trade_type': row[col_trade_type].strip().lower() if col_trade_type is not None and col_trade_type < len(row) else '',
+            }
+            parsed_trades.append(trade)
+
+    return parsed_trades
+
+
+def _aggregate_trades(parsed_trades):
+    """
+    Aggregate individual trades into per-stock holdings.
+    Returns a list of dicts ready for enrichment.
+    """
+    from collections import defaultdict
+    stock_agg = defaultdict(lambda: {
+        'stock_name': '', 'isin': '',
+        'total_qty': 0, 'total_buy_value': 0, 'total_sell_value': 0,
+        'total_present_value': 0, 'total_pnl': 0,
+        'last_present_price': None, 'last_buy_price': None,
+        'count': 0,
+    })
+
+    for t in parsed_trades:
+        # Normalise key: use ISIN if available, else uppercase stock name
+        key = t['isin'] if t['isin'] else t['stock_name'].upper().strip()
+        agg = stock_agg[key]
+
+        if not agg['stock_name']:
+            agg['stock_name'] = t['stock_name']
+        if t['isin'] and not agg['isin']:
+            agg['isin'] = t['isin']
+
+        qty = t['qty'] or 0
+        agg['total_qty'] += qty
+        agg['count'] += 1
+
+        if t['buy_value'] is not None:
+            agg['total_buy_value'] += t['buy_value']
+        elif t['buy_price'] is not None and qty:
+            agg['total_buy_value'] += t['buy_price'] * qty
+
+        if t['sell_value'] is not None:
+            agg['total_sell_value'] += t['sell_value']
+        elif t['sell_price'] is not None and qty:
+            agg['total_sell_value'] += t['sell_price'] * qty
+
+        if t['present_value'] is not None:
+            agg['total_present_value'] += t['present_value']
+        elif t['present_price'] is not None and qty:
+            agg['total_present_value'] += t['present_price'] * qty
+
+        if t['pnl'] is not None:
+            agg['total_pnl'] += t['pnl']
+
+        if t['present_price'] is not None:
+            agg['last_present_price'] = t['present_price']
+        if t['buy_price'] is not None:
+            agg['last_buy_price'] = t['buy_price']
+
+    results = []
+    for _key, agg in stock_agg.items():
+        avg_buy = round(agg['total_buy_value'] / agg['total_qty'], 2) if agg['total_qty'] > 0 and agg['total_buy_value'] > 0 else (agg['last_buy_price'] or 0)
+        invested = agg['total_buy_value'] if agg['total_buy_value'] > 0 else 0
+        current_val = agg['total_present_value'] if agg['total_present_value'] > 0 else agg['total_sell_value']
+        pnl = agg['total_pnl']
+        if not pnl and invested > 0 and current_val > 0:
+            pnl = current_val - invested
+
+        results.append({
+            'stock': agg['stock_name'],
+            'isin': agg['isin'],
+            'qty': agg['total_qty'] if agg['total_qty'] else None,
+            'avg_price': avg_buy if avg_buy else None,
+            'ltp': agg['last_present_price'],
+            'invested': invested if invested else None,
+            'current_val': current_val if current_val else None,
+            'pnl': pnl if pnl else None,
+        })
+
+    return results
+
+
+def parse_groww_report(file_storage):
+    """Parse uploaded Groww report (CSV or Excel) and return a structured DataFrame.
+
+    Handles the Groww P&L report format which has multiple sections
+    (metadata, realised trades, unrealised trades, charges, disclaimer).
+    Returns (enrichment_list, error_string).  enrichment_list is a list of
+    dicts with keys: stock, isin, qty, avg_price, ltp, invested, current_val, pnl.
+    """
+    filename = file_storage.filename.lower()
+    if not filename.endswith(('.csv', '.xlsx', '.xls')):
+        return None, "Unsupported file format. Please upload a CSV or Excel (.xlsx) file."
     try:
+        raw_rows = _read_raw_rows(file_storage)
+    except Exception as e:
+        return None, f"Failed to read file: {str(e)}"
+
+    if not raw_rows or len(raw_rows) < 2:
+        return None, "The uploaded file is empty or has no data rows."
+
+    # Detect if this is a Groww P&L report (multi-section) or simple holdings
+    flat_text = ' '.join(str(c) for row in raw_rows[:15] for c in row).lower()
+    is_pnl_report = any(marker in flat_text for marker in [
+        'realised trades', 'unrealised trades', 'realized trades', 'unrealized trades',
+        'p&l statement', 'unique client code', 'groww',
+    ])
+
+    if is_pnl_report:
+        parsed = _parse_groww_pnl_sections(raw_rows)
+        if not parsed:
+            return None, "Could not find any stock trades in the report. Please verify the file format."
+        aggregated = _aggregate_trades(parsed)
+        return aggregated, None
+
+    # --- Fallback: simple holdings file (first row = header) ---
+    try:
+        import io
+        file_storage.seek(0)
         if filename.endswith('.csv'):
             df = pd.read_csv(file_storage)
-        elif filename.endswith(('.xlsx', '.xls')):
-            # Read bytes once so we can retry with different engines
-            file_bytes = file_storage.read()
-            import io
+        else:
+            raw_bytes = _read_file_bytes(file_storage)
             df = None
-            # Try openpyxl first, then xlrd, then default engine
             for engine in ['openpyxl', 'xlrd', None]:
                 try:
-                    buf = io.BytesIO(file_bytes)
-                    if engine:
-                        df = pd.read_excel(buf, engine=engine)
-                    else:
-                        df = pd.read_excel(buf)
+                    buf = io.BytesIO(raw_bytes)
+                    df = pd.read_excel(buf, engine=engine) if engine else pd.read_excel(buf)
                     break
                 except Exception:
                     continue
             if df is None:
-                # Last resort: try csv in case the .xlsx is actually csv
-                try:
-                    df = pd.read_csv(io.BytesIO(file_bytes))
-                except Exception:
-                    return None, "Could not read the Excel file. Please try exporting as CSV from Groww instead."
-        else:
-            return None, "Unsupported file format. Please upload a CSV or Excel (.xlsx) file."
-
-        if df.empty:
-            return None, "The uploaded file is empty."
-
-        # Normalize column names: strip whitespace
-        df.columns = [c.strip() for c in df.columns]
-
-        return df, None
+                return None, "Could not read the Excel file. Please try exporting as CSV from Groww instead."
     except Exception as e:
         return None, f"Failed to parse file: {str(e)}"
 
+    if df.empty:
+        return None, "The uploaded file is empty."
 
-def enrich_portfolio_with_live_data(df):
-    """Try to match stocks in the report to NSE tickers and fetch live prices."""
-    # Detect the symbol / stock name column
-    col_map = {}
+    df.columns = [str(c).strip() for c in df.columns]
+    # Convert simple DF to the same list-of-dict format
     lower_cols = {c.lower(): c for c in df.columns}
-
-    # Common Groww column names
-    symbol_keys = ['symbol', 'stock symbol', 'ticker', 'scrip', 'stock name', 'name', 'instrument', 'company', 'company name']
-    qty_keys = ['quantity', 'qty', 'shares', 'no. of shares', 'units', 'total quantity']
-    avg_keys = ['avg. cost', 'avg cost', 'average price', 'buy price', 'buy avg', 'purchase price', 'avg price', 'average cost']
-    ltp_keys = ['ltp', 'current price', 'market price', 'current value', 'last price', 'close price', 'present value']
-    invested_keys = ['invested value', 'invested', 'total cost', 'cost', 'investment', 'buy value', 'investment value']
-    current_val_keys = ['current value', 'present value', 'market value', 'current val', 'value']
-    pnl_keys = ['p&l', 'pnl', 'profit/loss', 'profit & loss', 'returns', 'gain/loss', 'unrealized p&l', 'total p&l']
-
-    def find_col(keys):
+    def _find(keys):
         for k in keys:
             if k in lower_cols:
                 return lower_cols[k]
         return None
 
-    col_map['symbol'] = find_col(symbol_keys)
-    col_map['qty'] = find_col(qty_keys)
-    col_map['avg_price'] = find_col(avg_keys)
-    col_map['ltp'] = find_col(ltp_keys)
-    col_map['invested'] = find_col(invested_keys)
-    col_map['current_val'] = find_col(current_val_keys)
-    col_map['pnl'] = find_col(pnl_keys)
+    sym_col = _find(['symbol', 'stock symbol', 'ticker', 'scrip', 'stock name', 'name', 'instrument', 'company', 'company name']) or df.columns[0]
+    qty_col = _find(['quantity', 'qty', 'shares', 'no. of shares', 'units', 'total quantity'])
+    avg_col = _find(['avg. cost', 'avg cost', 'average price', 'buy price', 'buy avg', 'purchase price', 'avg price', 'average cost'])
+    ltp_col = _find(['ltp', 'current price', 'market price', 'last price', 'close price', 'present price', 'cmp'])
+    inv_col = _find(['invested value', 'invested', 'total cost', 'cost', 'investment', 'buy value', 'investment value'])
+    cur_col = _find(['current value', 'present value', 'market value', 'current val', 'value'])
+    pnl_col = _find(['p&l', 'pnl', 'profit/loss', 'profit & loss', 'returns', 'gain/loss', 'unrealized p&l', 'total p&l'])
+
+    def _numval(row, col):
+        if col is None or col not in row.index:
+            return None
+        val = str(row[col]).replace(',', '').replace('₹', '').replace('INR', '').replace('%', '').strip()
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
 
     enrichment = []
-    symbol_col = col_map.get('symbol')
-    if not symbol_col:
-        # Fallback: use first column as symbol
-        symbol_col = df.columns[0]
-
     for _, row in df.iterrows():
-        stock_name = str(row[symbol_col]).strip()
+        stock_name = str(row[sym_col]).strip()
         if not stock_name or stock_name.lower() == 'nan':
             continue
+        enrichment.append({
+            'stock': stock_name,
+            'isin': '',
+            'qty': _numval(row, qty_col),
+            'avg_price': _numval(row, avg_col),
+            'ltp': _numval(row, ltp_col),
+            'invested': _numval(row, inv_col),
+            'current_val': _numval(row, cur_col),
+            'pnl': _numval(row, pnl_col),
+        })
 
-        entry = {'stock': stock_name}
-        for key in ['qty', 'avg_price', 'ltp', 'invested', 'current_val', 'pnl']:
-            mapped = col_map.get(key)
-            if mapped and mapped in row.index:
-                val = row[mapped]
-                try:
-                    entry[key] = float(str(val).replace(',', '').replace('₹', '').replace('INR', '').strip())
-                except (ValueError, TypeError):
-                    entry[key] = str(val)
-        enrichment.append(entry)
+    return enrichment, None
 
-    # Try to fetch live CMP for recognized tickers
-    for entry in enrichment:
+
+def enrich_portfolio_with_live_data(holdings_list):
+    """Take parsed holdings list and fetch live CMP for recognized tickers.
+
+    Accepts the list-of-dicts from parse_groww_report (not a DataFrame).
+    """
+    for entry in holdings_list:
         stock = entry['stock']
-        # Try normalizing
         try:
             normalized, _ = Analyzer.normalize_symbol(stock)
             if normalized:
@@ -8427,7 +8685,7 @@ def enrich_portfolio_with_live_data(df):
         except Exception:
             pass
 
-    return enrichment
+    return holdings_list
 
 
 @app.route('/portfolio-advice', methods=['POST'])
@@ -8440,13 +8698,13 @@ def portfolio_advice_route():
     if not file.filename:
         return jsonify({'error': 'No file selected.'}), 400
 
-    # Parse the report
-    df, err = parse_groww_report(file)
+    # Parse the report (returns list of dicts, not DataFrame)
+    holdings_list, err = parse_groww_report(file)
     if err:
         return jsonify({'error': err}), 400
 
     # Enrich with live data
-    portfolio = enrich_portfolio_with_live_data(df)
+    portfolio = enrich_portfolio_with_live_data(holdings_list)
     if not portfolio:
         return jsonify({'error': 'Could not extract any stock holdings from the uploaded file. Please check the file format.'}), 400
 
