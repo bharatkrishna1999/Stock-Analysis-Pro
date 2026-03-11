@@ -28,6 +28,7 @@ import base64
 import requests
 import logging
 import gc
+import traceback
 from scipy.optimize import minimize as scipy_minimize
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -42,6 +43,7 @@ app = Flask(__name__)
 Compress(app)
 app.config['COMPRESS_MIMETYPES'] = ['text/html', 'text/css', 'application/javascript', 'application/json']
 app.config['COMPRESS_MIN_SIZE'] = 500
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10 MB max upload
 
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
@@ -4087,6 +4089,7 @@ def dashboard():
         #capital-input { width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 1.1em; background: var(--bg-dark); color: var(--accent-green); font-weight: 600; transition: all 0.3s; font-family: 'Space Grotesk', sans-serif; }
         #capital-input:focus { outline: none; border-color: var(--accent-green); box-shadow: 0 0 0 3px rgba(46, 204, 140, 0.1); }
         @keyframes slideIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .result-card { animation: slideIn 0.5s ease; }
         @media (max-width: 768px) {
             .grid { grid-template-columns: 1fr; }
@@ -4363,6 +4366,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
+                <button class="nav-link" data-tab="portfolio" onclick="switchTab('portfolio', event)">Portfolio Advice</button>
             </div>
             <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
                 <span></span><span></span><span></span>
@@ -4377,6 +4381,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
         <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
+        <button class="mobile-menu-item" data-tab="portfolio" onclick="switchTab('portfolio', event); closeMobileMenu()">Portfolio Advice</button>
     </div>
     <header>
         <div class="container">
@@ -4634,6 +4639,41 @@ def dashboard():
                 <div class="sc-stat-row" id="sc-stat-row"></div>
             </div>
             <div id="scanner-results-area" style="margin-top:18px;max-width:860px;margin-left:auto;margin-right:auto;"></div>
+        </div>
+
+        <div id="portfolio-tab" class="tab-content">
+            <div class="card" style="max-width:860px;margin:0 auto;">
+                <h2 style="margin-bottom:4px;">Portfolio Advice</h2>
+                <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:22px;line-height:1.5;">Upload your Groww holdings report and get a data-driven portfolio analysis &mdash; performance review, sector breakdown, technical signals for each stock, and actionable recommendations.</p>
+
+                <div style="margin-bottom:18px;">
+                    <label style="display:block;font-size:0.82em;color:var(--text-muted);margin-bottom:6px;font-weight:600;">How to get your Groww report</label>
+                    <div style="background:var(--bg-dark);border-radius:10px;padding:14px 18px;font-size:0.82em;color:var(--text-secondary);line-height:1.7;">
+                        <strong style="color:var(--text-primary);">From Groww App/Web:</strong><br>
+                        1. Go to <strong>Stocks</strong> tab &rarr; tap <strong>Holdings</strong><br>
+                        2. Tap the <strong>download / export</strong> icon (top right)<br>
+                        3. Choose <strong>CSV</strong> or <strong>Excel</strong> format<br>
+                        4. Upload the downloaded file below<br><br>
+                        <strong style="color:var(--text-primary);">Supported formats:</strong> .csv, .xlsx, .xls
+                    </div>
+                </div>
+
+                <div id="portfolio-upload-area" style="border:2px dashed rgba(201,168,76,0.3);border-radius:12px;padding:40px 20px;text-align:center;cursor:pointer;transition:all 0.3s;margin-bottom:18px;" onclick="document.getElementById('portfolio-file-input').click();" ondragover="event.preventDefault();this.style.borderColor='var(--accent-gold)';this.style.background='rgba(201,168,76,0.05)';" ondragleave="this.style.borderColor='rgba(201,168,76,0.3)';this.style.background='transparent';" ondrop="event.preventDefault();this.style.borderColor='rgba(201,168,76,0.3)';this.style.background='transparent';handlePortfolioDrop(event);">
+                    <div style="font-size:2.5em;margin-bottom:8px;opacity:0.6;">&#128196;</div>
+                    <div style="color:var(--text-primary);font-weight:600;margin-bottom:4px;">Drop your Groww report here</div>
+                    <div style="color:var(--text-secondary);font-size:0.82em;">or click to browse files</div>
+                    <div id="portfolio-file-name" style="color:var(--accent-gold);font-size:0.85em;margin-top:10px;font-weight:600;display:none;"></div>
+                    <input type="file" id="portfolio-file-input" accept=".csv,.xlsx,.xls" style="display:none;" onchange="handlePortfolioFile(this);">
+                </div>
+
+                <button id="portfolio-analyze-btn" onclick="analyzePortfolio()" style="width:100%;padding:14px;background:var(--accent-gold);color:var(--bg-dark);border:none;border-radius:10px;font-size:1em;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity 0.2s;" onmouseenter="this.style.opacity='0.9'" onmouseleave="this.style.opacity='1'">Analyze My Portfolio</button>
+                <div id="portfolio-loading" style="display:none;text-align:center;padding:30px;">
+                    <div style="display:inline-block;width:36px;height:36px;border:3px solid rgba(201,168,76,0.2);border-top-color:var(--accent-gold);border-radius:50%;animation:spin 0.8s linear infinite;"></div>
+                    <p style="color:var(--text-secondary);margin-top:12px;font-size:0.88em;">Analyzing your portfolio... Fetching live data and running signals for each stock.</p>
+                </div>
+                <div id="portfolio-error" style="display:none;background:rgba(255,77,77,0.1);border:1px solid rgba(255,77,77,0.3);border-radius:10px;padding:14px;margin-top:14px;color:#ff6b6b;font-size:0.88em;"></div>
+            </div>
+            <div id="portfolio-results" style="display:none;max-width:860px;margin:18px auto 0;"></div>
         </div>
     </main>
     <script>
@@ -6983,11 +7023,252 @@ def dashboard():
         }
 
 
+        // ===== PORTFOLIO ADVICE TAB =====
+        let portfolioFile = null;
+
+        function handlePortfolioFile(input) {
+            if (input.files && input.files[0]) {
+                portfolioFile = input.files[0];
+                var nameEl = document.getElementById('portfolio-file-name');
+                nameEl.textContent = portfolioFile.name + ' (' + (portfolioFile.size / 1024).toFixed(1) + ' KB)';
+                nameEl.style.display = 'block';
+                document.getElementById('portfolio-upload-area').style.borderColor = 'var(--accent-gold)';
+            }
+        }
+
+        function handlePortfolioDrop(event) {
+            var files = event.dataTransfer.files;
+            if (files && files[0]) {
+                var input = document.getElementById('portfolio-file-input');
+                input.files = files;
+                handlePortfolioFile(input);
+            }
+        }
+
+        function analyzePortfolio() {
+            if (!portfolioFile) {
+                showPortfolioError('Please upload your Groww holdings report first.');
+                return;
+            }
+
+            var btn = document.getElementById('portfolio-analyze-btn');
+            var loading = document.getElementById('portfolio-loading');
+            var errorEl = document.getElementById('portfolio-error');
+            var resultsEl = document.getElementById('portfolio-results');
+
+            btn.style.display = 'none';
+            loading.style.display = 'block';
+            errorEl.style.display = 'none';
+            resultsEl.style.display = 'none';
+
+            var formData = new FormData();
+            formData.append('report', portfolioFile);
+
+            fetch('/portfolio-advice', { method: 'POST', body: formData })
+                .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+                .then(function(res) {
+                    btn.style.display = 'block';
+                    loading.style.display = 'none';
+                    if (!res.ok) {
+                        showPortfolioError(res.data.error || 'Something went wrong.');
+                        return;
+                    }
+                    renderPortfolioResults(res.data);
+                })
+                .catch(function(e) {
+                    btn.style.display = 'block';
+                    loading.style.display = 'none';
+                    showPortfolioError('Network error: ' + e.message);
+                });
+        }
+
+        function showPortfolioError(msg) {
+            var el = document.getElementById('portfolio-error');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        function pfFmt(val) {
+            var R = String.fromCharCode(8377);
+            if (Math.abs(val) >= 1e7) return (val < 0 ? '-' : '') + R + (Math.abs(val) / 1e7).toFixed(2) + ' Cr';
+            if (Math.abs(val) >= 1e5) return (val < 0 ? '-' : '') + R + (Math.abs(val) / 1e5).toFixed(2) + ' L';
+            return (val < 0 ? '-' : '') + R + Math.abs(val).toLocaleString('en-IN', {maximumFractionDigits: 0});
+        }
+
+        function pfPnlColor(val) { return val >= 0 ? '#4ade80' : '#ff6b6b'; }
+
+        function pfSignalBadge(sig) {
+            var colors = { 'BUY': '#4ade80', 'SELL': '#ff6b6b', 'HOLD': '#facc15' };
+            var c = colors[sig] || '#888';
+            return '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font-size:0.75em;font-weight:700;color:var(--bg-dark);background:' + c + ';">' + sig + '</span>';
+        }
+
+        function renderPortfolioResults(data) {
+            var R = String.fromCharCode(8377);
+            var el = document.getElementById('portfolio-results');
+            var h = '';
+
+            // ---- Summary cards ----
+            h += '<div class="card" style="margin-bottom:16px;"><h2 style="margin-bottom:14px;">Portfolio Summary</h2>';
+            h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">';
+            // Holdings
+            h += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+            h += '<div style="font-size:0.72em;color:var(--text-muted);margin-bottom:4px;">Holdings</div>';
+            h += '<div style="font-size:1.4em;font-weight:700;color:var(--accent-gold);">' + data.holdings_count + '</div></div>';
+            // Invested
+            if (data.total_invested > 0) {
+                h += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+                h += '<div style="font-size:0.72em;color:var(--text-muted);margin-bottom:4px;">Invested</div>';
+                h += '<div style="font-size:1.3em;font-weight:700;color:var(--text-primary);">' + pfFmt(data.total_invested) + '</div></div>';
+            }
+            // Current
+            if (data.total_current > 0) {
+                h += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+                h += '<div style="font-size:0.72em;color:var(--text-muted);margin-bottom:4px;">Current Value</div>';
+                h += '<div style="font-size:1.3em;font-weight:700;color:var(--text-primary);">' + pfFmt(data.total_current) + '</div></div>';
+            }
+            // P&L
+            if (data.total_invested > 0) {
+                var pc = data.overall_pnl_pct;
+                h += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+                h += '<div style="font-size:0.72em;color:var(--text-muted);margin-bottom:4px;">Total P&L</div>';
+                h += '<div style="font-size:1.3em;font-weight:700;color:' + pfPnlColor(data.total_pnl) + ';">' + pfFmt(data.total_pnl) + ' (' + (pc >= 0 ? '+' : '') + pc + '%)</div></div>';
+            }
+            // Market regime
+            var regColor = data.market_regime.state === 'bullish' ? '#4ade80' : data.market_regime.state === 'bearish' ? '#ff6b6b' : '#facc15';
+            h += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+            h += '<div style="font-size:0.72em;color:var(--text-muted);margin-bottom:4px;">Market Regime</div>';
+            h += '<div style="font-size:1.1em;font-weight:700;color:' + regColor + ';text-transform:capitalize;">' + data.market_regime.state + '</div></div>';
+            // Health score
+            var hsColor = data.health_score >= 7 ? '#4ade80' : data.health_score >= 5 ? '#facc15' : '#ff6b6b';
+            h += '<div style="background:var(--bg-dark);border-radius:10px;padding:14px;text-align:center;">';
+            h += '<div style="font-size:0.72em;color:var(--text-muted);margin-bottom:4px;">Health Score</div>';
+            h += '<div style="font-size:1.4em;font-weight:700;color:' + hsColor + ';">' + data.health_score + '<span style="font-size:0.5em;color:var(--text-muted);">/10</span></div></div>';
+            h += '</div></div>';
+
+            // ---- Holdings Detail Table ----
+            h += '<div class="card" style="margin-bottom:16px;overflow-x:auto;"><h2 style="margin-bottom:14px;">Holdings Breakdown</h2>';
+            h += '<table style="width:100%;border-collapse:collapse;font-size:0.82em;">';
+            h += '<thead><tr style="border-bottom:1px solid rgba(255,255,255,0.08);">';
+            h += '<th style="text-align:left;padding:8px 6px;color:var(--text-muted);font-weight:600;">Stock</th>';
+            h += '<th style="text-align:right;padding:8px 6px;color:var(--text-muted);font-weight:600;">Qty</th>';
+            h += '<th style="text-align:right;padding:8px 6px;color:var(--text-muted);font-weight:600;">Avg</th>';
+            h += '<th style="text-align:right;padding:8px 6px;color:var(--text-muted);font-weight:600;">CMP</th>';
+            h += '<th style="text-align:right;padding:8px 6px;color:var(--text-muted);font-weight:600;">P&L %</th>';
+            h += '<th style="text-align:right;padding:8px 6px;color:var(--text-muted);font-weight:600;">RSI</th>';
+            h += '<th style="text-align:center;padding:8px 6px;color:var(--text-muted);font-weight:600;">Signal</th>';
+            h += '</tr></thead><tbody>';
+            var holdings = data.holdings || [];
+            for (var i = 0; i < holdings.length; i++) {
+                var s = holdings[i];
+                var rowBg = i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)';
+                h += '<tr style="border-bottom:1px solid rgba(255,255,255,0.04);background:' + rowBg + ';">';
+                h += '<td style="padding:8px 6px;"><strong style="color:var(--text-primary);">' + (s.nse_symbol || s.stock) + '</strong>';
+                if (s.sector !== 'Unknown') h += '<br><span style="font-size:0.8em;color:var(--text-muted);">' + s.sector + '</span>';
+                h += '</td>';
+                h += '<td style="text-align:right;padding:8px 6px;color:var(--text-secondary);">' + (s.qty || '-') + '</td>';
+                h += '<td style="text-align:right;padding:8px 6px;color:var(--text-secondary);">' + (s.avg_price ? R + parseFloat(s.avg_price).toFixed(0) : '-') + '</td>';
+                h += '<td style="text-align:right;padding:8px 6px;color:var(--text-secondary);">' + (s.live_price ? R + parseFloat(s.live_price).toFixed(0) : '-') + '</td>';
+                h += '<td style="text-align:right;padding:8px 6px;font-weight:600;color:' + pfPnlColor(s.pnl_pct) + ';">' + (s.pnl_pct >= 0 ? '+' : '') + s.pnl_pct + '%</td>';
+                var rsiColor = s.rsi > 70 ? '#ff6b6b' : s.rsi < 30 ? '#4ade80' : 'var(--text-secondary)';
+                h += '<td style="text-align:right;padding:8px 6px;color:' + rsiColor + ';">' + (s.rsi ? s.rsi : '-') + '</td>';
+                h += '<td style="text-align:center;padding:8px 6px;">' + pfSignalBadge(s.signal) + '</td>';
+                h += '</tr>';
+            }
+            h += '</tbody></table></div>';
+
+            // ---- Best & Worst Performers ----
+            h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">';
+            // Best
+            h += '<div class="card"><h3 style="color:#4ade80;margin-bottom:10px;font-size:0.95em;">Top Performers</h3>';
+            for (var b = 0; b < data.best_performers.length; b++) {
+                var bp = data.best_performers[b];
+                h += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);">';
+                h += '<span style="color:var(--text-primary);font-weight:600;font-size:0.88em;">' + (bp.nse_symbol || bp.stock) + '</span>';
+                h += '<span style="color:#4ade80;font-weight:700;font-size:0.88em;">+' + bp.pnl_pct + '%</span></div>';
+            }
+            h += '</div>';
+            // Worst
+            h += '<div class="card"><h3 style="color:#ff6b6b;margin-bottom:10px;font-size:0.95em;">Worst Performers</h3>';
+            for (var w = 0; w < data.worst_performers.length; w++) {
+                var wp = data.worst_performers[w];
+                h += '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);">';
+                h += '<span style="color:var(--text-primary);font-weight:600;font-size:0.88em;">' + (wp.nse_symbol || wp.stock) + '</span>';
+                h += '<span style="color:#ff6b6b;font-weight:700;font-size:0.88em;">' + wp.pnl_pct + '%</span></div>';
+            }
+            h += '</div></div>';
+
+            // ---- Sector Distribution ----
+            h += '<div class="card" style="margin-bottom:16px;"><h2 style="margin-bottom:14px;">Sector Distribution</h2>';
+            var sectors = data.sector_distribution || [];
+            for (var si = 0; si < sectors.length; si++) {
+                var sec = sectors[si];
+                h += '<div style="margin-bottom:10px;">';
+                h += '<div style="display:flex;justify-content:space-between;margin-bottom:3px;">';
+                h += '<span style="font-size:0.85em;color:var(--text-primary);font-weight:600;">' + sec.sector + ' <span style="color:var(--text-muted);font-weight:400;">(' + sec.count + ' stocks)</span></span>';
+                h += '<span style="font-size:0.85em;color:var(--text-secondary);">' + sec.weight_pct + '%</span></div>';
+                h += '<div style="background:rgba(255,255,255,0.06);border-radius:4px;height:6px;overflow:hidden;">';
+                h += '<div style="height:100%;background:var(--accent-gold);border-radius:4px;width:' + Math.min(sec.weight_pct, 100) + '%;"></div></div>';
+                h += '<div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Invested ' + pfFmt(sec.invested) + ' &middot; P&L <span style="color:' + pfPnlColor(sec.pnl) + ';">' + pfFmt(sec.pnl) + '</span></div>';
+                h += '</div>';
+            }
+            if (data.concentration_pct > 50) {
+                h += '<div style="margin-top:10px;padding:8px 12px;background:rgba(255,107,107,0.08);border-radius:8px;font-size:0.82em;color:#ff6b6b;">';
+                h += 'Top 3 holdings make up ' + data.concentration_pct + '% of your portfolio &mdash; consider rebalancing.</div>';
+            }
+            h += '</div>';
+
+            // ---- Action Plan ----
+            h += '<div class="card" style="margin-bottom:16px;"><h2 style="margin-bottom:14px;">Action Plan</h2>';
+            h += '<div style="font-size:0.82em;color:var(--text-muted);margin-bottom:12px;">Based on current technical signals and market regime (' + data.market_regime.state + ')</div>';
+            var actions = data.action_items || [];
+            for (var ai = 0; ai < actions.length; ai++) {
+                var act = actions[ai];
+                var actColor = act.action === 'ADD / HOLD' ? '#4ade80' : act.action === 'CONSIDER EXIT' ? '#ff6b6b' : act.action === 'HOLD' ? '#facc15' : '#888';
+                h += '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);">';
+                h += '<span style="min-width:100px;font-weight:700;color:var(--text-primary);font-size:0.88em;">' + act.stock + '</span>';
+                h += '<span style="display:inline-block;padding:2px 8px;border-radius:6px;font-size:0.75em;font-weight:700;color:var(--bg-dark);background:' + actColor + ';min-width:80px;text-align:center;">' + act.action + '</span>';
+                h += '<span style="font-size:0.82em;color:var(--text-secondary);">' + act.reason + '</span>';
+                h += '</div>';
+            }
+            h += '</div>';
+
+            // ---- What Could Be Better ----
+            if (data.improvements && data.improvements.length > 0) {
+                h += '<div class="card" style="margin-bottom:16px;"><h2 style="margin-bottom:14px;">What Could Be Better</h2>';
+                h += '<ul style="margin:0;padding-left:20px;">';
+                for (var ii = 0; ii < data.improvements.length; ii++) {
+                    h += '<li style="color:var(--text-secondary);font-size:0.88em;line-height:1.7;margin-bottom:6px;">' + data.improvements[ii] + '</li>';
+                }
+                h += '</ul></div>';
+            }
+
+            // ---- Health Score Detail ----
+            h += '<div class="card" style="margin-bottom:16px;"><h2 style="margin-bottom:14px;">Portfolio Health: <span style="color:' + hsColor + ';">' + data.health_score + '/10</span></h2>';
+            h += '<ul style="margin:0;padding-left:20px;">';
+            for (var hi = 0; hi < data.health_reasons.length; hi++) {
+                h += '<li style="color:var(--text-secondary);font-size:0.88em;line-height:1.7;margin-bottom:4px;">' + data.health_reasons[hi] + '</li>';
+            }
+            h += '</ul></div>';
+
+            // ---- Signal Summary ----
+            var ss = data.signals_summary || {};
+            h += '<div class="card" style="margin-bottom:16px;"><h2 style="margin-bottom:14px;">Signal Summary</h2>';
+            h += '<div style="display:flex;gap:16px;flex-wrap:wrap;">';
+            h += '<div style="text-align:center;"><div style="font-size:1.8em;font-weight:700;color:#4ade80;">' + (ss.BUY || 0) + '</div><div style="font-size:0.78em;color:var(--text-muted);">BUY</div></div>';
+            h += '<div style="text-align:center;"><div style="font-size:1.8em;font-weight:700;color:#facc15;">' + (ss.HOLD || 0) + '</div><div style="font-size:0.78em;color:var(--text-muted);">HOLD</div></div>';
+            h += '<div style="text-align:center;"><div style="font-size:1.8em;font-weight:700;color:#ff6b6b;">' + (ss.SELL || 0) + '</div><div style="font-size:0.78em;color:var(--text-muted);">SELL</div></div>';
+            h += '</div></div>';
+
+            el.innerHTML = h;
+            el.style.display = 'block';
+        }
+
         window.addEventListener('DOMContentLoaded', () => {
             init(); initDividendSectors(); setupCapitalInput(); loadProfile();
             requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';});
             const hash = window.location.hash.replace('#','');
-            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner'];
+            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner','portfolio'];
             if (hash && validTabs.includes(hash)) { switchTab(hash); }
         });
     </script>
@@ -8034,6 +8315,626 @@ def prefilter_stream_route():
         yield f"data: {json.dumps({'type': 'done', 'checked': checked, 'passed': passed})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+# ===== PORTFOLIO ADVICE (Groww Report Upload + AI) =====
+
+def _read_file_bytes(file_storage):
+    """Read file bytes from a Flask FileStorage object, handling seek."""
+    file_storage.seek(0)
+    return file_storage.read()
+
+
+def _read_raw_rows(file_storage):
+    """Read raw rows from a CSV or Excel upload.  Returns list[list[str]]."""
+    import io, csv
+    filename = file_storage.filename.lower()
+    raw_bytes = _read_file_bytes(file_storage)
+
+    if filename.endswith('.csv'):
+        text = raw_bytes.decode('utf-8', errors='replace')
+        reader = csv.reader(io.StringIO(text))
+        return [row for row in reader]
+
+    # Excel — try multiple engines
+    for engine in ['openpyxl', 'xlrd', None]:
+        try:
+            buf = io.BytesIO(raw_bytes)
+            tmp = pd.read_excel(buf, engine=engine, header=None, dtype=str) if engine else pd.read_excel(buf, header=None, dtype=str)
+            return tmp.fillna('').values.tolist()
+        except Exception:
+            continue
+    # Last resort: treat as CSV
+    text = raw_bytes.decode('utf-8', errors='replace')
+    reader = csv.reader(io.StringIO(text))
+    return [row for row in reader]
+
+
+def _parse_groww_pnl_sections(raw_rows):
+    """
+    Parse the Groww P&L report which has multiple sections:
+      - Metadata (client code, date range)
+      - Summary
+      - Realised trades (with its own header row)
+      - Unrealised trades (with its own header row)
+      - Charges
+      - Disclaimer
+    Returns a list of dicts with keys like stock_name, qty, buy_price,
+    sell_price, buy_value, sell_value, pnl, pnl_pct, trade_type.
+    """
+    # Normalise every cell to stripped string
+    rows = [[str(c).strip() for c in r] for r in raw_rows]
+
+    # --- Detect section headers by finding rows whose first cell matches
+    # known Groww section markers ---
+    SECTION_MARKERS = {
+        'realised trades', 'realised trade', 'realized trades',
+        'unrealised trades', 'unrealised trade', 'unrealized trades',
+    }
+    SKIP_MARKERS = {
+        'unique client code', 'p&l statement', 'summary', 'p&l', 'charges',
+        'realised p&l', 'unrealised p&l', 'realized p&l', 'unrealized p&l',
+        'sebi charges', 'stamp duty', 'ipft charges', 'brokerage',
+        'dp charges', 'unpledge charges', 'total', 'disclaimer',
+        'disclaimer:', 'groww invest tech',
+    }
+
+    # Locate the header row for each trade section.
+    # A trade-section header row contains 'stock name' (or 'stock') in the first cell.
+    trade_sections = []   # list of (header_row_idx, header_cols)
+    for i, row in enumerate(rows):
+        first = row[0].lower() if row else ''
+        if first in SECTION_MARKERS:
+            # Next non-empty row should be the column header row
+            for j in range(i + 1, min(i + 4, len(rows))):
+                if rows[j] and rows[j][0].lower().replace(' ', '') != '':
+                    hdr_lower = [c.lower().strip() for c in rows[j]]
+                    if any('stock' in h for h in hdr_lower):
+                        trade_sections.append((j, hdr_lower, rows[j]))
+                    break
+
+    # If no section markers found, look for any row with 'stock name' as first cell
+    if not trade_sections:
+        for i, row in enumerate(rows):
+            if row and row[0].lower().strip() in ('stock name', 'stock', 'symbol', 'stock symbol', 'scrip name', 'company name', 'instrument'):
+                hdr_lower = [c.lower().strip() for c in row]
+                trade_sections.append((i, hdr_lower, row))
+
+    # If STILL no sections found, fall back to treating the whole file as a
+    # single table with the first row as header
+    if not trade_sections:
+        if rows:
+            hdr_lower = [c.lower().strip() for c in rows[0]]
+            trade_sections.append((0, hdr_lower, rows[0]))
+
+    # --- Parse each trade section ---
+    parsed_trades = []
+    for sec_idx, (hdr_idx, hdr_lower, _hdr_raw) in enumerate(trade_sections):
+        # Find end of section: next section header, or end of rows
+        next_hdr = trade_sections[sec_idx + 1][0] if sec_idx + 1 < len(trade_sections) else len(rows)
+
+        # Map column indices for known fields
+        def _find_col(candidates):
+            for cand in candidates:
+                for ci, h in enumerate(hdr_lower):
+                    if cand == h or cand in h:
+                        return ci
+            return None
+
+        col_stock = _find_col(['stock name', 'stock', 'symbol', 'scrip', 'instrument', 'company name', 'company'])
+        col_qty = _find_col(['quantity', 'qty', 'total quantity', 'no. of shares'])
+        col_buy_price = _find_col(['buy price', 'buy avg', 'avg. cost', 'avg cost', 'average price', 'purchase price', 'avg price', 'buy rate'])
+        col_sell_price = _find_col(['sell/transfer price', 'sell price', 'transfer price'])
+        col_present_price = _find_col(['present price', 'current price', 'ltp', 'market price', 'close price', 'last price', 'cmp'])
+        col_buy_val = _find_col(['buy value', 'invested value', 'invested', 'total cost', 'cost', 'investment value'])
+        col_sell_val = _find_col(['sell value', 'sell/transfer value'])
+        col_present_val = _find_col(['present value', 'current value', 'market value'])
+        col_pnl = _find_col(['p&l', 'pnl', 'profit/loss', 'realised p&l', 'unrealised p&l', 'realized p&l', 'unrealized p&l', 'profit & loss', 'gain/loss', 'total p&l'])
+        col_pnl_pct = _find_col(['p&l(%)', 'pnl(%)', 'pnl %', 'p&l %', 'returns(%)', 'returns %'])
+        col_isin = _find_col(['isin'])
+        col_trade_type = _find_col(['trade type', 'type'])
+
+        if col_stock is None:
+            col_stock = 0  # fallback
+
+        for ri in range(hdr_idx + 1, next_hdr):
+            row = rows[ri]
+            if not row or len(row) <= col_stock:
+                continue
+            stock_name = row[col_stock].strip()
+            if not stock_name or stock_name.lower() == 'nan':
+                continue
+
+            # Skip known non-stock rows
+            name_lower = stock_name.lower()
+            skip = False
+            for marker in SKIP_MARKERS:
+                if name_lower.startswith(marker):
+                    skip = True
+                    break
+            if skip:
+                continue
+            # Also skip if it looks like a long disclaimer sentence
+            if len(stock_name) > 60 and ' ' in stock_name:
+                continue
+            # Skip "Stock name" (repeated header)
+            if name_lower in ('stock name', 'stock', 'symbol'):
+                continue
+
+            def _num(col_idx):
+                if col_idx is None or col_idx >= len(row):
+                    return None
+                val = row[col_idx].replace(',', '').replace('₹', '').replace('INR', '').replace('%', '').strip()
+                if not val or val.lower() == 'nan' or val == '-' or val == '--':
+                    return None
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    return None
+
+            trade = {
+                'stock_name': stock_name,
+                'isin': row[col_isin].strip() if col_isin is not None and col_isin < len(row) else '',
+                'qty': _num(col_qty),
+                'buy_price': _num(col_buy_price),
+                'sell_price': _num(col_sell_price),
+                'present_price': _num(col_present_price),
+                'buy_value': _num(col_buy_val),
+                'sell_value': _num(col_sell_val),
+                'present_value': _num(col_present_val),
+                'pnl': _num(col_pnl),
+                'pnl_pct': _num(col_pnl_pct),
+                'trade_type': row[col_trade_type].strip().lower() if col_trade_type is not None and col_trade_type < len(row) else '',
+            }
+            parsed_trades.append(trade)
+
+    return parsed_trades
+
+
+def _aggregate_trades(parsed_trades):
+    """
+    Aggregate individual trades into per-stock holdings.
+    Returns a list of dicts ready for enrichment.
+    """
+    from collections import defaultdict
+    stock_agg = defaultdict(lambda: {
+        'stock_name': '', 'isin': '',
+        'total_qty': 0, 'total_buy_value': 0, 'total_sell_value': 0,
+        'total_present_value': 0, 'total_pnl': 0,
+        'last_present_price': None, 'last_buy_price': None,
+        'count': 0,
+    })
+
+    for t in parsed_trades:
+        # Normalise key: use ISIN if available, else uppercase stock name
+        key = t['isin'] if t['isin'] else t['stock_name'].upper().strip()
+        agg = stock_agg[key]
+
+        if not agg['stock_name']:
+            agg['stock_name'] = t['stock_name']
+        if t['isin'] and not agg['isin']:
+            agg['isin'] = t['isin']
+
+        qty = t['qty'] or 0
+        agg['total_qty'] += qty
+        agg['count'] += 1
+
+        if t['buy_value'] is not None:
+            agg['total_buy_value'] += t['buy_value']
+        elif t['buy_price'] is not None and qty:
+            agg['total_buy_value'] += t['buy_price'] * qty
+
+        if t['sell_value'] is not None:
+            agg['total_sell_value'] += t['sell_value']
+        elif t['sell_price'] is not None and qty:
+            agg['total_sell_value'] += t['sell_price'] * qty
+
+        if t['present_value'] is not None:
+            agg['total_present_value'] += t['present_value']
+        elif t['present_price'] is not None and qty:
+            agg['total_present_value'] += t['present_price'] * qty
+
+        if t['pnl'] is not None:
+            agg['total_pnl'] += t['pnl']
+
+        if t['present_price'] is not None:
+            agg['last_present_price'] = t['present_price']
+        if t['buy_price'] is not None:
+            agg['last_buy_price'] = t['buy_price']
+
+    results = []
+    for _key, agg in stock_agg.items():
+        avg_buy = round(agg['total_buy_value'] / agg['total_qty'], 2) if agg['total_qty'] > 0 and agg['total_buy_value'] > 0 else (agg['last_buy_price'] or 0)
+        invested = agg['total_buy_value'] if agg['total_buy_value'] > 0 else 0
+        current_val = agg['total_present_value'] if agg['total_present_value'] > 0 else agg['total_sell_value']
+        pnl = agg['total_pnl']
+        if not pnl and invested > 0 and current_val > 0:
+            pnl = current_val - invested
+
+        results.append({
+            'stock': agg['stock_name'],
+            'isin': agg['isin'],
+            'qty': agg['total_qty'] if agg['total_qty'] else None,
+            'avg_price': avg_buy if avg_buy else None,
+            'ltp': agg['last_present_price'],
+            'invested': invested if invested else None,
+            'current_val': current_val if current_val else None,
+            'pnl': pnl if pnl else None,
+        })
+
+    return results
+
+
+def parse_groww_report(file_storage):
+    """Parse uploaded Groww report (CSV or Excel) and return a structured DataFrame.
+
+    Handles the Groww P&L report format which has multiple sections
+    (metadata, realised trades, unrealised trades, charges, disclaimer).
+    Returns (enrichment_list, error_string).  enrichment_list is a list of
+    dicts with keys: stock, isin, qty, avg_price, ltp, invested, current_val, pnl.
+    """
+    filename = file_storage.filename.lower()
+    if not filename.endswith(('.csv', '.xlsx', '.xls')):
+        return None, "Unsupported file format. Please upload a CSV or Excel (.xlsx) file."
+    try:
+        raw_rows = _read_raw_rows(file_storage)
+    except Exception as e:
+        return None, f"Failed to read file: {str(e)}"
+
+    if not raw_rows or len(raw_rows) < 2:
+        return None, "The uploaded file is empty or has no data rows."
+
+    # Detect if this is a Groww P&L report (multi-section) or simple holdings
+    flat_text = ' '.join(str(c) for row in raw_rows[:15] for c in row).lower()
+    is_pnl_report = any(marker in flat_text for marker in [
+        'realised trades', 'unrealised trades', 'realized trades', 'unrealized trades',
+        'p&l statement', 'unique client code', 'groww',
+    ])
+
+    if is_pnl_report:
+        parsed = _parse_groww_pnl_sections(raw_rows)
+        if not parsed:
+            return None, "Could not find any stock trades in the report. Please verify the file format."
+        aggregated = _aggregate_trades(parsed)
+        return aggregated, None
+
+    # --- Fallback: simple holdings file (first row = header) ---
+    try:
+        import io
+        file_storage.seek(0)
+        if filename.endswith('.csv'):
+            df = pd.read_csv(file_storage)
+        else:
+            raw_bytes = _read_file_bytes(file_storage)
+            df = None
+            for engine in ['openpyxl', 'xlrd', None]:
+                try:
+                    buf = io.BytesIO(raw_bytes)
+                    df = pd.read_excel(buf, engine=engine) if engine else pd.read_excel(buf)
+                    break
+                except Exception:
+                    continue
+            if df is None:
+                return None, "Could not read the Excel file. Please try exporting as CSV from Groww instead."
+    except Exception as e:
+        return None, f"Failed to parse file: {str(e)}"
+
+    if df.empty:
+        return None, "The uploaded file is empty."
+
+    df.columns = [str(c).strip() for c in df.columns]
+    # Convert simple DF to the same list-of-dict format
+    lower_cols = {c.lower(): c for c in df.columns}
+    def _find(keys):
+        for k in keys:
+            if k in lower_cols:
+                return lower_cols[k]
+        return None
+
+    sym_col = _find(['symbol', 'stock symbol', 'ticker', 'scrip', 'stock name', 'name', 'instrument', 'company', 'company name']) or df.columns[0]
+    qty_col = _find(['quantity', 'qty', 'shares', 'no. of shares', 'units', 'total quantity'])
+    avg_col = _find(['avg. cost', 'avg cost', 'average price', 'buy price', 'buy avg', 'purchase price', 'avg price', 'average cost'])
+    ltp_col = _find(['ltp', 'current price', 'market price', 'last price', 'close price', 'present price', 'cmp'])
+    inv_col = _find(['invested value', 'invested', 'total cost', 'cost', 'investment', 'buy value', 'investment value'])
+    cur_col = _find(['current value', 'present value', 'market value', 'current val', 'value'])
+    pnl_col = _find(['p&l', 'pnl', 'profit/loss', 'profit & loss', 'returns', 'gain/loss', 'unrealized p&l', 'total p&l'])
+
+    def _numval(row, col):
+        if col is None or col not in row.index:
+            return None
+        val = str(row[col]).replace(',', '').replace('₹', '').replace('INR', '').replace('%', '').strip()
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return None
+
+    enrichment = []
+    for _, row in df.iterrows():
+        stock_name = str(row[sym_col]).strip()
+        if not stock_name or stock_name.lower() == 'nan':
+            continue
+        enrichment.append({
+            'stock': stock_name,
+            'isin': '',
+            'qty': _numval(row, qty_col),
+            'avg_price': _numval(row, avg_col),
+            'ltp': _numval(row, ltp_col),
+            'invested': _numval(row, inv_col),
+            'current_val': _numval(row, cur_col),
+            'pnl': _numval(row, pnl_col),
+        })
+
+    return enrichment, None
+
+
+def enrich_portfolio_with_live_data(holdings_list):
+    """Take parsed holdings list and fetch live CMP for recognized tickers.
+
+    Accepts the list-of-dicts from parse_groww_report (not a DataFrame).
+    """
+    for entry in holdings_list:
+        stock = entry['stock']
+        try:
+            normalized, _ = Analyzer.normalize_symbol(stock)
+            if normalized:
+                ticker_obj = yf.Ticker(normalized + '.NS')
+                hist = ticker_obj.history(period='5d')
+                if not hist.empty:
+                    entry['live_price'] = round(float(hist['Close'].iloc[-1]), 2)
+                    entry['nse_symbol'] = normalized
+        except Exception:
+            pass
+
+    return holdings_list
+
+
+@app.route('/portfolio-advice', methods=['POST'])
+def portfolio_advice_route():
+    """Handle Groww report upload and return data-driven portfolio advice using the analysis engine."""
+    if 'report' not in request.files:
+        return jsonify({'error': 'No file uploaded. Please select a Groww report file.'}), 400
+
+    file = request.files['report']
+    if not file.filename:
+        return jsonify({'error': 'No file selected.'}), 400
+
+    # Parse the report (returns list of dicts, not DataFrame)
+    holdings_list, err = parse_groww_report(file)
+    if err:
+        return jsonify({'error': err}), 400
+
+    # Enrich with live data
+    portfolio = enrich_portfolio_with_live_data(holdings_list)
+    if not portfolio:
+        return jsonify({'error': 'Could not extract any stock holdings from the uploaded file. Please check the file format.'}), 400
+
+    try:
+        # Compute totals
+        total_invested = 0
+        total_current = 0
+        total_pnl = 0
+
+        for entry in portfolio:
+            if isinstance(entry.get('invested'), (int, float)):
+                total_invested += entry['invested']
+            if isinstance(entry.get('current_val'), (int, float)):
+                total_current += entry['current_val']
+            elif isinstance(entry.get('qty'), (int, float)) and isinstance(entry.get('live_price'), (int, float)):
+                entry['current_val'] = round(entry['qty'] * entry['live_price'], 2)
+                total_current += entry['current_val']
+            if isinstance(entry.get('pnl'), (int, float)):
+                total_pnl += entry['pnl']
+            elif isinstance(entry.get('invested'), (int, float)) and isinstance(entry.get('current_val'), (int, float)):
+                entry['pnl'] = round(entry['current_val'] - entry['invested'], 2)
+                total_pnl += entry['pnl']
+
+        # Run analyzer signals for each recognized stock
+        holdings_detail = []
+        sector_map = {}
+        signals_summary = {'BUY': 0, 'SELL': 0, 'HOLD': 0}
+
+        for entry in portfolio:
+            detail = {
+                'stock': entry['stock'],
+                'nse_symbol': entry.get('nse_symbol', ''),
+                'qty': entry.get('qty', 0),
+                'avg_price': entry.get('avg_price', 0),
+                'live_price': entry.get('live_price', entry.get('ltp', 0)),
+                'invested': entry.get('invested', 0),
+                'current_val': entry.get('current_val', 0),
+                'pnl': entry.get('pnl', 0),
+                'pnl_pct': 0,
+                'signal': 'N/A',
+                'confidence': 0,
+                'target': 0,
+                'stop': 0,
+                'risk_reward': '',
+                'sector': 'Unknown',
+                'rsi': 0,
+                'trend': '',
+            }
+            if isinstance(detail['invested'], (int, float)) and detail['invested'] > 0:
+                detail['pnl_pct'] = round(detail['pnl'] / detail['invested'] * 100, 1) if isinstance(detail['pnl'], (int, float)) else 0
+
+            nse = entry.get('nse_symbol')
+            if nse:
+                # Sector lookup
+                detail['sector'] = TICKER_TO_SECTOR.get(nse, 'Unknown')
+
+                # Run full analysis
+                try:
+                    result = analyzer.analyze(nse)
+                    if result and 'signal' in result:
+                        sig = result['signal']
+                        detail['signal'] = sig.get('signal', 'N/A')
+                        detail['confidence'] = sig.get('confidence', 0)
+                        detail['target'] = sig.get('target_raw', 0)
+                        detail['stop'] = sig.get('stop_raw', 0)
+                        detail['risk_reward'] = sig.get('risk_reward', '')
+                        detail['trend'] = sig.get('trend_explain', '')
+                        if result.get('indicators'):
+                            detail['rsi'] = round(result['indicators'].get('rsi', 0), 1)
+                except Exception:
+                    pass
+
+            # Sector distribution
+            sec = detail['sector']
+            if sec not in sector_map:
+                sector_map[sec] = {'count': 0, 'invested': 0, 'current': 0, 'pnl': 0}
+            sector_map[sec]['count'] += 1
+            if isinstance(detail['invested'], (int, float)):
+                sector_map[sec]['invested'] += detail['invested']
+            if isinstance(detail['current_val'], (int, float)):
+                sector_map[sec]['current'] += detail['current_val']
+            if isinstance(detail['pnl'], (int, float)):
+                sector_map[sec]['pnl'] += detail['pnl']
+
+            if detail['signal'] in signals_summary:
+                signals_summary[detail['signal']] += 1
+
+            holdings_detail.append(detail)
+
+        # Sort by P&L% for best/worst
+        sorted_by_pnl = sorted([h for h in holdings_detail if isinstance(h['pnl_pct'], (int, float))], key=lambda x: x['pnl_pct'], reverse=True)
+        best_performers = sorted_by_pnl[:3] if len(sorted_by_pnl) >= 3 else sorted_by_pnl
+        worst_performers = sorted_by_pnl[-3:] if len(sorted_by_pnl) >= 3 else sorted_by_pnl
+        worst_performers = list(reversed(worst_performers))
+
+        # Concentration risk: top 3 holdings by invested amount
+        sorted_by_invested = sorted([h for h in holdings_detail if isinstance(h['invested'], (int, float)) and h['invested'] > 0], key=lambda x: x['invested'], reverse=True)
+        top3_invested = sum(h['invested'] for h in sorted_by_invested[:3])
+        concentration_pct = round(top3_invested / total_invested * 100, 1) if total_invested > 0 else 0
+
+        # Market regime
+        market_regime = {'state': 'neutral', 'score': 0.5}
+        try:
+            regime_state, regime_score, regime_details = analyzer._get_market_regime()
+            market_regime = {'state': regime_state, 'score': round(regime_score, 2)}
+        except Exception:
+            pass
+
+        # Sector distribution for response
+        sector_distribution = []
+        for sec_name, sec_data in sorted(sector_map.items(), key=lambda x: x[1]['invested'], reverse=True):
+            sec_pct = round(sec_data['invested'] / total_invested * 100, 1) if total_invested > 0 else 0
+            sector_distribution.append({
+                'sector': sec_name,
+                'count': sec_data['count'],
+                'invested': round(sec_data['invested'], 2),
+                'current': round(sec_data['current'], 2),
+                'pnl': round(sec_data['pnl'], 2),
+                'weight_pct': sec_pct,
+            })
+
+        # Action items based on signals
+        action_items = []
+        for h in holdings_detail:
+            if h['signal'] == 'BUY':
+                action_items.append({'stock': h['nse_symbol'] or h['stock'], 'action': 'ADD / HOLD', 'reason': f"Bullish signal (confidence {h['confidence']}%). Target: {h['target']}"})
+            elif h['signal'] == 'SELL':
+                action_items.append({'stock': h['nse_symbol'] or h['stock'], 'action': 'CONSIDER EXIT', 'reason': f"Bearish signal (confidence {h['confidence']}%). Stop: {h['stop']}"})
+            elif h['signal'] == 'HOLD':
+                action_items.append({'stock': h['nse_symbol'] or h['stock'], 'action': 'HOLD', 'reason': f"Neutral / no strong signal (confidence {h['confidence']}%)"})
+            else:
+                action_items.append({'stock': h['nse_symbol'] or h['stock'], 'action': 'REVIEW', 'reason': 'Could not analyze — symbol not recognized on NSE'})
+
+        # Health score (0-10)
+        health = 5.0
+        health_reasons = []
+
+        # Diversification: penalize if <5 stocks or >60% in top 3
+        if len(holdings_detail) >= 8:
+            health += 0.5
+            health_reasons.append(f"Good diversification with {len(holdings_detail)} holdings")
+        elif len(holdings_detail) < 4:
+            health -= 1.0
+            health_reasons.append(f"Low diversification — only {len(holdings_detail)} stocks")
+
+        if concentration_pct > 60:
+            health -= 1.0
+            health_reasons.append(f"High concentration — top 3 stocks are {concentration_pct}% of portfolio")
+        elif concentration_pct < 40:
+            health += 0.5
+            health_reasons.append(f"Well-spread allocation — top 3 stocks are {concentration_pct}%")
+
+        # Sector diversity
+        if len(sector_map) >= 4:
+            health += 0.5
+            health_reasons.append(f"Spread across {len(sector_map)} sectors")
+        elif len(sector_map) <= 2:
+            health -= 0.5
+            health_reasons.append(f"Sector concentration — only {len(sector_map)} sector(s)")
+
+        # Overall P&L
+        overall_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
+        if overall_pnl_pct > 15:
+            health += 1.5
+            health_reasons.append(f"Strong overall returns at {overall_pnl_pct:+.1f}%")
+        elif overall_pnl_pct > 5:
+            health += 0.5
+            health_reasons.append(f"Positive returns at {overall_pnl_pct:+.1f}%")
+        elif overall_pnl_pct < -10:
+            health -= 1.5
+            health_reasons.append(f"Significant losses at {overall_pnl_pct:+.1f}%")
+        elif overall_pnl_pct < 0:
+            health -= 0.5
+            health_reasons.append(f"Portfolio in the red at {overall_pnl_pct:+.1f}%")
+
+        # Signal alignment with market
+        if signals_summary.get('BUY', 0) > signals_summary.get('SELL', 0) and market_regime['state'] == 'bullish':
+            health += 0.5
+            health_reasons.append("Holdings align with bullish market regime")
+        elif signals_summary.get('SELL', 0) > signals_summary.get('BUY', 0):
+            health -= 0.5
+            health_reasons.append("Multiple holdings showing bearish signals")
+
+        # Losers check
+        big_losers = [h for h in holdings_detail if isinstance(h['pnl_pct'], (int, float)) and h['pnl_pct'] < -20]
+        if big_losers:
+            health -= 0.5
+            health_reasons.append(f"{len(big_losers)} stock(s) down more than 20% — consider reviewing")
+
+        health = max(1, min(10, round(health, 1)))
+
+        # Improvement suggestions
+        improvements = []
+        if concentration_pct > 50:
+            top_stock = sorted_by_invested[0]['nse_symbol'] or sorted_by_invested[0]['stock'] if sorted_by_invested else ''
+            improvements.append(f"Portfolio is top-heavy — {top_stock} alone may carry outsized risk. Consider trimming and rebalancing.")
+        losers_held = [h for h in holdings_detail if isinstance(h['pnl_pct'], (int, float)) and h['pnl_pct'] < -15 and h['signal'] == 'SELL']
+        if losers_held:
+            names = ', '.join(h['nse_symbol'] or h['stock'] for h in losers_held[:3])
+            improvements.append(f"Stocks like {names} are down significantly and showing sell signals — holding on may be adding risk.")
+        if len(sector_map) <= 2:
+            improvements.append("The portfolio is concentrated in very few sectors. Adding exposure to other sectors would reduce risk.")
+        if len(holdings_detail) < 5:
+            improvements.append("With fewer than 5 stocks, a single bad performer can drag the whole portfolio. Consider adding more positions.")
+        no_signal = [h for h in holdings_detail if h['signal'] == 'N/A']
+        if no_signal:
+            names = ', '.join(h['stock'] for h in no_signal[:3])
+            improvements.append(f"Could not analyze {names} — these stocks were not recognized as NSE tickers. Verify these holdings.")
+
+        return jsonify({
+            'holdings_count': len(holdings_detail),
+            'total_invested': round(total_invested, 2),
+            'total_current': round(total_current, 2),
+            'total_pnl': round(total_pnl, 2),
+            'overall_pnl_pct': round(overall_pnl_pct, 1),
+            'holdings': holdings_detail,
+            'best_performers': best_performers,
+            'worst_performers': worst_performers,
+            'sector_distribution': sector_distribution,
+            'concentration_pct': concentration_pct,
+            'market_regime': market_regime,
+            'signals_summary': signals_summary,
+            'action_items': action_items,
+            'health_score': health,
+            'health_reasons': health_reasons,
+            'improvements': improvements,
+        })
+
+    except Exception as e:
+        return jsonify({'error': f'Analysis failed: {str(e)}'}), 500
 
 
 if __name__ == '__main__':
