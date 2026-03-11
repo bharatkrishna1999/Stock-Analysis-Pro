@@ -1249,13 +1249,158 @@ class Analyzer:
             sma50_window = min(50, len(close))
             sma20 = float(close.rolling(sma20_window).mean().iloc[-1])
             sma50 = float(close.rolling(sma50_window).mean().iloc[-1])
+
+            # ── Williams %R ──
+            wr_period = min(14, len(close))
+            highest_high = high.rolling(wr_period).max()
+            lowest_low = low.rolling(wr_period).min()
+            wr_denom = highest_high - lowest_low
+            williams_r_series = pd.Series(np.where(wr_denom > 0, (highest_high - close) / wr_denom * -100, -50.0), index=close.index)
+            williams_r = float(williams_r_series.iloc[-1])
+            if pd.isna(williams_r):
+                williams_r = -50.0
+            # Signal: check for cross-back from extremes
+            williams_r_prev = float(williams_r_series.iloc[-2]) if len(williams_r_series) > 1 else williams_r
+            if williams_r_prev < -80 and williams_r > -80:
+                williams_r_signal = 'POTENTIAL BOTTOM'
+            elif williams_r_prev > -20 and williams_r < -20:
+                williams_r_signal = 'POTENTIAL TOP'
+            else:
+                williams_r_signal = 'NEUTRAL'
+
+            # ── Bollinger %B ──
+            if (bb_upper - bb_lower) > 0:
+                percent_b = (curr - bb_lower) / (bb_upper - bb_lower)
+            else:
+                percent_b = 0.5
+            if percent_b < 0:
+                percent_b_signal = 'OVERSOLD'
+            elif percent_b > 1:
+                percent_b_signal = 'OVERBOUGHT'
+            elif percent_b < 0.5:
+                percent_b_signal = 'LOWER HALF'
+            else:
+                percent_b_signal = 'UPPER HALF'
+
+            # ── RSI Divergence Detection ──
+            rsi_divergence = 'NONE'
+            rsi_divergence_detail = ''
+            try:
+                lookback_div = min(20, len(close) - 1)
+                if lookback_div >= 5:
+                    price_window = close.iloc[-lookback_div:].values.astype(float)
+                    rsi_window_vals = rsi_series.iloc[-lookback_div:].values.astype(float)
+                    # Find local minima and maxima using simple comparison
+                    price_lows = []
+                    price_highs = []
+                    for idx in range(1, len(price_window) - 1):
+                        if price_window[idx] < price_window[idx - 1] and price_window[idx] < price_window[idx + 1]:
+                            price_lows.append(idx)
+                        if price_window[idx] > price_window[idx - 1] and price_window[idx] > price_window[idx + 1]:
+                            price_highs.append(idx)
+                    # Bullish divergence: price lower low + RSI higher low
+                    if len(price_lows) >= 2:
+                        i1, i2 = price_lows[-2], price_lows[-1]
+                        if price_window[i2] < price_window[i1] and rsi_window_vals[i2] > rsi_window_vals[i1]:
+                            rsi_divergence = 'BULLISH DIVERGENCE'
+                            rsi_divergence_detail = f'Price made lower low, RSI made higher low over last {lookback_div} candles. Selling momentum is exhausting.'
+                    # Bearish divergence: price higher high + RSI lower high
+                    if rsi_divergence == 'NONE' and len(price_highs) >= 2:
+                        i1, i2 = price_highs[-2], price_highs[-1]
+                        if price_window[i2] > price_window[i1] and rsi_window_vals[i2] < rsi_window_vals[i1]:
+                            rsi_divergence = 'BEARISH DIVERGENCE'
+                            rsi_divergence_detail = f'Price made higher high, RSI made lower high over last {lookback_div} candles. Buying momentum is fading.'
+            except Exception:
+                pass
+            if not rsi_divergence_detail:
+                rsi_divergence_detail = 'No divergence detected in recent price action.'
+
+            # ── Volume exhaustion (for confidence score) ──
+            volume_exhaustion = False
+            try:
+                vol = data.get('Volume')
+                if vol is not None:
+                    if isinstance(vol, pd.DataFrame):
+                        vol = vol.iloc[:, 0]
+                    vol = vol.dropna()
+                    if len(vol) >= 20:
+                        vol_sma20 = float(vol.iloc[-20:].mean())
+                        curr_vol = float(vol.iloc[-1])
+                        volume_exhaustion = curr_vol < vol_sma20
+            except Exception:
+                pass
+
+            # ── Local Minima/Maxima Confidence Score (out of 5) ──
+            bottom_points = 0
+            top_points = 0
+            confidence_checks = {}
+            # 1. RSI extreme
+            if rsi < 30:
+                bottom_points += 1
+                confidence_checks['rsi'] = {'met': True, 'label': f'RSI Oversold ({rsi:.1f})'}
+            elif rsi > 70:
+                top_points += 1
+                confidence_checks['rsi'] = {'met': True, 'label': f'RSI Overbought ({rsi:.1f})'}
+            else:
+                confidence_checks['rsi'] = {'met': False, 'label': f'RSI Neutral ({rsi:.1f})'}
+            # 2. Williams %R reversing from extreme
+            if williams_r_signal == 'POTENTIAL BOTTOM':
+                bottom_points += 1
+                confidence_checks['williams'] = {'met': True, 'label': 'Williams %R reversing from oversold'}
+            elif williams_r_signal == 'POTENTIAL TOP':
+                top_points += 1
+                confidence_checks['williams'] = {'met': True, 'label': 'Williams %R reversing from overbought'}
+            else:
+                confidence_checks['williams'] = {'met': False, 'label': 'Williams %R not at extreme'}
+            # 3. Bollinger %B outside 0-1
+            if percent_b < 0:
+                bottom_points += 1
+                confidence_checks['bb'] = {'met': True, 'label': 'Price below Bollinger Lower Band'}
+            elif percent_b > 1:
+                top_points += 1
+                confidence_checks['bb'] = {'met': True, 'label': 'Price above Bollinger Upper Band'}
+            else:
+                confidence_checks['bb'] = {'met': False, 'label': 'Price within Bollinger Bands'}
+            # 4. Volume exhaustion
+            if volume_exhaustion:
+                bottom_points += 1
+                top_points += 1
+                confidence_checks['volume'] = {'met': True, 'label': 'Volume declining (exhaustion)'}
+            else:
+                confidence_checks['volume'] = {'met': False, 'label': 'Volume not showing exhaustion'}
+            # 5. RSI Divergence
+            if rsi_divergence == 'BULLISH DIVERGENCE':
+                bottom_points += 1
+                confidence_checks['divergence'] = {'met': True, 'label': 'Bullish RSI divergence detected'}
+            elif rsi_divergence == 'BEARISH DIVERGENCE':
+                top_points += 1
+                confidence_checks['divergence'] = {'met': True, 'label': 'Bearish RSI divergence detected'}
+            else:
+                confidence_checks['divergence'] = {'met': False, 'label': 'No RSI divergence confirmed'}
+
+            if bottom_points >= 3 and bottom_points >= top_points:
+                minmax_type = 'BOTTOM'
+                minmax_score = bottom_points
+            elif top_points >= 3 and top_points > bottom_points:
+                minmax_type = 'TOP'
+                minmax_score = top_points
+            else:
+                minmax_type = 'MIXED'
+                minmax_score = max(bottom_points, top_points)
+
             result = {
                 'price': curr, 'sma9': sma9, 'sma5': sma5, 'sma20': sma20, 'sma50': sma50,
                 'daily': daily_ret, 'hourly': hourly_ret,
                 'rsi': rsi, 'macd_bullish': bool(macd_bullish), 'high': h, 'low': l,
                 'pct_from_low': pct_from_low, 'zscore': zscore, 'pct_deviation': pct_deviation,
                 'mean_price': mean_price, 'std_price': std_price, 'bb_upper': bb_upper,
-                'bb_lower': bb_lower, 'bb_position': bb_position, 'volatility': volatility
+                'bb_lower': bb_lower, 'bb_position': bb_position, 'volatility': volatility,
+                'williams_r': williams_r, 'williams_r_signal': williams_r_signal,
+                'percent_b': round(percent_b, 4), 'percent_b_signal': percent_b_signal,
+                'rsi_divergence': rsi_divergence, 'rsi_divergence_detail': rsi_divergence_detail,
+                'volume_exhaustion': volume_exhaustion,
+                'minmax_type': minmax_type, 'minmax_score': minmax_score,
+                'confidence_checks': confidence_checks,
             }
             return result
         except Exception as e:
@@ -1589,6 +1734,51 @@ class Analyzer:
             exit_explain = f"If already holding, consider taking profits at ₹{target_price:.2f}."
             confidence_explain = f"{confidence}% confidence. Moderate confidence suggests waiting for better setup."
             time_explain = f"Market consolidating. Wait for breakout confirmation."
+        # ── Williams %R explain ──
+        wr_val = i.get('williams_r', -50)
+        wr_signal = i.get('williams_r_signal', 'NEUTRAL')
+        williams_r_explain = f"Williams %R: {wr_val:.1f}"
+        if wr_signal == 'POTENTIAL BOTTOM':
+            williams_r_explain += " → Reversing from oversold zone. Potential bottom forming."
+        elif wr_signal == 'POTENTIAL TOP':
+            williams_r_explain += " → Reversing from overbought zone. Potential top forming."
+        elif wr_val < -80:
+            williams_r_explain += " → Deep oversold. Watching for reversal signal."
+        elif wr_val > -20:
+            williams_r_explain += " → Overbought territory. Watching for pullback."
+        else:
+            williams_r_explain += " → Neutral zone. No extreme reading."
+
+        # ── Bollinger %B explain ──
+        pb_val = i.get('percent_b', 0.5)
+        pb_signal = i.get('percent_b_signal', 'LOWER HALF')
+        percent_b_explain = f"%B: {pb_val:.2f}"
+        if pb_val < 0:
+            percent_b_explain += " → Price is outside the lower band. Statistically extreme. Mean reversion likely."
+        elif pb_val > 1:
+            percent_b_explain += " → Price is outside the upper band. Statistically extreme. Pullback likely."
+        elif pb_val < 0.5:
+            percent_b_explain += " → Price in lower half of bands. Closer to support."
+        else:
+            percent_b_explain += " → Price in upper half of bands. Closer to resistance."
+
+        # ── RSI Divergence explain ──
+        rsi_div = i.get('rsi_divergence', 'NONE')
+        rsi_div_detail = i.get('rsi_divergence_detail', 'No divergence detected.')
+        rsi_divergence_explain = f"RSI Divergence: {rsi_div_detail}"
+
+        # ── Min/Max Confidence Score explain ──
+        mm_type = i.get('minmax_type', 'MIXED')
+        mm_score = i.get('minmax_score', 0)
+        checks = i.get('confidence_checks', {})
+
+        # ── Confidence score note for regime integration ──
+        minmax_regime_note = ''
+        if mm_type == 'BOTTOM' and mm_score >= 4:
+            minmax_regime_note = f"High bottom confidence score ({mm_score}/5) detected. Consider scaling in cautiously despite bearish regime."
+        elif mm_type == 'TOP' and mm_score >= 4:
+            minmax_regime_note = f"High top confidence score ({mm_score}/5) detected. This reinforces caution on long positions."
+
         return {
             'signal': {
                 'signal': sig, 'action': action, 'rec': rec,
@@ -1611,7 +1801,11 @@ class Analyzer:
                 'entry_explain': entry_explain, 'exit_explain': exit_explain, 'confidence_explain': confidence_explain,
                 'time_explain': time_explain, 'trend_explain': trend_explain, 'momentum_explain': momentum_explain,
                 'rsi_explain': rsi_explain, 'position_explain': position_explain, 'zscore_explain': zscore_explain,
-                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers"
+                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers",
+                'williams_r_explain': williams_r_explain,
+                'percent_b_explain': percent_b_explain,
+                'rsi_divergence_explain': rsi_divergence_explain,
+                'minmax_regime_note': minmax_regime_note,
             },
             'details': {
                 'price': f"₹{i['price']:.2f}", 'price_raw': round(i['price'], 2),
@@ -1627,7 +1821,16 @@ class Analyzer:
                 'bb_upper': f"₹{i['bb_upper']:.2f}", 'bb_lower': f"₹{i['bb_lower']:.2f}",
                 'bb_position': round(i['bb_position'], 0), 'bb_label': bb_label,
                 'volatility': f"{i['volatility']:.2f}%", 'macd': "BULLISH" if i['macd_bullish'] else "BEARISH",
-                'macd_bullish': i['macd_bullish']
+                'macd_bullish': i['macd_bullish'],
+                'williams_r': round(i.get('williams_r', -50), 1),
+                'williams_r_signal': i.get('williams_r_signal', 'NEUTRAL'),
+                'percent_b': round(i.get('percent_b', 0.5), 4),
+                'percent_b_signal': i.get('percent_b_signal', 'NEUTRAL'),
+                'rsi_divergence': i.get('rsi_divergence', 'NONE'),
+                'rsi_divergence_detail': i.get('rsi_divergence_detail', ''),
+                'minmax_type': i.get('minmax_type', 'MIXED'),
+                'minmax_score': i.get('minmax_score', 0),
+                'confidence_checks': i.get('confidence_checks', {}),
             }
         }
 
@@ -2260,6 +2463,11 @@ class Analyzer:
                 f"Risk adjusted from {original_risk}% to {adjusted_risk}% "
                 f"(regime factor x{regime_factor})."
             )
+
+        # --- Integrate minmax confidence note ---
+        minmax_note = sig_data.get('minmax_regime_note', '')
+        if minmax_note:
+            reason_parts.append(minmax_note)
 
         regime_reason_text = " ".join(reason_parts)
 
@@ -5231,6 +5439,30 @@ def dashboard():
                             </button>
                             <div class="tsc-accordion-content" id="tsc-tech-details">
                                 <div class="tsc-accordion-inner">
+                                    <!-- LOCAL MINIMA/MAXIMA CONFIDENCE SCORE -->
+                                    <div class="tsc-tech-item" style="border:1px solid ${d.minmax_type === 'BOTTOM' ? 'var(--accent-green)' : d.minmax_type === 'TOP' ? 'var(--danger)' : 'var(--warning)'};border-radius:10px;padding:16px;">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name" style="font-size:1.05em;">Turning Point Confidence Score</span>
+                                            <span class="tsc-tech-item-value" style="font-size:1.2em;font-weight:700;color:${d.minmax_type === 'BOTTOM' ? 'var(--accent-green)' : d.minmax_type === 'TOP' ? 'var(--danger)' : 'var(--warning)'};">
+                                                ${d.minmax_type === 'BOTTOM' ? 'Bottom' : d.minmax_type === 'TOP' ? 'Top' : 'Mixed Signals'}: ${d.minmax_score}/5
+                                            </span>
+                                        </div>
+                                        <div style="margin:10px 0 6px;font-size:0.88em;line-height:1.7;color:var(--text-secondary);">
+                                            ${(function(){
+                                                var checks = d.confidence_checks || {};
+                                                var lines = '';
+                                                var order = ['rsi','williams','bb','volume','divergence'];
+                                                for(var ci=0;ci<order.length;ci++){
+                                                    var ck = checks[order[ci]];
+                                                    if(ck) lines += '<div>' + (ck.met ? '✅' : '❌') + ' ' + ck.label + '</div>';
+                                                }
+                                                return lines;
+                                            })()}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is this score?</strong> This score counts how many independent signals are agreeing that a turning point may be near. No single indicator is reliable alone — but when 4 or 5 are all flashing the same warning at the same time, the probability of a local bottom or top rises significantly. Think of it like a weather forecast: one cloud doesn't mean rain, but five clouds, falling pressure, and humidity all together usually do.
+                                        </div>
+                                    </div>
                                     <!-- RSI -->
                                     <div class="tsc-tech-item">
                                         <div class="tsc-tech-item-header">
@@ -5296,6 +5528,45 @@ def dashboard():
                                             <strong>What are Bollinger Bands?</strong> Picture a highway with lanes. The middle lane is the average price, and the outer lanes (upper and lower bands) represent where the price "usually" stays. When the price drives onto the shoulder (touches the upper band), it's probably going too fast and will merge back. When it drifts to the other shoulder (lower band), it's likely to bounce back toward the center. About 95% of price action stays within these bands.
                                         </div>
                                     </div>
+                                    <!-- Williams %R -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">Williams %R</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.williams_r_signal === 'POTENTIAL BOTTOM' ? 'var(--accent-green)' : d.williams_r_signal === 'POTENTIAL TOP' ? 'var(--danger)' : 'var(--text-primary)'};">${d.williams_r_signal}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.williams_r_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is Williams %R?</strong> Think of Williams %R like a bungee cord. When the cord is fully stretched down (below -80), the snap back upward is likely. When it's fully stretched upward (above -20), gravity tends to pull it back down. It's one of the most sensitive indicators for spotting turning points before they happen.
+                                        </div>
+                                    </div>
+                                    <!-- Bollinger %B -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">Bollinger Band %B</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.percent_b_signal === 'OVERSOLD' ? 'var(--accent-green)' : d.percent_b_signal === 'OVERBOUGHT' ? 'var(--danger)' : d.percent_b_signal === 'LOWER HALF' ? 'var(--warning)' : 'var(--text-primary)'};">${d.percent_b_signal}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.percent_b_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is Bollinger %B?</strong> Bollinger %B tells you exactly where price sits within its normal range, expressed as a number between 0 and 1. Zero means you're at the bottom boundary, 1 means you're at the top. When it goes negative, price has broken below its statistical range — like a ball pushed underwater, it tends to float back up.
+                                        </div>
+                                    </div>
+                                    <!-- RSI Divergence -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">RSI Divergence</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.rsi_divergence === 'BULLISH DIVERGENCE' ? 'var(--accent-green)' : d.rsi_divergence === 'BEARISH DIVERGENCE' ? 'var(--danger)' : 'var(--text-primary)'};">${d.rsi_divergence === 'NONE' ? 'NO DIVERGENCE' : d.rsi_divergence}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.rsi_divergence_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is RSI Divergence?</strong> Divergence is when price and momentum stop agreeing. If price falls to a new low but RSI refuses to follow, it means sellers are losing energy even as price drops — like a wave that looks big but has no force behind it. This is often the earliest warning sign of a reversal.
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -5320,6 +5591,8 @@ def dashboard():
                                         <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">BB Lower</div><div class="tsc-calc-detail-value">${d.bb_lower}</div></div>
                                         <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">% from Mean</div><div class="tsc-calc-detail-value" style="color:${parseFloat(d.pct_deviation)>=0?'var(--accent-cyan)':'var(--accent-purple)'};">${d.pct_deviation}</div></div>
                                         <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Volatility</div><div class="tsc-calc-detail-value">${d.volatility}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Bollinger %B</div><div class="tsc-calc-detail-value" style="color:${d.percent_b < 0 ? 'var(--accent-green)' : d.percent_b > 1 ? 'var(--danger)' : 'var(--text-primary)'};">${d.percent_b !== undefined ? d.percent_b.toFixed(4) : 'N/A'}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Williams %R</div><div class="tsc-calc-detail-value" style="color:${d.williams_r < -80 ? 'var(--accent-green)' : d.williams_r > -20 ? 'var(--danger)' : 'var(--text-primary)'};">${d.williams_r !== undefined ? d.williams_r.toFixed(1) : 'N/A'}</div></div>
                                     </div>
                                 </div>
                             </div>
