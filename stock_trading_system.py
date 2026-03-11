@@ -8326,15 +8326,34 @@ def parse_groww_report(file_storage):
         if filename.endswith('.csv'):
             df = pd.read_csv(file_storage)
         elif filename.endswith(('.xlsx', '.xls')):
-            import openpyxl  # noqa: F401
-            df = pd.read_excel(file_storage, engine='openpyxl')
+            # Read bytes once so we can retry with different engines
+            file_bytes = file_storage.read()
+            import io
+            df = None
+            # Try openpyxl first, then xlrd, then default engine
+            for engine in ['openpyxl', 'xlrd', None]:
+                try:
+                    buf = io.BytesIO(file_bytes)
+                    if engine:
+                        df = pd.read_excel(buf, engine=engine)
+                    else:
+                        df = pd.read_excel(buf)
+                    break
+                except Exception:
+                    continue
+            if df is None:
+                # Last resort: try csv in case the .xlsx is actually csv
+                try:
+                    df = pd.read_csv(io.BytesIO(file_bytes))
+                except Exception:
+                    return None, "Could not read the Excel file. Please try exporting as CSV from Groww instead."
         else:
             return None, "Unsupported file format. Please upload a CSV or Excel (.xlsx) file."
 
         if df.empty:
             return None, "The uploaded file is empty."
 
-        # Normalize column names: strip whitespace, lowercase
+        # Normalize column names: strip whitespace
         df.columns = [c.strip() for c in df.columns]
 
         return df, None
