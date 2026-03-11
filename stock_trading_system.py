@@ -4348,6 +4348,8 @@ def dashboard():
         .portfolio-upload-card { max-width: 920px; margin: 0 auto 18px; }
         .portfolio-upload-area { border:1px dashed var(--border-color); border-radius:12px; background:var(--bg-dark); padding:18px; }
         .portfolio-upload-area textarea { width:100%; min-height:220px; resize:vertical; border:1px solid var(--border-color); border-radius:10px; background:var(--bg-card); color:var(--text-primary); padding:14px; font-family:'Inter',sans-serif; font-size:0.92em; }
+        .portfolio-file-input { width:100%; margin:0 0 10px; padding:10px; border:1px solid var(--border-color); border-radius:10px; background:var(--bg-card); color:var(--text-secondary); font-size:0.88em; }
+        .portfolio-file-label { display:block; font-size:0.78em; color:var(--text-muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:0.5px; }
         .portfolio-upload-actions { display:flex; gap:10px; margin-top:12px; flex-wrap:wrap; }
         .portfolio-upload-btn { padding:10px 14px; border-radius:8px; border:1px solid rgba(201,168,76,0.35); background:rgba(201,168,76,0.12); color:var(--accent-cyan); font-family:'Space Grotesk',sans-serif; font-weight:700; cursor:pointer; }
         .portfolio-upload-note { font-size:0.8em; color:var(--text-muted); margin-top:10px; line-height:1.5; }
@@ -4564,18 +4566,20 @@ def dashboard():
         <div id="portfolio-tab" class="tab-content">
             <div class="card portfolio-upload-card">
                 <h2>Groww Portfolio Coach</h2>
-                <p style="color:var(--text-muted);margin-bottom:12px;">Paste your Groww portfolio report text (holdings, invested value, current value, P/L, allocation) and get an actionable summary.</p>
+                <p style="color:var(--text-muted);margin-bottom:12px;">Upload your Groww report file (preferred), or paste report text manually, and get an actionable summary.</p>
                 <div class="portfolio-upload-area">
-                    <textarea id="portfolio-report-input" placeholder="Paste report text here...
+                    <label class="portfolio-file-label" for="portfolio-report-file">Upload report file</label>
+                    <input id="portfolio-report-file" class="portfolio-file-input" type="file" accept=".txt,.csv,.xlsx,.xls,.pdf">
+                    <textarea id="portfolio-report-input" placeholder="Optional fallback: paste report text here...
 Example:
 HDFCBANK Qty 20 Avg 1550 LTP 1678 P/L 2560
 TCS Qty 8 Avg 3760 LTP 4020 P/L 2080
 ..."></textarea>
                     <div class="portfolio-upload-actions">
                         <button class="portfolio-upload-btn" onclick="analyzePortfolioReport()">Analyze Report</button>
-                        <button class="portfolio-upload-btn" onclick="document.getElementById('portfolio-report-input').value='';document.getElementById('portfolio-report-output').innerHTML='';">Clear</button>
+                        <button class="portfolio-upload-btn" onclick="document.getElementById('portfolio-report-input').value='';document.getElementById('portfolio-report-file').value='';document.getElementById('portfolio-report-output').innerHTML='';">Clear</button>
                     </div>
-                    <div class="portfolio-upload-note">This tool is educational and heuristic-based, not investment advice. Verify decisions with your advisor.</div>
+                    <div class="portfolio-upload-note">Supported: .txt, .csv, .xlsx, .xls (PDF accepted but may have limited extraction depending on content). This tool is educational and heuristic-based, not investment advice.</div>
                 </div>
                 <div id="portfolio-report-output" class="portfolio-report"></div>
             </div>
@@ -7028,20 +7032,32 @@ TCS Qty 8 Avg 3760 LTP 4020 P/L 2080
 
         function analyzePortfolioReport() {
             var input = document.getElementById('portfolio-report-input');
+            var fileEl = document.getElementById('portfolio-report-file');
             var out = document.getElementById('portfolio-report-output');
-            if (!input || !out) return;
+            if (!input || !out || !fileEl) return;
+
             var raw = (input.value || '').trim();
-            if (!raw) {
-                out.innerHTML = '<div class="error">Please paste your Groww report first.</div>';
+            var file = (fileEl.files && fileEl.files.length > 0) ? fileEl.files[0] : null;
+            if (!file && !raw) {
+                out.innerHTML = '<div class="error">Please upload your Groww report file or paste the report text.</div>';
                 return;
             }
+
             out.innerHTML = '<div class="loading">⏳ Reading your portfolio report...</div>';
-            fetch('/portfolio-advice', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ report_text: raw })
-            })
-            .then(function(r){ return r.json(); })
+            var req;
+            if (file) {
+                var formData = new FormData();
+                formData.append('report_file', file);
+                req = fetch('/portfolio-advice', { method: 'POST', body: formData });
+            } else {
+                req = fetch('/portfolio-advice', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ report_text: raw })
+                });
+            }
+
+            req.then(function(r){ return r.json(); })
             .then(function(data){
                 if (data.error) {
                     out.innerHTML = '<div class="error">❌ ' + data.error + '</div>';
@@ -7098,6 +7114,37 @@ def _extract_signed_amounts(text):
         except Exception:
             pass
     return vals
+
+
+
+def _report_text_from_uploaded_file(uploaded_file):
+    if not uploaded_file:
+        return ''
+    filename = (uploaded_file.filename or '').lower()
+    blob = uploaded_file.read() or b''
+    if not blob:
+        return ''
+
+    if filename.endswith(('.txt', '.csv')):
+        return blob.decode('utf-8', errors='ignore')
+
+    if filename.endswith(('.xlsx', '.xls')):
+        try:
+            bio = io.BytesIO(blob)
+            xls = pd.ExcelFile(bio)
+            chunks = []
+            for sheet in xls.sheet_names[:5]:
+                bio.seek(0)
+                df = pd.read_excel(bio, sheet_name=sheet)
+                chunks.append(df.to_csv(index=False))
+            return '\n'.join(chunks)
+        except Exception:
+            return ''
+
+    if filename.endswith('.pdf'):
+        return ''
+
+    return blob.decode('utf-8', errors='ignore')
 
 
 def _portfolio_advice_from_text(report_text):
@@ -7173,12 +7220,22 @@ def _portfolio_advice_from_text(report_text):
 
 @app.route('/portfolio-advice', methods=['POST'])
 def portfolio_advice_route():
-    payload = request.get_json(silent=True) or {}
-    report_text = (payload.get('report_text') or '').strip()
+    report_text = ''
+
+    uploaded = request.files.get('report_file')
+    if uploaded and uploaded.filename:
+        report_text = (_report_text_from_uploaded_file(uploaded) or '').strip()
+        if not report_text:
+            return jsonify({'error': 'Could not read this file. Please upload TXT/CSV/XLSX (PDF text extraction is limited) or paste text manually.'}), 400
+
     if not report_text:
-        return jsonify({'error': 'Please provide Groww report text in report_text.'}), 400
+        payload = request.get_json(silent=True) or {}
+        report_text = (payload.get('report_text') or '').strip()
+
+    if not report_text:
+        return jsonify({'error': 'Please upload report file or provide report_text.'}), 400
     if len(report_text) < 20:
-        return jsonify({'error': 'Report text looks too short. Please paste a fuller report snapshot.'}), 400
+        return jsonify({'error': 'Report content looks too short. Please upload a fuller report snapshot.'}), 400
     try:
         return jsonify(_portfolio_advice_from_text(report_text))
     except Exception as e:
