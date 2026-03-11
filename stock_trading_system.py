@@ -19,7 +19,6 @@ import time
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from scipy import stats
 from datetime import datetime, timedelta, date
 import warnings
 import matplotlib
@@ -47,8 +46,6 @@ app.config['COMPRESS_MIN_SIZE'] = 500
 DIVIDEND_CACHE_TTL = timedelta(hours=6)
 DIVIDEND_CACHE = {}
 DIVIDEND_MAX_RESULTS = 150
-DIVIDEND_BATCH_SIZE = 50
-DIVIDEND_MAX_WORKERS = 4
 
 DEFAULT_ANALYSIS_PERIOD = '6mo'
 DEFAULT_ANALYSIS_INTERVAL = '1d'
@@ -67,9 +64,9 @@ YAHOO_TICKER_ALIASES = {
 # Organized by sector for better UX, but includes 500+ stocks
 
 STOCKS = {
-    'IT Sector': ['TCS', 'INFY', 'HCLTECH', 'WIPRO', 'TECHM', 'LTIM', 'COFORGE', 'MPHASIS', 'PERSISTENT', 
-                  'MINDTREE', 'L&TTS', 'SONATSOFTW', 'TATAELXSI', 'ROLTA', 'CYIENT', 'KPITTECH', 
-                  'INTELLECT', 'MASTEK', 'ZENSAR', 'POLYCAB'],
+    'IT Sector': ['TCS', 'INFY', 'HCLTECH', 'WIPRO', 'TECHM', 'LTIM', 'COFORGE', 'MPHASIS', 'PERSISTENT',
+                  'LTTS', 'SONATSOFTW', 'TATAELXSI', 'CYIENT', 'KPITTECH',
+                  'INTELLECT', 'MASTEK', 'ZENSAR'],
     
     'Banking': ['HDFCBANK', 'ICICIBANK', 'SBIN', 'KOTAKBANK', 'AXISBANK', 'INDUSINDBK', 'BANKBARODA', 
                 'PNB', 'FEDERALBNK', 'AUBANK', 'BANDHANBNK', 'IDFCFIRSTB', 'RBLBANK', 'CANBK', 
@@ -82,32 +79,32 @@ STOCKS = {
     'Auto': ['MARUTI', 'TATAMOTORS', 'M&M', 'BAJAJ-AUTO', 'EICHERMOT', 'HEROMOTOCO', 'TVSMOTOR', 
              'ASHOKLEY', 'ESCORTS', 'FORCEMOT', 'MAHINDCIE', 'SONACOMS', 'TIINDIA'],
     
-    'Auto Components': ['BOSCHLTD', 'MOTHERSON', 'BALKRISIND', 'MRF', 'APOLLOTYRE', 'EXIDEIND', 
-                        'AMARAJABAT', 'BHARAT', 'CEATLTD', 'SCHAEFFLER', 'SUPRAJIT', 'ENDURANCE'],
+    'Auto Components': ['BOSCHLTD', 'MOTHERSON', 'BALKRISIND', 'MRF', 'APOLLOTYRE', 'EXIDEIND',
+                        'ARE&M', 'BHARATFORG', 'CEATLTD', 'SCHAEFFLER', 'SUPRAJIT', 'ENDURANCE'],
     
-    'Pharma': ['SUNPHARMA', 'DRREDDY', 'CIPLA', 'DIVISLAB', 'LUPIN', 'BIOCON', 'AUROPHARMA', 
-               'TORNTPHARM', 'ALKEM', 'CADILAHC', 'IPCALAB', 'GRANULES', 'GLENMARK', 'NATCOPHARMA',
+    'Pharma': ['SUNPHARMA', 'DRREDDY', 'CIPLA', 'DIVISLAB', 'LUPIN', 'BIOCON', 'AUROPHARMA',
+               'TORNTPHARM', 'ALKEM', 'ZYDUSLIFE', 'IPCALAB', 'GRANULES', 'GLENMARK', 'NATCOPHARMA',
                'JBCHEPHARM', 'LAURUSLABS', 'PFIZER', 'ABBOTINDIA', 'GLAXO', 'SANOFI'],
     
     'Healthcare': ['APOLLOHOSP', 'MAXHEALTH', 'FORTIS', 'LALPATHLAB', 'METROPOLIS', 'DRREDDY',
                    'THYROCARE', 'ASTER', 'RAINBOW'],
     
-    'Consumer Goods': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP', 
+    'Consumer Goods': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP',
                        'COLPAL', 'TATACONSUM', 'EMAMILTD', 'VBL', 'RADICO', 'UBL', 'MCDOWELL-N',
-                       'PGHH', 'GILLETTE', 'JYOTHYLAB', 'BAJAJCON', 'VINATIORGA'],
+                       'PGHH', 'GILLETTE', 'JYOTHYLAB', 'BAJAJCON'],
     
-    'Retail': ['DMART', 'TRENT', 'TITAN', 'ABFRL', 'SHOPERSTOP', 'JUBLFOOD', 'WESTLIFE', 
-               'DEVYANI', 'SPENCERS', 'VMART', 'BATA'],
+    'Retail': ['DMART', 'TRENT', 'TITAN', 'ABFRL', 'SHOPERSTOP', 'JUBLFOOD', 'WESTLIFE',
+               'DEVYANI', 'SPENCERS', 'VMART', 'BATA', 'KALYANKJIL'],
     
     'Energy - Oil & Gas': ['RELIANCE', 'ONGC', 'BPCL', 'IOC', 'GAIL', 'HINDPETRO', 'PETRONET', 
                            'OIL', 'MGL', 'IGL', 'GUJGASLTD', 'ATGL'],
     
-    'Power': ['NTPC', 'POWERGRID', 'ADANIPOWER', 'TATAPOWER', 'TORNTPOWER', 'ADANIGREEN', 
-              'NHPC', 'SJVN', 'JSW', 'CESC', 'PFC', 'RECLTD'],
+    'Power': ['NTPC', 'POWERGRID', 'ADANIPOWER', 'TATAPOWER', 'TORNTPOWER', 'ADANIGREEN',
+              'NHPC', 'SJVN', 'JSWENERGY', 'CESC', 'PFC', 'RECLTD'],
     
-    'Metals & Mining': ['TATASTEEL', 'HINDALCO', 'JSWSTEEL', 'COALINDIA', 'VEDL', 'NMDC', 'SAIL', 
-                        'NATIONALUM', 'JINDALSTEL', 'HINDZINC', 'RATNAMANI', 'WELCORP', 'WELSPUNIND',
-                        'MOIL', 'GMRINFRA'],
+    'Metals & Mining': ['TATASTEEL', 'HINDALCO', 'JSWSTEEL', 'COALINDIA', 'VEDL', 'NMDC', 'SAIL',
+                        'NATIONALUM', 'JINDALSTEL', 'HINDZINC', 'RATNAMANI', 'WELCORP',
+                        'MOIL'],
     
     'Cement': ['ULTRACEMCO', 'GRASIM', 'SHREECEM', 'AMBUJACEM', 'ACC', 'DALMIACEM', 'JKCEMENT',
                'RAMCOCEM', 'HEIDELBERG', 'ORIENTCEM', 'JKLAKSHMI', 'STARCEMENT'],
@@ -115,34 +112,34 @@ STOCKS = {
     'Real Estate': ['DLF', 'GODREJPROP', 'OBEROIRLTY', 'PRESTIGE', 'BRIGADE', 'PHOENIXLTD', 
                     'SOBHA', 'LODHA', 'MAHLIFE', 'SUNTECK'],
     
-    'Infrastructure': ['LT', 'ADANIENT', 'ADANIPORTS', 'SIEMENS', 'ABB', 'CUMMINSIND', 'VOLTAS', 
-                       'NCC', 'PNC', 'KNR', 'IRCTC', 'CONCOR', 'IRFC', 'GMR'],
+    'Infrastructure': ['LT', 'ADANIENT', 'ADANIPORTS', 'SIEMENS', 'ABB', 'CUMMINSIND', 'VOLTAS',
+                       'NCC', 'PNC', 'KNR', 'IRCTC', 'CONCOR', 'IRFC', 'GMRINFRA', 'AIAENG'],
     
-    'Telecom': ['BHARTIARTL', 'IDEA', 'TATACOMM', 'ROUTE'],
+    'Telecom': ['BHARTIARTL', 'IDEA', 'TATACOMM'],
     
     'Media': ['ZEEL', 'SUNTV', 'PVRINOX', 'SAREGAMA', 'TIPS', 'NAZARA', 'NETWORK18'],
     
-    'Chemicals': ['UPL', 'PIDILITIND', 'AARTIIND', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT', 
-                  'TATACHEM', 'BALRAMCHIN', 'ALKYLAMINE', 'CLEAN', 'NOCIL', 'TATAchemicals',
+    'Chemicals': ['UPL', 'PIDILITIND', 'AARTIIND', 'SRF', 'DEEPAKNTR', 'GNFC', 'CHAMBLFERT',
+                  'TATACHEM', 'ALKYLAMINE', 'CLEAN', 'NOCIL', 'VINATIORGA',
                   'ATUL', 'FINEORG', 'NAVINFLUOR'],
     
-    'Paints': ['ASIANPAINT', 'BERGER', 'KANSAINER', 'INDIGO'],
+    'Paints': ['ASIANPAINT', 'BERGEPAINT', 'KANSAINER'],
     
-    'Textiles': ['GRASIM', 'AIAENG', 'RAYMOND', 'ARVIND', 'WELSPUNIND', 'TRIDENT', 'KPR'],
+    'Textiles': ['GRASIM', 'RAYMOND', 'ARVIND', 'WELSPUNIND', 'TRIDENT', 'KPR'],
     
     'Logistics': ['CONCOR', 'VRL', 'MAHLOG', 'BLUEDART', 'TCI', 'AEGISCHEM', 'GATI'],
     
     'Aviation': ['INDIGO', 'SPICEJET'],
     
-    'Hospitality': ['INDHOTEL', 'LEMONTREE', 'CHOICEINT', 'EIH', 'CHALET', 'ITCHOTELS'],
+    'Hospitality': ['INDHOTEL', 'LEMONTREE', 'EIH', 'CHALET', 'ITCHOTELS'],
     
-    'Construction': ['LT', 'NCC', 'PNC', 'KNR', 'ASHOKA', 'SADBHAV', 'HG'],
+    'Construction': ['LT', 'NCC', 'PNC', 'KNR', 'ASHOKA', 'SADBHAV', 'HGINFRA'],
     
     'FMCG': ['HINDUNILVR', 'ITC', 'NESTLEIND', 'BRITANNIA', 'DABUR', 'MARICO', 'GODREJCP',
-             'TATACONSUM', 'EMAMILTD', 'JYOTHYLAB', 'BAJAJCON', 'VBL'],
+             'TATACONSUM', 'EMAMILTD', 'JYOTHYLAB', 'BAJAJCON', 'VBL', 'BALRAMCHIN'],
     
-    'Electronics': ['DIXON', 'AMBER', 'ROUTE', 'POLYCAB', 'HAVELLS', 'CROMPTON', 'VGUARD',
-                    'KEI', 'FINOLEX', 'KALYANKJIL'],
+    'Electronics': ['DIXON', 'AMBER', 'POLYCAB', 'HAVELLS', 'CROMPTON', 'VGUARD',
+                    'KEI', 'FINOLEX'],
     
     'Conglomerate': ['RELIANCE', 'LT', 'ITC', 'ADANIENT', 'TATASTEEL', 'M&M', 'SIEMENS'],
     
@@ -226,6 +223,12 @@ class HybridTTLCache:
         with self.lock:
             self.memory[key] = {'timestamp': datetime.utcnow(), 'value': value}
             self._prune()
+            self._persist_disk()
+
+    def clear(self):
+        """Wipe all entries (memory + disk)."""
+        with self.lock:
+            self.memory = {}
             self._persist_disk()
 
 
@@ -355,32 +358,6 @@ def _save_universe_cache(symbols, source):
         print(f"  [cache] Saved {len(symbols)} symbols to disk (source: {source})")
     except Exception as e:
         print(f"  [cache] Failed to save cache: {e}")
-
-
-def _compute_split_adjusted_dividend(dividends, splits):
-    """Adjust historical dividends to current share count using split data."""
-    if dividends is None or dividends.empty:
-        return 0.0
-    if splits is None or splits.empty:
-        return float(dividends.sum())
-
-    splits = splits[splits > 0].sort_index()
-    if splits.empty:
-        return float(dividends.sum())
-
-    split_dates = splits.index
-    split_values = splits.values
-    cumulative_from_end = np.cumprod(split_values[::-1])[::-1]
-
-    adjusted_total = 0.0
-    for div_date, div_value in dividends.items():
-        idx = split_dates.searchsorted(div_date, side="right")
-        if idx < len(split_values):
-            factor = cumulative_from_end[idx]
-        else:
-            factor = 1.0
-        adjusted_total += float(div_value) / factor
-    return float(adjusted_total)
 
 
 def _fy_dates(n_years_back=0):
@@ -532,12 +509,373 @@ def add_universe_sector(stocks_dict):
 
 add_universe_sector(STOCKS)
 
+# ===== DYNAMIC SECTOR CLASSIFICATION FOR UNASSIGNED STOCKS =====
+# Maps yfinance sector/industry strings to our sector names in STOCKS dict.
+
+SECTOR_CACHE_FILE = os.path.join(_SCRIPT_DIR, ".sector_classification_cache.json")
+
+# yfinance sector field -> our sector name
+YF_SECTOR_MAP = {
+    'Technology': 'IT Sector',
+    'Financial Services': 'Financial Services',
+    'Healthcare': 'Healthcare',
+    'Consumer Cyclical': 'Consumer Goods',
+    'Consumer Defensive': 'FMCG',
+    'Basic Materials': 'Chemicals',
+    'Energy': 'Energy - Oil & Gas',
+    'Industrials': 'Infrastructure',
+    'Real Estate': 'Real Estate',
+    'Communication Services': 'Telecom',
+    'Utilities': 'Power',
+}
+
+# yfinance industry field -> our sector name (overrides YF_SECTOR_MAP when matched)
+YF_INDUSTRY_MAP = {
+    # Banking
+    'Banks—Regional': 'Banking',
+    'Banks—Diversified': 'Banking',
+    'Banks - Regional': 'Banking',
+    'Banks - Diversified': 'Banking',
+    # Pharma & Healthcare
+    'Drug Manufacturers—General': 'Pharma',
+    'Drug Manufacturers—Specialty & Generic': 'Pharma',
+    'Drug Manufacturers - General': 'Pharma',
+    'Drug Manufacturers - Specialty & Generic': 'Pharma',
+    'Pharmaceutical Retailers': 'Pharma',
+    'Biotechnology': 'Pharma',
+    'Diagnostics & Research': 'Healthcare',
+    'Medical Instruments & Supplies': 'Healthcare',
+    'Medical Devices': 'Healthcare',
+    'Medical Care Facilities': 'Healthcare',
+    'Medical Distribution': 'Healthcare',
+    'Health Information Services': 'Healthcare',
+    'Healthcare Plans': 'Healthcare',
+    # Auto
+    'Auto Manufacturers': 'Auto',
+    'Auto - Manufacturers': 'Auto',
+    'Auto Parts': 'Auto Components',
+    'Auto - Parts': 'Auto Components',
+    'Auto & Truck Dealerships': 'Auto',
+    'Farm & Heavy Construction Machinery': 'Auto Components',
+    'Recreational Vehicles': 'Auto',
+    # Metals & Mining
+    'Steel': 'Metals & Mining',
+    'Aluminum': 'Metals & Mining',
+    'Copper': 'Metals & Mining',
+    'Other Industrial Metals & Mining': 'Metals & Mining',
+    'Gold': 'Metals & Mining',
+    'Silver': 'Metals & Mining',
+    'Coking Coal': 'Metals & Mining',
+    'Thermal Coal': 'Metals & Mining',
+    'Industrial Metals & Minerals': 'Metals & Mining',
+    # Cement & Building Materials
+    'Building Materials': 'Cement',
+    'Building Products & Equipment': 'Cement',
+    # Media & Entertainment
+    'Entertainment': 'Media',
+    'Broadcasting': 'Media',
+    'Electronic Gaming & Multimedia': 'Media',
+    'Publishing': 'Media',
+    'Advertising Agencies': 'Media',
+    'Internet Content & Information': 'Media',
+    # Aviation
+    'Airlines': 'Aviation',
+    'Airports & Air Services': 'Aviation',
+    # Hospitality
+    'Lodging': 'Hospitality',
+    'Resorts & Casinos': 'Hospitality',
+    'Restaurants': 'Hospitality',
+    'Travel Services': 'Hospitality',
+    # Textiles & Apparel
+    'Textile Manufacturing': 'Textiles',
+    'Apparel Manufacturing': 'Textiles',
+    'Apparel Retail': 'Textiles',
+    'Footwear & Accessories': 'Retail',
+    # Logistics
+    'Integrated Freight & Logistics': 'Logistics',
+    'Marine Shipping': 'Logistics',
+    'Trucking': 'Logistics',
+    'Railroads': 'Logistics',
+    # Retail
+    'Specialty Retail': 'Retail',
+    'Department Stores': 'Retail',
+    'Luxury Goods': 'Retail',
+    'Grocery Stores': 'Retail',
+    'Home Improvement Retail': 'Retail',
+    'Internet Retail': 'Retail',
+    'Discount Stores': 'Retail',
+    # Insurance & Financial Services
+    'Insurance—Life': 'Financial Services',
+    'Insurance—Diversified': 'Financial Services',
+    'Insurance—Property & Casualty': 'Financial Services',
+    'Insurance—Reinsurance': 'Financial Services',
+    'Insurance—Specialty': 'Financial Services',
+    'Insurance - Life': 'Financial Services',
+    'Insurance - Diversified': 'Financial Services',
+    'Insurance - Property & Casualty': 'Financial Services',
+    'Insurance - Reinsurance': 'Financial Services',
+    'Insurance - Specialty': 'Financial Services',
+    'Insurance Brokers': 'Financial Services',
+    'Capital Markets': 'Financial Services',
+    'Asset Management': 'Financial Services',
+    'Financial Data & Stock Exchanges': 'Financial Services',
+    'Credit Services': 'Financial Services',
+    'Mortgage Finance': 'Financial Services',
+    'Financial Conglomerates': 'Financial Services',
+    'Shell Companies': 'Financial Services',
+    # Chemicals
+    'Specialty Chemicals': 'Chemicals',
+    'Chemicals': 'Chemicals',
+    'Agricultural Inputs': 'Chemicals',
+    'Chemicals - Major Diversified': 'Chemicals',
+    # FMCG
+    'Packaged Foods': 'FMCG',
+    'Beverages—Non-Alcoholic': 'FMCG',
+    'Beverages—Brewers': 'FMCG',
+    'Beverages—Wineries & Distilleries': 'FMCG',
+    'Beverages - Non-Alcoholic': 'FMCG',
+    'Beverages - Brewers': 'FMCG',
+    'Beverages - Wineries & Distilleries': 'FMCG',
+    'Tobacco': 'FMCG',
+    'Household & Personal Products': 'FMCG',
+    'Personal Products & Services': 'FMCG',
+    'Confectioners': 'FMCG',
+    'Meat Products': 'FMCG',
+    'Farm Products': 'FMCG',
+    # Consumer Goods
+    'Furnishings, Fixtures & Appliances': 'Consumer Goods',
+    'Home Furnishings & Fixtures': 'Consumer Goods',
+    'Packaging & Containers': 'Consumer Goods',
+    'Paper & Paper Products': 'Consumer Goods',
+    'Rubber & Plastics': 'Consumer Goods',
+    'Leisure': 'Consumer Goods',
+    # Paints
+    'Paints': 'Paints',
+    # Power / Utilities
+    'Utilities—Regulated Electric': 'Power',
+    'Utilities—Renewable': 'Power',
+    'Utilities—Diversified': 'Power',
+    'Utilities—Independent Power Producers': 'Power',
+    'Utilities—Regulated Gas': 'Power',
+    'Utilities—Regulated Water': 'Power',
+    'Utilities - Regulated Electric': 'Power',
+    'Utilities - Renewable': 'Power',
+    'Utilities - Diversified': 'Power',
+    'Utilities - Independent Power Producers': 'Power',
+    'Utilities - Regulated Gas': 'Power',
+    'Utilities - Regulated Water': 'Power',
+    'Independent Power Producers': 'Power',
+    'Solar': 'Power',
+    # Oil & Gas specifics
+    'Oil & Gas E&P': 'Energy - Oil & Gas',
+    'Oil & Gas Integrated': 'Energy - Oil & Gas',
+    'Oil & Gas Refining & Marketing': 'Energy - Oil & Gas',
+    'Oil & Gas Equipment & Services': 'Energy - Oil & Gas',
+    'Oil & Gas Drilling': 'Energy - Oil & Gas',
+    'Oil & Gas Midstream': 'Energy - Oil & Gas',
+    # Electronics & Electrical
+    'Consumer Electronics': 'Electronics',
+    'Electronic Components': 'Electronics',
+    'Electrical Equipment & Parts': 'Electronics',
+    'Scientific & Technical Instruments': 'Electronics',
+    'Semiconductor Equipment & Materials': 'Electronics',
+    'Semiconductors': 'Electronics',
+    # Construction & Infrastructure
+    'Engineering & Construction': 'Construction',
+    'Infrastructure Operations': 'Infrastructure',
+    'Rental & Leasing Services': 'Infrastructure',
+    'Waste Management': 'Infrastructure',
+    'Conglomerates': 'Infrastructure',
+    'Industrial Distribution': 'Infrastructure',
+    'Diversified Industrials': 'Infrastructure',
+    'Pollution & Treatment Controls': 'Infrastructure',
+    'Security & Protection Services': 'Infrastructure',
+    'Staffing & Employment Services': 'Infrastructure',
+    'Consulting Services': 'Infrastructure',
+    'Business Equipment & Supplies': 'Infrastructure',
+    'Specialty Business Services': 'Infrastructure',
+    # IT Sector
+    'Software—Application': 'IT Sector',
+    'Software—Infrastructure': 'IT Sector',
+    'Software - Application': 'IT Sector',
+    'Software - Infrastructure': 'IT Sector',
+    'Information Technology Services': 'IT Sector',
+    'Computer Hardware': 'IT Sector',
+    'Communication Equipment': 'IT Sector',
+    'Data Storage': 'IT Sector',
+    'IT Consulting & Other Services': 'IT Sector',
+    # Telecom
+    'Telecom Services': 'Telecom',
+    'Telecommunication Services': 'Telecom',
+    # Real Estate
+    'Real Estate—Development': 'Real Estate',
+    'Real Estate—Diversified': 'Real Estate',
+    'Real Estate - Development': 'Real Estate',
+    'Real Estate - Diversified': 'Real Estate',
+    'Real Estate Services': 'Real Estate',
+    'REIT—Diversified': 'Real Estate',
+    'REIT—Specialty': 'Real Estate',
+    'REIT - Diversified': 'Real Estate',
+    'REIT - Specialty': 'Real Estate',
+    # Education (-> Others)
+    'Education & Training Services': 'Others',
+}
+
+
+def _load_sector_cache():
+    """Load cached sector classifications from disk."""
+    try:
+        if os.path.exists(SECTOR_CACHE_FILE):
+            with open(SECTOR_CACHE_FILE, "r") as f:
+                data = json.load(f)
+            mapping = data.get("mapping", {})
+            if mapping:
+                print(f"  [sectors] Loaded {len(mapping)} cached sector classifications")
+                return mapping
+    except Exception as e:
+        print(f"  [sectors] Failed to load sector cache: {e}")
+    return {}
+
+
+def _save_sector_cache(mapping):
+    """Persist sector classifications to disk."""
+    try:
+        with open(SECTOR_CACHE_FILE, "w") as f:
+            json.dump({
+                "mapping": mapping,
+                "saved_at": datetime.utcnow().isoformat(),
+                "count": len(mapping),
+            }, f)
+        print(f"  [sectors] Saved {len(mapping)} sector classifications to cache")
+    except Exception as e:
+        print(f"  [sectors] Failed to save sector cache: {e}")
+
+
+def _resolve_sector(yf_sector, yf_industry):
+    """Map yfinance sector/industry to our sector name. Industry takes priority.
+
+    Falls back to 'Others' if yfinance provides a sector but we have no mapping,
+    so every stock with yfinance data gets classified.
+    """
+    if yf_industry and yf_industry in YF_INDUSTRY_MAP:
+        return YF_INDUSTRY_MAP[yf_industry]
+    if yf_sector and yf_sector in YF_SECTOR_MAP:
+        return YF_SECTOR_MAP[yf_sector]
+    # If yfinance returned *some* sector but we don't have a mapping, use Others
+    if yf_sector:
+        return 'Others'
+    return None
+
+
+def _fetch_sector_for_symbol(symbol):
+    """Fetch sector classification for a single symbol from yfinance."""
+    try:
+        ns_sym = symbol if symbol.endswith('.NS') else symbol + '.NS'
+        info = yf.Ticker(ns_sym).info
+        yf_sector = info.get('sector', '')
+        yf_industry = info.get('industry', '')
+        resolved = _resolve_sector(yf_sector, yf_industry)
+        return resolved, yf_sector, yf_industry
+    except Exception:
+        return None, '', ''
+
+
+def classify_unassigned_stocks(stocks_dict, max_fetch=0, workers=16):
+    """Classify stocks that are only in 'All NSE' into proper sectors.
+
+    Uses a disk cache so that yfinance is only called for new/unknown symbols.
+    Set max_fetch=0 (default) to fetch ALL uncached symbols. First run may
+    take a few minutes but subsequent startups use the cache instantly.
+    """
+    universe_key = UNIVERSE_SECTOR_NAME
+    if universe_key not in stocks_dict:
+        return
+
+    # Collect symbols already assigned to a real sector
+    skip_sectors = {universe_key, 'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
+    already_assigned = set()
+    for sector_name, tickers in stocks_dict.items():
+        if sector_name not in skip_sectors:
+            already_assigned.update(tickers)
+
+    # Symbols that need classification
+    universe_symbols = set(stocks_dict.get(universe_key, []))
+    unassigned = sorted(universe_symbols - already_assigned)
+
+    if not unassigned:
+        print("  [sectors] All stocks already have sector assignments")
+        return
+
+    print(f"  [sectors] {len(unassigned)} stocks need sector classification")
+
+    # Load cache
+    cache = _load_sector_cache()
+
+    # Split into cached vs needs-fetch
+    # Also re-fetch stocks cached as "Others" — expanded mappings may classify them now
+    to_fetch = []
+    for sym in unassigned:
+        if sym not in cache:
+            to_fetch.append(sym)
+        elif cache[sym] in ('Others', ''):
+            to_fetch.append(sym)
+            del cache[sym]  # remove so they get re-fetched and re-applied
+
+    # Apply cached classifications first
+    assigned_count = 0
+    for sym in unassigned:
+        if sym in cache:
+            sector = cache[sym]
+            if not sector:
+                sector = 'Others'           # re-map old empty cache entries
+                cache[sym] = sector
+            if sector in stocks_dict:
+                stocks_dict[sector].append(sym)
+            else:
+                stocks_dict[sector] = [sym]
+            assigned_count += 1
+
+    if assigned_count:
+        print(f"  [sectors] Applied {assigned_count} cached sector assignments")
+
+    # Fetch new classifications (no cap by default — all uncached get fetched)
+    fetch_batch = to_fetch[:max_fetch] if max_fetch > 0 else to_fetch
+    if fetch_batch:
+        print(f"  [sectors] Fetching sectors for {len(fetch_batch)} new symbols from yfinance...")
+
+        def _fetch_one(sym):
+            resolved, yf_sec, yf_ind = _fetch_sector_for_symbol(sym)
+            return sym, resolved, yf_sec, yf_ind
+
+        new_assigned = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_fetch_one, fetch_batch))
+
+        for sym, resolved, yf_sec, yf_ind in results:
+            # If yfinance returned nothing at all, assign to Others so no stock is left orphaned
+            if not resolved:
+                resolved = 'Others'
+            cache[sym] = resolved
+            if resolved in stocks_dict:
+                stocks_dict[resolved].append(sym)
+            else:
+                stocks_dict[resolved] = [sym]
+            new_assigned += 1
+
+        print(f"  [sectors] Newly classified {new_assigned}/{len(fetch_batch)} stocks")
+
+        _save_sector_cache(cache)
+
+
+# Run classification before deduplication
+classify_unassigned_stocks(STOCKS)
+
 # Enhanced company name mapping with MANY more variations
 COMPANY_TO_TICKER = {
     # IT Sector
     'VEDANTA': 'VEDL', 'TATA CONSULTANCY': 'TCS', 'TATA CONSULTANCY SERVICES': 'TCS', 'INFOSYS': 'INFY',
     'HCL TECH': 'HCLTECH', 'HCL TECHNOLOGIES': 'HCLTECH', 'TECH MAHINDRA': 'TECHM', 'L&T INFOTECH': 'LTIM',
-    'LTI': 'LTIM', 'MINDTREE': 'MINDTREE', 'COFORGE': 'COFORGE', 'MPHASIS': 'MPHASIS',
+    'LTI': 'LTIM', 'MINDTREE': 'LTIM', 'L&TTS': 'LTTS', 'COFORGE': 'COFORGE', 'MPHASIS': 'MPHASIS',
     'PERSISTENT': 'PERSISTENT', 'TATA ELXSI': 'TATAELXSI', 'CYIENT': 'CYIENT',
     
     # Banking
@@ -566,13 +904,14 @@ COMPANY_TO_TICKER = {
     
     # Auto Components
     'BOSCH': 'BOSCHLTD', 'MRF': 'MRF', 'APOLLO TYRES': 'APOLLOTYRE', 'APOLLO': 'APOLLOTYRE',
-    'EXIDE': 'EXIDEIND', 'EXIDE INDUSTRIES': 'EXIDEIND', 'AMARA RAJA': 'AMARAJABAT',
+    'EXIDE': 'EXIDEIND', 'EXIDE INDUSTRIES': 'EXIDEIND', 'AMARA RAJA': 'ARE&M',
+    'AMARAJABAT': 'ARE&M', 'AMARA RAJA ENERGY': 'ARE&M',
     
     # Pharma
     'SUN PHARMA': 'SUNPHARMA', 'SUN PHARMACEUTICAL': 'SUNPHARMA', 'DR REDDY': 'DRREDDY',
     'DR REDDYS': 'DRREDDY', 'CIPLA': 'CIPLA', 'DIVIS': 'DIVISLAB', 'DIVIS LAB': 'DIVISLAB',
     'LUPIN': 'LUPIN', 'BIOCON': 'BIOCON', 'AUROBINDO': 'AUROPHARMA', 'TORRENT PHARMA': 'TORNTPHARM',
-    'ALKEM': 'ALKEM', 'CADILA': 'CADILAHC', 'ZYDUS': 'CADILAHC', 'IPCA': 'IPCALAB',
+    'ALKEM': 'ALKEM', 'CADILA': 'ZYDUSLIFE', 'CADILAHC': 'ZYDUSLIFE', 'ZYDUS': 'ZYDUSLIFE', 'IPCA': 'IPCALAB',
     'GRANULES': 'GRANULES', 'GLENMARK': 'GLENMARK', 'NATCO': 'NATCOPHARMA',
     
     # Healthcare
@@ -711,10 +1050,18 @@ print(
 
 # ===== TICKER-TO-SECTOR REVERSE MAPPING =====
 TICKER_TO_SECTOR = {}
+_SKIP_SECTORS_FOR_MAP = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
 for _sector_name, _sector_tickers in STOCKS.items():
+    if _sector_name in _SKIP_SECTORS_FOR_MAP:
+        continue
     for _t in _sector_tickers:
         if _t not in TICKER_TO_SECTOR:
             TICKER_TO_SECTOR[_t] = _sector_name
+
+# Clear stale analysis & regime disk caches so old "All NSE" entries don't persist
+ANALYSIS_CACHE.clear()
+REGIME_CACHE.clear()
+print("  [cache] Cleared analysis + regime caches (sector mapping updated)")
 
 # ===== SECTOR INDEX MAP (Yahoo Finance tickers for NSE sectoral indices) =====
 SECTOR_INDEX_MAP = {
@@ -902,13 +1249,158 @@ class Analyzer:
             sma50_window = min(50, len(close))
             sma20 = float(close.rolling(sma20_window).mean().iloc[-1])
             sma50 = float(close.rolling(sma50_window).mean().iloc[-1])
+
+            # ── Williams %R ──
+            wr_period = min(14, len(close))
+            highest_high = high.rolling(wr_period).max()
+            lowest_low = low.rolling(wr_period).min()
+            wr_denom = highest_high - lowest_low
+            williams_r_series = pd.Series(np.where(wr_denom > 0, (highest_high - close) / wr_denom * -100, -50.0), index=close.index)
+            williams_r = float(williams_r_series.iloc[-1])
+            if pd.isna(williams_r):
+                williams_r = -50.0
+            # Signal: check for cross-back from extremes
+            williams_r_prev = float(williams_r_series.iloc[-2]) if len(williams_r_series) > 1 else williams_r
+            if williams_r_prev < -80 and williams_r > -80:
+                williams_r_signal = 'POTENTIAL BOTTOM'
+            elif williams_r_prev > -20 and williams_r < -20:
+                williams_r_signal = 'POTENTIAL TOP'
+            else:
+                williams_r_signal = 'NEUTRAL'
+
+            # ── Bollinger %B ──
+            if (bb_upper - bb_lower) > 0:
+                percent_b = (curr - bb_lower) / (bb_upper - bb_lower)
+            else:
+                percent_b = 0.5
+            if percent_b < 0:
+                percent_b_signal = 'OVERSOLD'
+            elif percent_b > 1:
+                percent_b_signal = 'OVERBOUGHT'
+            elif percent_b < 0.5:
+                percent_b_signal = 'LOWER HALF'
+            else:
+                percent_b_signal = 'UPPER HALF'
+
+            # ── RSI Divergence Detection ──
+            rsi_divergence = 'NONE'
+            rsi_divergence_detail = ''
+            try:
+                lookback_div = min(20, len(close) - 1)
+                if lookback_div >= 5:
+                    price_window = close.iloc[-lookback_div:].values.astype(float)
+                    rsi_window_vals = rsi_series.iloc[-lookback_div:].values.astype(float)
+                    # Find local minima and maxima using simple comparison
+                    price_lows = []
+                    price_highs = []
+                    for idx in range(1, len(price_window) - 1):
+                        if price_window[idx] < price_window[idx - 1] and price_window[idx] < price_window[idx + 1]:
+                            price_lows.append(idx)
+                        if price_window[idx] > price_window[idx - 1] and price_window[idx] > price_window[idx + 1]:
+                            price_highs.append(idx)
+                    # Bullish divergence: price lower low + RSI higher low
+                    if len(price_lows) >= 2:
+                        i1, i2 = price_lows[-2], price_lows[-1]
+                        if price_window[i2] < price_window[i1] and rsi_window_vals[i2] > rsi_window_vals[i1]:
+                            rsi_divergence = 'BULLISH DIVERGENCE'
+                            rsi_divergence_detail = f'Price made lower low, RSI made higher low over last {lookback_div} candles. Selling momentum is exhausting.'
+                    # Bearish divergence: price higher high + RSI lower high
+                    if rsi_divergence == 'NONE' and len(price_highs) >= 2:
+                        i1, i2 = price_highs[-2], price_highs[-1]
+                        if price_window[i2] > price_window[i1] and rsi_window_vals[i2] < rsi_window_vals[i1]:
+                            rsi_divergence = 'BEARISH DIVERGENCE'
+                            rsi_divergence_detail = f'Price made higher high, RSI made lower high over last {lookback_div} candles. Buying momentum is fading.'
+            except Exception:
+                pass
+            if not rsi_divergence_detail:
+                rsi_divergence_detail = 'No divergence detected in recent price action.'
+
+            # ── Volume exhaustion (for confidence score) ──
+            volume_exhaustion = False
+            try:
+                vol = data.get('Volume')
+                if vol is not None:
+                    if isinstance(vol, pd.DataFrame):
+                        vol = vol.iloc[:, 0]
+                    vol = vol.dropna()
+                    if len(vol) >= 20:
+                        vol_sma20 = float(vol.iloc[-20:].mean())
+                        curr_vol = float(vol.iloc[-1])
+                        volume_exhaustion = curr_vol < vol_sma20
+            except Exception:
+                pass
+
+            # ── Local Minima/Maxima Confidence Score (out of 5) ──
+            bottom_points = 0
+            top_points = 0
+            confidence_checks = {}
+            # 1. RSI extreme
+            if rsi < 30:
+                bottom_points += 1
+                confidence_checks['rsi'] = {'met': True, 'label': f'RSI Oversold ({rsi:.1f})'}
+            elif rsi > 70:
+                top_points += 1
+                confidence_checks['rsi'] = {'met': True, 'label': f'RSI Overbought ({rsi:.1f})'}
+            else:
+                confidence_checks['rsi'] = {'met': False, 'label': f'RSI Neutral ({rsi:.1f})'}
+            # 2. Williams %R reversing from extreme
+            if williams_r_signal == 'POTENTIAL BOTTOM':
+                bottom_points += 1
+                confidence_checks['williams'] = {'met': True, 'label': 'Williams %R reversing from oversold'}
+            elif williams_r_signal == 'POTENTIAL TOP':
+                top_points += 1
+                confidence_checks['williams'] = {'met': True, 'label': 'Williams %R reversing from overbought'}
+            else:
+                confidence_checks['williams'] = {'met': False, 'label': 'Williams %R not at extreme'}
+            # 3. Bollinger %B outside 0-1
+            if percent_b < 0:
+                bottom_points += 1
+                confidence_checks['bb'] = {'met': True, 'label': 'Price below Bollinger Lower Band'}
+            elif percent_b > 1:
+                top_points += 1
+                confidence_checks['bb'] = {'met': True, 'label': 'Price above Bollinger Upper Band'}
+            else:
+                confidence_checks['bb'] = {'met': False, 'label': 'Price within Bollinger Bands'}
+            # 4. Volume exhaustion
+            if volume_exhaustion:
+                bottom_points += 1
+                top_points += 1
+                confidence_checks['volume'] = {'met': True, 'label': 'Volume declining (exhaustion)'}
+            else:
+                confidence_checks['volume'] = {'met': False, 'label': 'Volume not showing exhaustion'}
+            # 5. RSI Divergence
+            if rsi_divergence == 'BULLISH DIVERGENCE':
+                bottom_points += 1
+                confidence_checks['divergence'] = {'met': True, 'label': 'Bullish RSI divergence detected'}
+            elif rsi_divergence == 'BEARISH DIVERGENCE':
+                top_points += 1
+                confidence_checks['divergence'] = {'met': True, 'label': 'Bearish RSI divergence detected'}
+            else:
+                confidence_checks['divergence'] = {'met': False, 'label': 'No RSI divergence confirmed'}
+
+            if bottom_points >= 3 and bottom_points >= top_points:
+                minmax_type = 'BOTTOM'
+                minmax_score = bottom_points
+            elif top_points >= 3 and top_points > bottom_points:
+                minmax_type = 'TOP'
+                minmax_score = top_points
+            else:
+                minmax_type = 'MIXED'
+                minmax_score = max(bottom_points, top_points)
+
             result = {
                 'price': curr, 'sma9': sma9, 'sma5': sma5, 'sma20': sma20, 'sma50': sma50,
                 'daily': daily_ret, 'hourly': hourly_ret,
                 'rsi': rsi, 'macd_bullish': bool(macd_bullish), 'high': h, 'low': l,
                 'pct_from_low': pct_from_low, 'zscore': zscore, 'pct_deviation': pct_deviation,
                 'mean_price': mean_price, 'std_price': std_price, 'bb_upper': bb_upper,
-                'bb_lower': bb_lower, 'bb_position': bb_position, 'volatility': volatility
+                'bb_lower': bb_lower, 'bb_position': bb_position, 'volatility': volatility,
+                'williams_r': williams_r, 'williams_r_signal': williams_r_signal,
+                'percent_b': round(percent_b, 4), 'percent_b_signal': percent_b_signal,
+                'rsi_divergence': rsi_divergence, 'rsi_divergence_detail': rsi_divergence_detail,
+                'volume_exhaustion': volume_exhaustion,
+                'minmax_type': minmax_type, 'minmax_score': minmax_score,
+                'confidence_checks': confidence_checks,
             }
             return result
         except Exception as e:
@@ -1242,6 +1734,51 @@ class Analyzer:
             exit_explain = f"If already holding, consider taking profits at ₹{target_price:.2f}."
             confidence_explain = f"{confidence}% confidence. Moderate confidence suggests waiting for better setup."
             time_explain = f"Market consolidating. Wait for breakout confirmation."
+        # ── Williams %R explain ──
+        wr_val = i.get('williams_r', -50)
+        wr_signal = i.get('williams_r_signal', 'NEUTRAL')
+        williams_r_explain = f"Williams %R: {wr_val:.1f}"
+        if wr_signal == 'POTENTIAL BOTTOM':
+            williams_r_explain += " → Reversing from oversold zone. Potential bottom forming."
+        elif wr_signal == 'POTENTIAL TOP':
+            williams_r_explain += " → Reversing from overbought zone. Potential top forming."
+        elif wr_val < -80:
+            williams_r_explain += " → Deep oversold. Watching for reversal signal."
+        elif wr_val > -20:
+            williams_r_explain += " → Overbought territory. Watching for pullback."
+        else:
+            williams_r_explain += " → Neutral zone. No extreme reading."
+
+        # ── Bollinger %B explain ──
+        pb_val = i.get('percent_b', 0.5)
+        pb_signal = i.get('percent_b_signal', 'LOWER HALF')
+        percent_b_explain = f"%B: {pb_val:.2f}"
+        if pb_val < 0:
+            percent_b_explain += " → Price is outside the lower band. Statistically extreme. Mean reversion likely."
+        elif pb_val > 1:
+            percent_b_explain += " → Price is outside the upper band. Statistically extreme. Pullback likely."
+        elif pb_val < 0.5:
+            percent_b_explain += " → Price in lower half of bands. Closer to support."
+        else:
+            percent_b_explain += " → Price in upper half of bands. Closer to resistance."
+
+        # ── RSI Divergence explain ──
+        rsi_div = i.get('rsi_divergence', 'NONE')
+        rsi_div_detail = i.get('rsi_divergence_detail', 'No divergence detected.')
+        rsi_divergence_explain = f"RSI Divergence: {rsi_div_detail}"
+
+        # ── Min/Max Confidence Score explain ──
+        mm_type = i.get('minmax_type', 'MIXED')
+        mm_score = i.get('minmax_score', 0)
+        checks = i.get('confidence_checks', {})
+
+        # ── Confidence score note for regime integration ──
+        minmax_regime_note = ''
+        if mm_type == 'BOTTOM' and mm_score >= 4:
+            minmax_regime_note = f"High bottom confidence score ({mm_score}/5) detected. Consider scaling in cautiously despite bearish regime."
+        elif mm_type == 'TOP' and mm_score >= 4:
+            minmax_regime_note = f"High top confidence score ({mm_score}/5) detected. This reinforces caution on long positions."
+
         return {
             'signal': {
                 'signal': sig, 'action': action, 'rec': rec,
@@ -1264,7 +1801,11 @@ class Analyzer:
                 'entry_explain': entry_explain, 'exit_explain': exit_explain, 'confidence_explain': confidence_explain,
                 'time_explain': time_explain, 'trend_explain': trend_explain, 'momentum_explain': momentum_explain,
                 'rsi_explain': rsi_explain, 'position_explain': position_explain, 'zscore_explain': zscore_explain,
-                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers"
+                'bb_explain': bb_explain, 'macd_text': "BULLISH: momentum favors buyers" if i['macd_bullish'] else "BEARISH: momentum favors sellers",
+                'williams_r_explain': williams_r_explain,
+                'percent_b_explain': percent_b_explain,
+                'rsi_divergence_explain': rsi_divergence_explain,
+                'minmax_regime_note': minmax_regime_note,
             },
             'details': {
                 'price': f"₹{i['price']:.2f}", 'price_raw': round(i['price'], 2),
@@ -1280,7 +1821,16 @@ class Analyzer:
                 'bb_upper': f"₹{i['bb_upper']:.2f}", 'bb_lower': f"₹{i['bb_lower']:.2f}",
                 'bb_position': round(i['bb_position'], 0), 'bb_label': bb_label,
                 'volatility': f"{i['volatility']:.2f}%", 'macd': "BULLISH" if i['macd_bullish'] else "BEARISH",
-                'macd_bullish': i['macd_bullish']
+                'macd_bullish': i['macd_bullish'],
+                'williams_r': round(i.get('williams_r', -50), 1),
+                'williams_r_signal': i.get('williams_r_signal', 'NEUTRAL'),
+                'percent_b': round(i.get('percent_b', 0.5), 4),
+                'percent_b_signal': i.get('percent_b_signal', 'NEUTRAL'),
+                'rsi_divergence': i.get('rsi_divergence', 'NONE'),
+                'rsi_divergence_detail': i.get('rsi_divergence_detail', ''),
+                'minmax_type': i.get('minmax_type', 'MIXED'),
+                'minmax_score': i.get('minmax_score', 0),
+                'confidence_checks': i.get('confidence_checks', {}),
             }
         }
 
@@ -1499,14 +2049,31 @@ class Analyzer:
         return regime, score, details
 
     def _get_sector_regime(self, symbol):
-        """Get sector regime for a stock. Falls back to neutral if sector data unavailable."""
-        sector = TICKER_TO_SECTOR.get(symbol)
-        if not sector:
-            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}'}
+        """Get sector regime for a stock. Falls back to neutral if sector data unavailable.
+
+        Returns (regime, score, details) where details always includes 'sector_name'.
+        """
+        # Look up real sector, skipping meta-sectors
+        sector = TICKER_TO_SECTOR.get(symbol, '')
+        meta = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
+        if not sector or sector in meta:
+            # Fallback: scan STOCKS for first real sector containing this symbol
+            for sn, st in STOCKS.items():
+                if sn in meta:
+                    continue
+                if symbol in st:
+                    sector = sn
+                    break
+        if not sector or sector in meta:
+            return 'neutral', 0.5, {'reason': f'No sector mapping for {symbol}', 'sector_name': 'Unknown'}
         sector_ticker = SECTOR_INDEX_MAP.get(sector)
         if not sector_ticker:
-            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"'}
-        return self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+            return 'neutral', 0.5, {'reason': f'No index for sector "{sector}"', 'sector_name': sector}
+        regime, score, details = self._fetch_regime(sector_ticker, f'regime:sector:{sector}')
+        # Copy so we don't mutate the cached dict in _fetch_regime
+        details = dict(details)
+        details['sector_name'] = sector
+        return regime, score, details
 
     def _build_verdict(self, signal_result, original_signal, gated_signal,
                        gate_reason, market_regime, sector_regime, sector_name,
@@ -1875,7 +2442,7 @@ class Analyzer:
         # --- Build regime reason text ---
         reason_parts = []
         reason_parts.append(f"Market regime: {market_regime.upper()} (Nifty 50).")
-        sector_name = TICKER_TO_SECTOR.get(symbol, 'Unknown')
+        sector_name = sector_details.get('sector_name') or TICKER_TO_SECTOR.get(symbol, 'Unknown')
         reason_parts.append(f"Sector regime: {sector_regime.upper()} ({sector_name}).")
 
         alignment_labels = {
@@ -1896,6 +2463,11 @@ class Analyzer:
                 f"Risk adjusted from {original_risk}% to {adjusted_risk}% "
                 f"(regime factor x{regime_factor})."
             )
+
+        # --- Integrate minmax confidence note ---
+        minmax_note = sig_data.get('minmax_regime_note', '')
+        if minmax_note:
+            reason_parts.append(minmax_note)
 
         regime_reason_text = " ".join(reason_parts)
 
@@ -2391,21 +2963,9 @@ class Analyzer:
                     if isinstance(data.columns, pd.MultiIndex):
                         close_series = data['Close'][ticker_symbol].dropna()
                         dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
-                        if 'Stock Splits' in data.columns.get_level_values(0):
-                            splits = data['Stock Splits'][ticker_symbol].dropna()
-                        elif 'Splits' in data.columns.get_level_values(0):
-                            splits = data['Splits'][ticker_symbol].dropna()
-                        else:
-                            splits = pd.Series(dtype=float)
                     else:
                         close_series = data['Close'].dropna()
                         dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
-                        if 'Stock Splits' in data.columns:
-                            splits = data['Stock Splits'].dropna()
-                        elif 'Splits' in data.columns:
-                            splits = data['Splits'].dropna()
-                        else:
-                            splits = pd.Series(dtype=float)
                     if close_series.empty or len(close_series) < 10:
                         continue
                     # Use latest close as current price (for yield denominator)
@@ -3268,6 +3828,29 @@ def dashboard():
         .category { margin-bottom: 20px; }
         .category h3 { color: var(--accent-cyan); font-size: 0.85em; margin-bottom: 8px; text-transform: uppercase; font-weight: 600; letter-spacing: 1px; }
         .stocks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        /* ===== Browse by Sector - Pill Tabs + Stock Cards ===== */
+        .sector-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+        .sector-pill { padding: 7px 16px; border-radius: 20px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); font-size: 0.82em; font-weight: 600; cursor: pointer; transition: all 0.2s; font-family: 'Space Grotesk', sans-serif; white-space: nowrap; }
+        .sector-pill:hover { border-color: var(--accent-cyan); color: var(--text-primary); background: transparent; }
+        .sector-pill.active { border-color: var(--accent-cyan); color: var(--accent-cyan); background: rgba(201,168,76,0.1); }
+        .stock-cards-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; min-height: 120px; }
+        .stock-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 10px; padding: 16px 18px; cursor: pointer; transition: all 0.25s; position: relative; overflow: hidden; }
+        .stock-card:hover { border-color: rgba(201,168,76,0.45); background: var(--bg-card-hover); transform: translateY(-2px); }
+        .stock-card .sc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 4px; }
+        .stock-card .sc-symbol { font-weight: 700; font-size: 0.95em; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
+        .stock-card .sc-change { font-size: 0.78em; font-weight: 600; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+        .stock-card .sc-change.up { color: var(--accent-green); background: rgba(46,204,140,0.12); }
+        .stock-card .sc-change.down { color: var(--danger); background: rgba(239,68,68,0.12); }
+        .stock-card .sc-name { font-size: 0.78em; color: var(--text-muted); margin-bottom: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .stock-card .sc-price { font-size: 1.15em; font-weight: 700; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
+        .stock-card .sc-mcap { font-size: 0.72em; color: var(--text-muted); text-align: right; margin-top: 2px; }
+        .stock-card .sc-bottom { display: flex; justify-content: space-between; align-items: flex-end; }
+        .stock-card.sc-loading .sc-price, .stock-card.sc-loading .sc-change, .stock-card.sc-loading .sc-mcap { color: transparent; background: linear-gradient(90deg, var(--border-color) 25%, var(--bg-card-hover) 50%, var(--border-color) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: 4px; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .sector-load-more { display: block; width: 100%; padding: 12px; margin-top: 12px; background: transparent; border: 1px dashed var(--border-color); border-radius: 8px; color: var(--text-secondary); font-size: 0.88em; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .sector-load-more:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); background: transparent; }
+        @media (max-width: 900px) { .stock-cards-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 500px) { .stock-cards-grid { grid-template-columns: 1fr; } .sector-pills { gap: 6px; } .sector-pill { font-size: 0.75em; padding: 5px 12px; } }
         button { padding: 10px 16px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); font-size: 0.9em; }
         button:hover { background: var(--accent-gold); color: var(--bg-dark); border-color: var(--accent-gold); }
         #result-view { display: none; }
@@ -3804,16 +4387,16 @@ def dashboard():
     <main class="container">
         <div id="analysis-tab" class="tab-content">
             <div id="search-view">
-                <div class="grid">
-                    <div class="card">
-                        <h2>Search Any NSE Stock</h2>
-                        <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
-                        <div class="suggestions" id="suggestions"></div>
-                    </div>
-                    <div class="card">
-                        <h2>Browse by Sector</h2>
-                        <div id="categories" style="max-height: 500px; overflow-y: auto;"></div>
-                    </div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h2>Search Any NSE Stock</h2>
+                    <input type="text" id="search" placeholder="Search TCS, RELIANCE, INFY, or any NSE stock...">
+                    <div class="suggestions" id="suggestions"></div>
+                </div>
+                <div class="card">
+                    <h2>Browse by Sector</h2>
+                    <div id="sector-pills-container" class="sector-pills"></div>
+                    <div id="sector-cards-container" class="stock-cards-grid"></div>
+                    <button id="sector-load-more-btn" class="sector-load-more" style="display:none;" onclick="loadMoreSectorStocks()">Load more stocks</button>
                 </div>
             </div>
             <div id="result-view">
@@ -4477,20 +5060,125 @@ def dashboard():
             }).catch(function() { return null; });
         }
 
+        // ===== BROWSE BY SECTOR - Rich Card UI =====
+        const _sectorSkip = new Set(['Nifty 50', 'Nifty Next 50', 'Conglomerate']);
+        let _activeSector = null;
+        let _sectorOffset = 0;
+        const _sectorPageSize = 20;
+        const _sectorQuoteCache = {};
+
+        function _formatMcap(mcap) {
+            if (!mcap) return '';
+            if (mcap >= 1e12) return '\u20B9' + (mcap / 1e12).toFixed(1) + 'L Cr';
+            if (mcap >= 1e9) return '\u20B9' + (mcap / 1e7 / 100).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' Cr';
+            if (mcap >= 1e7) return '\u20B9' + (mcap / 1e7).toFixed(0) + ' Cr';
+            return '';
+        }
+
+        function _stockCardHtml(sym, quote) {
+            const name = (quote && quote.name) || getStockName(sym);
+            const price = (quote && quote.price) ? '\u20B9' + quote.price.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '';
+            const chg = (quote && quote.change_pct) || 0;
+            const chgStr = chg >= 0 ? '+' + chg.toFixed(2) + '%' : chg.toFixed(2) + '%';
+            const chgClass = chg >= 0 ? 'up' : 'down';
+            const chgIcon = chg >= 0 ? '\u2197' : '\u2198';
+            const mcap = (quote && quote.mcap) ? _formatMcap(quote.mcap) : '';
+            const loadingClass = quote ? '' : ' sc-loading';
+            return `<div class="stock-card${loadingClass}" onclick="analyze('${sym}')" data-sym="${sym}">
+                <div class="sc-top"><span class="sc-symbol">${sym}</span><span class="sc-change ${chgClass}">${chgIcon} ${chgStr}</span></div>
+                <div class="sc-name">${name}</div>
+                <div class="sc-bottom"><span class="sc-price">${price || '\u20B9---'}</span><span class="sc-mcap">${mcap}</span></div>
+            </div>`;
+        }
+
+        function initSectorBrowser() {
+            const pillsEl = document.getElementById('sector-pills-container');
+            if (!pillsEl) return;
+            // Build sector list: All NSE first, real sectors, then Others last
+            const sectorOrder = [];
+            const othersEntry = [];
+            Object.keys(stocks).forEach(s => {
+                if (_sectorSkip.has(s)) return;
+                if (s === 'All NSE') return;          // handled separately below
+                if (s === 'Others') { othersEntry.push(s); return; }
+                sectorOrder.push(s);
+            });
+            // "All NSE" first if it exists
+            if (stocks['All NSE']) sectorOrder.unshift('All NSE');
+            sectorOrder.push(...othersEntry);
+
+            let pillsHtml = '';
+            sectorOrder.forEach((s, i) => {
+                const active = i === 0 ? ' active' : '';
+                pillsHtml += `<button class="sector-pill${active}" data-sector="${s}" onclick="switchSector('${s.replace(/'/g, "\\'")}')">${s} (${stocks[s].length})</button>`;
+            });
+            pillsEl.innerHTML = pillsHtml;
+
+            // Load first sector
+            if (sectorOrder.length) switchSector(sectorOrder[0]);
+        }
+
+        function switchSector(sector) {
+            _activeSector = sector;
+            _sectorOffset = 0;
+            // Update pill active state
+            document.querySelectorAll('.sector-pill').forEach(p => {
+                p.classList.toggle('active', p.dataset.sector === sector);
+            });
+            const container = document.getElementById('sector-cards-container');
+            container.innerHTML = '';
+            _renderSectorPage(sector, true);
+        }
+
+        function _renderSectorPage(sector, fresh) {
+            const container = document.getElementById('sector-cards-container');
+            const btn = document.getElementById('sector-load-more-btn');
+            const tickers = stocks[sector] || [];
+            const page = tickers.slice(_sectorOffset, _sectorOffset + _sectorPageSize);
+
+            if (!page.length) { btn.style.display = 'none'; return; }
+
+            // Render placeholder cards immediately
+            let cardsHtml = '';
+            page.forEach(sym => {
+                const cached = _sectorQuoteCache[sym];
+                cardsHtml += _stockCardHtml(sym, cached || null);
+            });
+            if (fresh) container.innerHTML = cardsHtml;
+            else container.insertAdjacentHTML('beforeend', cardsHtml);
+
+            _sectorOffset += page.length;
+            btn.style.display = (_sectorOffset < tickers.length) ? 'block' : 'none';
+            btn.textContent = 'Load more (' + (tickers.length - _sectorOffset) + ' remaining)';
+
+            // Fetch live quotes for uncached symbols
+            const uncached = page.filter(s => !_sectorQuoteCache[s]);
+            if (uncached.length) {
+                fetch('/sector-quotes?sector=' + encodeURIComponent(sector) + '&offset=' + (_sectorOffset - page.length) + '&limit=' + page.length)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (_activeSector !== sector) return; // user switched away
+                        (data.quotes || []).forEach(q => {
+                            _sectorQuoteCache[q.symbol] = q;
+                            const card = container.querySelector('[data-sym="' + q.symbol + '"]');
+                            if (card) {
+                                card.outerHTML = _stockCardHtml(q.symbol, q);
+                            }
+                        });
+                    }).catch(() => {});
+            }
+        }
+
+        function loadMoreSectorStocks() {
+            if (_activeSector) _renderSectorPage(_activeSector, false);
+        }
+
         let currentTab = 'analysis';
         let loadedTabs = new Set();
         function ensureTabLoaded(tab) {
             if (loadedTabs.has(tab)) return;
             if (tab === 'analysis') {
-                const cat = document.getElementById('categories');
-                let allHtml = '';
-                Object.entries(stocks).forEach(([name, list]) => {
-                    let html = `<div class="category"><h3>${name} (${list.length})</h3><div class="stocks">`;
-                    list.slice(0, 30).forEach(s => html += `<button onclick="analyze('${s}')">${s}</button>`);
-                    html += '</div></div>';
-                    allHtml += html;
-                });
-                cat.innerHTML = allHtml;
+                initSectorBrowser();
                 setupAutocomplete('search', 'suggestions', 'analyze');
             } else if (tab === 'regression') {
                 setupAutocomplete('regression-search', 'regression-suggestions', 'analyzeRegression');
@@ -4751,6 +5439,30 @@ def dashboard():
                             </button>
                             <div class="tsc-accordion-content" id="tsc-tech-details">
                                 <div class="tsc-accordion-inner">
+                                    <!-- LOCAL MINIMA/MAXIMA CONFIDENCE SCORE -->
+                                    <div class="tsc-tech-item" style="border:1px solid ${d.minmax_type === 'BOTTOM' ? 'var(--accent-green)' : d.minmax_type === 'TOP' ? 'var(--danger)' : 'var(--warning)'};border-radius:10px;padding:16px;">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name" style="font-size:1.05em;">Turning Point Confidence Score</span>
+                                            <span class="tsc-tech-item-value" style="font-size:1.2em;font-weight:700;color:${d.minmax_type === 'BOTTOM' ? 'var(--accent-green)' : d.minmax_type === 'TOP' ? 'var(--danger)' : 'var(--warning)'};">
+                                                ${d.minmax_type === 'BOTTOM' ? 'Bottom' : d.minmax_type === 'TOP' ? 'Top' : 'Mixed Signals'}: ${d.minmax_score}/5
+                                            </span>
+                                        </div>
+                                        <div style="margin:10px 0 6px;font-size:0.88em;line-height:1.7;color:var(--text-secondary);">
+                                            ${(function(){
+                                                var checks = d.confidence_checks || {};
+                                                var lines = '';
+                                                var order = ['rsi','williams','bb','volume','divergence'];
+                                                for(var ci=0;ci<order.length;ci++){
+                                                    var ck = checks[order[ci]];
+                                                    if(ck) lines += '<div>' + (ck.met ? '✅' : '❌') + ' ' + ck.label + '</div>';
+                                                }
+                                                return lines;
+                                            })()}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is this score?</strong> This score counts how many independent signals are agreeing that a turning point may be near. No single indicator is reliable alone — but when 4 or 5 are all flashing the same warning at the same time, the probability of a local bottom or top rises significantly. Think of it like a weather forecast: one cloud doesn't mean rain, but five clouds, falling pressure, and humidity all together usually do.
+                                        </div>
+                                    </div>
                                     <!-- RSI -->
                                     <div class="tsc-tech-item">
                                         <div class="tsc-tech-item-header">
@@ -4816,6 +5528,45 @@ def dashboard():
                                             <strong>What are Bollinger Bands?</strong> Picture a highway with lanes. The middle lane is the average price, and the outer lanes (upper and lower bands) represent where the price "usually" stays. When the price drives onto the shoulder (touches the upper band), it's probably going too fast and will merge back. When it drifts to the other shoulder (lower band), it's likely to bounce back toward the center. About 95% of price action stays within these bands.
                                         </div>
                                     </div>
+                                    <!-- Williams %R -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">Williams %R</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.williams_r_signal === 'POTENTIAL BOTTOM' ? 'var(--accent-green)' : d.williams_r_signal === 'POTENTIAL TOP' ? 'var(--danger)' : 'var(--text-primary)'};">${d.williams_r_signal}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.williams_r_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is Williams %R?</strong> Think of Williams %R like a bungee cord. When the cord is fully stretched down (below -80), the snap back upward is likely. When it's fully stretched upward (above -20), gravity tends to pull it back down. It's one of the most sensitive indicators for spotting turning points before they happen.
+                                        </div>
+                                    </div>
+                                    <!-- Bollinger %B -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">Bollinger Band %B</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.percent_b_signal === 'OVERSOLD' ? 'var(--accent-green)' : d.percent_b_signal === 'OVERBOUGHT' ? 'var(--danger)' : d.percent_b_signal === 'LOWER HALF' ? 'var(--warning)' : 'var(--text-primary)'};">${d.percent_b_signal}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.percent_b_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is Bollinger %B?</strong> Bollinger %B tells you exactly where price sits within its normal range, expressed as a number between 0 and 1. Zero means you're at the bottom boundary, 1 means you're at the top. When it goes negative, price has broken below its statistical range — like a ball pushed underwater, it tends to float back up.
+                                        </div>
+                                    </div>
+                                    <!-- RSI Divergence -->
+                                    <div class="tsc-tech-item">
+                                        <div class="tsc-tech-item-header">
+                                            <span class="tsc-tech-item-name">RSI Divergence</span>
+                                            <span class="tsc-tech-item-value" style="color:${d.rsi_divergence === 'BULLISH DIVERGENCE' ? 'var(--accent-green)' : d.rsi_divergence === 'BEARISH DIVERGENCE' ? 'var(--danger)' : 'var(--text-primary)'};">${d.rsi_divergence === 'NONE' ? 'NO DIVERGENCE' : d.rsi_divergence}</span>
+                                        </div>
+                                        <div class="tsc-tech-item-explain">
+                                            ${s.rsi_divergence_explain}
+                                        </div>
+                                        <div class="tsc-tech-item-example">
+                                            <strong>What is RSI Divergence?</strong> Divergence is when price and momentum stop agreeing. If price falls to a new low but RSI refuses to follow, it means sellers are losing energy even as price drops — like a wave that looks big but has no force behind it. This is often the earliest warning sign of a reversal.
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -4840,6 +5591,8 @@ def dashboard():
                                         <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">BB Lower</div><div class="tsc-calc-detail-value">${d.bb_lower}</div></div>
                                         <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">% from Mean</div><div class="tsc-calc-detail-value" style="color:${parseFloat(d.pct_deviation)>=0?'var(--accent-cyan)':'var(--accent-purple)'};">${d.pct_deviation}</div></div>
                                         <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Volatility</div><div class="tsc-calc-detail-value">${d.volatility}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Bollinger %B</div><div class="tsc-calc-detail-value" style="color:${d.percent_b < 0 ? 'var(--accent-green)' : d.percent_b > 1 ? 'var(--danger)' : 'var(--text-primary)'};">${d.percent_b !== undefined ? d.percent_b.toFixed(4) : 'N/A'}</div></div>
+                                        <div class="tsc-calc-detail-item"><div class="tsc-calc-detail-label">Williams %R</div><div class="tsc-calc-detail-value" style="color:${d.williams_r < -80 ? 'var(--accent-green)' : d.williams_r > -20 ? 'var(--danger)' : 'var(--text-primary)'};">${d.williams_r !== undefined ? d.williams_r.toFixed(1) : 'N/A'}</div></div>
                                     </div>
                                 </div>
                             </div>
@@ -5422,7 +6175,9 @@ def dashboard():
         function initDividendSectors() {
             const grid = document.getElementById('sector-grid');
             if (!grid) return;
+            const skipDiv = new Set(['All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate']);
             Object.keys(stocks).forEach(sector => {
+                if (skipDiv.has(sector)) return;
                 const label = document.createElement('label');
                 label.innerHTML = '<input type="checkbox" class="sector-cb" value="' + sector + '"> ' + sector + ' (' + stocks[sector].length + ')';
                 grid.appendChild(label);
@@ -5462,6 +6217,13 @@ def dashboard():
             if (abs >= 1e7)  return sign + '\u20b9' + (abs / 1e7).toFixed(2) + ' Cr';
             if (abs >= 1e5)  return sign + '\u20b9' + (abs / 1e5).toFixed(2) + ' L';
             return sign + '\u20b9' + Math.round(abs).toLocaleString('en-IN');
+        }
+
+        var _FINANCIAL_SECTORS = ['financial services', 'banking', 'insurance', 'financial'];
+        function isFinancialSector(sector) {
+            if (!sector) return false;
+            var s = sector.toLowerCase();
+            return _FINANCIAL_SECTORS.some(function(fs) { return s.indexOf(fs) !== -1; });
         }
 
         function runDCF(fcf, g1, g2, wacc, tg, years, debt, cash, shares) {
@@ -5588,7 +6350,10 @@ def dashboard():
             var tg   = parseFloat(document.getElementById('dcf-tg').value) / 100;
             var adj  = parseFloat(document.getElementById('dcf-fcf-adj').value) / 100;
             var fcf  = dcfData.current_fcf * adj;
-            var res  = runDCF(fcf, g1, g2, wacc, tg, _dcfYears, dcfData.total_debt, dcfData.cash, dcfData.shares_outstanding);
+            var _isFin = isFinancialSector(dcfData.sector);
+            var _debt = _isFin ? 0 : dcfData.total_debt;
+            var _cash = _isFin ? 0 : dcfData.cash;
+            var res  = runDCF(fcf, g1, g2, wacc, tg, _dcfYears, _debt, _cash, dcfData.shares_outstanding);
             var price = dcfData.current_price;
             var intrinsic = res.intrinsic;
             var ivEl = document.getElementById('dcf-intrinsic-val');
@@ -5640,11 +6405,11 @@ def dashboard():
                 });
                 rows += '<tr class="tv-row"><td>Terminal Value</td><td>' + fmtCr(res.terminalValue) + '</td><td style="color:var(--text-secondary);">@TG ' + (tg*100).toFixed(2) + '%</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + wacc, _dcfYears)).toFixed(4) + '</td><td>' + fmtCr(res.terminalPV) + '</td></tr>';
                 rows += '<tr class="total-row"><td>Enterprise Value</td><td colspan="3"></td><td>' + fmtCr(res.enterpriseValue) + '</td></tr>';
-                rows += '<tr class="total-row"><td>Equity Value (\u2212Debt +Cash)</td><td colspan="3"></td><td>' + fmtCr(res.equityValue) + '</td></tr>';
+                rows += '<tr class="total-row"><td>' + (_isFin ? 'Equity Value (Financial \u2014 no debt adj.)' : 'Equity Value (\u2212Debt +Cash)') + '</td><td colspan="3"></td><td>' + fmtCr(res.equityValue) + '</td></tr>';
                 rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td></tr>';
                 tbody.innerHTML = rows;
             }
-            renderDCFSensitivity(price, wacc, tg, fcf, g1, g2, _dcfYears, dcfData.total_debt, dcfData.cash, dcfData.shares_outstanding);
+            renderDCFSensitivity(price, wacc, tg, fcf, g1, g2, _dcfYears, _debt, _cash, dcfData.shares_outstanding);
         }
 
         function renderDCFSensitivity(price, baseWACC, baseTG, fcf, g1, g2, years, debt, cash, shares) {
@@ -5742,7 +6507,8 @@ def dashboard():
             if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
                 const g1 = dcfD.suggested_growth_rate || 0.1;
                 const g2 = Math.max(g1 * 0.5, 0.04);
-                const res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, dcfD.total_debt || 0, dcfD.cash || 0, dcfD.shares_outstanding);
+                const _isFin2 = isFinancialSector(dcfD.sector);
+                const res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, _isFin2 ? 0 : (dcfD.total_debt || 0), _isFin2 ? 0 : (dcfD.cash || 0), dcfD.shares_outstanding);
                 const up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
                 if (up >= 30) score += 25; else if (up >= 15) score += 12; else if (up >= 0) score += 5; else if (up < -20) score -= 15; else score -= 5;
                 items.push({ label: 'DCF Upside', value: (up >= 0 ? '+' : '') + up.toFixed(0) + '%', color: up >= 15 ? 'green' : up >= 0 ? 'yellow' : 'red' });
@@ -5961,7 +6727,8 @@ def dashboard():
             if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
                 var g1 = dcfD.suggested_growth_rate || 0.1;
                 var g2 = Math.max(g1 * 0.5, 0.04);
-                var res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, dcfD.total_debt || 0, dcfD.cash || 0, dcfD.shares_outstanding);
+                var _isF3 = isFinancialSector(dcfD.sector);
+                var res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, _isF3 ? 0 : (dcfD.total_debt || 0), _isF3 ? 0 : (dcfD.cash || 0), dcfD.shares_outstanding);
                 var up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
                 var ivStr = '\u20b9' + res.intrinsic.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                 h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;">
@@ -6583,21 +7350,9 @@ def dividend_optimize_stream_route():
                         if isinstance(data.columns, pd.MultiIndex):
                             close_series = data['Close'][ticker_symbol].dropna()
                             dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
-                            if 'Stock Splits' in data.columns.get_level_values(0):
-                                splits = data['Stock Splits'][ticker_symbol].dropna()
-                            elif 'Splits' in data.columns.get_level_values(0):
-                                splits = data['Splits'][ticker_symbol].dropna()
-                            else:
-                                splits = pd.Series(dtype=float)
                         else:
                             close_series = data['Close'].dropna()
                             dividends = data['Dividends'].dropna() if 'Dividends' in data.columns else pd.Series(dtype=float)
-                            if 'Stock Splits' in data.columns:
-                                splits = data['Stock Splits'].dropna()
-                            elif 'Splits' in data.columns:
-                                splits = data['Splits'].dropna()
-                            else:
-                                splits = pd.Series(dtype=float)
                         if close_series.empty or len(close_series) < 10:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -6705,6 +7460,121 @@ def dividend_optimize_stream_route():
             yield f"data: {json.dumps(payload)}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+@app.route('/refresh-sectors')
+def refresh_sectors_route():
+    """Admin endpoint: re-classify unassigned stocks by fetching sectors from yfinance.
+
+    Query params:
+      max_fetch - max symbols to look up (default 500, cap 2000)
+      force     - if 'true', clear cache and re-fetch all unassigned
+    """
+    max_fetch = min(int(request.args.get('max_fetch', 500)), 2000)
+    force = request.args.get('force', '').lower() == 'true'
+
+    if force and os.path.exists(SECTOR_CACHE_FILE):
+        os.remove(SECTOR_CACHE_FILE)
+
+    # Rebuild classification on a copy of current STOCKS, then merge
+    global STOCKS, ALL_VALID_TICKERS, TICKER_TO_SECTOR
+
+    # Re-run classification
+    classify_unassigned_stocks(STOCKS, max_fetch=max_fetch, workers=8)
+
+    # Re-deduplicate
+    NIFTY_50_STOCKS_LOCAL = list(STOCKS.get('Nifty 50', []))
+    STOCKS = deduplicate_stocks(STOCKS)
+    ALL_VALID_TICKERS = set()
+    for sector_stocks in STOCKS.values():
+        ALL_VALID_TICKERS.update(sector_stocks)
+
+    # Rebuild reverse mapping (skip meta-sectors so stocks get real sector names)
+    TICKER_TO_SECTOR = {}
+    _skip_meta = {'All NSE', 'Nifty 50', 'Nifty Next 50', 'Conglomerate'}
+    for _sn, _st in STOCKS.items():
+        if _sn in _skip_meta:
+            continue
+        for _t in _st:
+            if _t not in TICKER_TO_SECTOR:
+                TICKER_TO_SECTOR[_t] = _sn
+
+    # Purge stale caches so new sector mappings take effect immediately
+    ANALYSIS_CACHE.clear()
+    REGIME_CACHE.clear()
+
+    # Count unassigned
+    skip = {UNIVERSE_SECTOR_NAME, 'Nifty 50', 'Nifty Next 50', 'Conglomerate', 'Others'}
+    assigned = set()
+    for sn, st in STOCKS.items():
+        if sn not in skip:
+            assigned.update(st)
+    universe = set(STOCKS.get(UNIVERSE_SECTOR_NAME, []))
+    still_unassigned = len(universe - assigned)
+
+    return jsonify({
+        'status': 'ok',
+        'total_stocks': len(ALL_VALID_TICKERS),
+        'sectors': len(STOCKS),
+        'still_unassigned': still_unassigned,
+        'force': force,
+        'max_fetch': max_fetch,
+        'sector_counts': {s: len(t) for s, t in sorted(STOCKS.items()) if s != UNIVERSE_SECTOR_NAME},
+    })
+
+
+@app.route('/sector-quotes')
+def sector_quotes_route():
+    """Return batch price data for stocks in a sector (used by Browse by Sector cards).
+
+    Query params:
+      sector  - sector name (required)
+      offset  - start index for pagination (default 0)
+      limit   - max stocks to return (default 20, cap 40)
+    """
+    sector = request.args.get('sector', '').strip()
+    offset = int(request.args.get('offset', 0))
+    limit = min(int(request.args.get('limit', 20)), 40)
+
+    if not sector or sector not in STOCKS:
+        return jsonify({'error': 'Invalid sector', 'quotes': []})
+
+    tickers = STOCKS[sector]
+    page = tickers[offset:offset + limit]
+    quotes = []
+
+    for sym in page:
+        ns_sym = sym + '.NS'
+        try:
+            info = yf.Ticker(ns_sym).info
+            price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+            prev_close = info.get('regularMarketPreviousClose') or info.get('previousClose') or 0
+            change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
+            mcap = info.get('marketCap') or 0
+            name = info.get('shortName') or info.get('longName') or TICKER_TO_NAME.get(sym, sym)
+            quotes.append({
+                'symbol': sym,
+                'name': name,
+                'price': round(price, 2),
+                'change_pct': round(change_pct, 2),
+                'mcap': mcap,
+            })
+        except Exception:
+            quotes.append({
+                'symbol': sym,
+                'name': TICKER_TO_NAME.get(sym, sym),
+                'price': 0,
+                'change_pct': 0,
+                'mcap': 0,
+            })
+
+    return jsonify({
+        'sector': sector,
+        'total': len(tickers),
+        'offset': offset,
+        'limit': limit,
+        'quotes': quotes,
+    })
+
 
 @app.route('/duplicates')
 def duplicates_route():
