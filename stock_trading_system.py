@@ -3253,24 +3253,29 @@ class Analyzer:
             # --- Parse Balance Sheet for Debt/Cash ---
             total_debt = 0.0
             cash = 0.0
+            balance_sheet = None  # initialise so RoCE block can safely reference it
             try:
                 balance_sheet = ticker_obj.balance_sheet
                 if balance_sheet is not None and not balance_sheet.empty:
-                    for row_name in ['Total Debt', 'Long Term Debt', 'Long-Term Debt']:
+                    for row_name in ['Total Debt', 'Long Term Debt', 'Long-Term Debt',
+                                     'Short And Long Term Debt', 'Total Long Term Debt',
+                                     'Net Debt']:
                         if row_name in balance_sheet.index:
                             val = balance_sheet.loc[row_name].iloc[0]
-                            if pd.notna(val):
+                            if pd.notna(val) and float(val) > 0:
                                 total_debt = float(val)
                                 break
                     for row_name in ['Cash And Cash Equivalents', 'Cash',
-                                     'Cash And Short Term Investments']:
+                                     'Cash And Short Term Investments',
+                                     'Cash Cash Equivalents And Short Term Investments',
+                                     'Cash And Cash Equivalents And Short Term Investments']:
                         if row_name in balance_sheet.index:
                             val = balance_sheet.loc[row_name].iloc[0]
                             if pd.notna(val):
                                 cash = float(val)
                                 break
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"DCF balance sheet parse error for {symbol}: {e}")
 
             # --- Compute RoCE (Return on Capital Employed) ---
             roce = None
@@ -3279,7 +3284,8 @@ class Analyzer:
                 income_stmt = ticker_obj.income_stmt
                 if income_stmt is not None and not income_stmt.empty:
                     ebit_val = None
-                    for row_name in ['EBIT', 'Operating Income', 'Operating Income Or Loss']:
+                    for row_name in ['EBIT', 'Operating Income', 'Operating Income Or Loss',
+                                     'Normalized EBITDA', 'Pretax Income']:
                         if row_name in income_stmt.index:
                             v = income_stmt.loc[row_name].iloc[0]
                             if pd.notna(v):
@@ -3288,19 +3294,20 @@ class Analyzer:
                     if ebit_val is not None and balance_sheet is not None and not balance_sheet.empty:
                         total_assets = None
                         curr_liabilities = None
-                        for row_name in ['Total Assets']:
+                        for row_name in ['Total Assets', 'Total Assets Net Minority Interest']:
                             if row_name in balance_sheet.index:
                                 v = balance_sheet.loc[row_name].iloc[0]
                                 if pd.notna(v):
                                     total_assets = float(v)
                                     break
-                        for row_name in ['Current Liabilities', 'Total Current Liabilities']:
+                        for row_name in ['Current Liabilities', 'Total Current Liabilities',
+                                         'Current Liabilities Net Minority Interest']:
                             if row_name in balance_sheet.index:
                                 v = balance_sheet.loc[row_name].iloc[0]
                                 if pd.notna(v):
                                     curr_liabilities = float(v)
                                     break
-                        if total_assets and total_assets > 0:
+                        if total_assets is not None and total_assets > 0:
                             cap_employed = total_assets - (curr_liabilities or 0)
                             if cap_employed > 0:
                                 roce = round(ebit_val / cap_employed, 4)
@@ -3308,15 +3315,18 @@ class Analyzer:
                     revenue_row = None
                     op_income_row = None
                     net_income_row = None
-                    for r in ['Total Revenue', 'Revenue', 'Net Revenue']:
+                    for r in ['Total Revenue', 'Revenue', 'Net Revenue',
+                              'Operating Revenue', 'Gross Revenue']:
                         if r in income_stmt.index:
                             revenue_row = income_stmt.loc[r]
                             break
-                    for r in ['Operating Income', 'EBIT', 'Operating Income Or Loss']:
+                    for r in ['Operating Income', 'EBIT', 'Operating Income Or Loss',
+                              'Normalized EBITDA']:
                         if r in income_stmt.index:
                             op_income_row = income_stmt.loc[r]
                             break
-                    for r in ['Net Income', 'Net Income From Continuing Operations']:
+                    for r in ['Net Income', 'Net Income From Continuing Operations',
+                              'Net Income Common Stockholders', 'Normalized Income']:
                         if r in income_stmt.index:
                             net_income_row = income_stmt.loc[r]
                             break
@@ -3334,8 +3344,8 @@ class Analyzer:
                                     'net_margin': round(net / rev * 100, 1) if net is not None else None,
                                 })
                         margin_trend.sort(key=lambda x: x['year'])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"DCF income stmt parse error for {symbol}: {e}")
 
             # Suggested growth rate: clamp historical CAGR to [3%, 40%]
             if historical_growth is not None:
