@@ -3380,6 +3380,276 @@ class Analyzer:
             print(f"DCF valuation error for {symbol}: {e}")
             return None
 
+    # ── Financial-sector detection (Banks / Financial Services / NBFC) ────────
+    _FINANCIAL_SECTORS_SET = {'banking', 'financial services', 'nbfc'}
+    _FINANCIAL_INDUSTRIES = {
+        'banks—regional', 'banks—diversified', 'banks - regional',
+        'banks - diversified', 'credit services', 'mortgage finance',
+        'insurance—life', 'insurance—diversified', 'insurance—property & casualty',
+        'insurance - life', 'insurance - diversified', 'insurance - property & casualty',
+        'insurance brokers', 'capital markets', 'asset management',
+        'financial data & stock exchanges', 'financial conglomerates',
+        'insurance—reinsurance', 'insurance - reinsurance', 'insurance—specialty',
+        'insurance - specialty', 'shell companies',
+    }
+
+    @classmethod
+    def is_financial_sector(cls, sector, industry):
+        """Return True if the company belongs to Banks / Financial Services / NBFC."""
+        s = (sector or '').strip().lower()
+        i = (industry or '').strip().lower()
+        if s in cls._FINANCIAL_SECTORS_SET:
+            return True
+        if i in cls._FINANCIAL_INDUSTRIES:
+            return True
+        # Catch-all: yfinance sector 'Financial Services' or industry containing 'bank'
+        if 'bank' in s or 'bank' in i:
+            return True
+        if 'financial' in s:
+            return True
+        if 'nbfc' in i or 'nbfc' in s:
+            return True
+        return False
+
+    def excess_return_valuation(self, symbol):
+        """Damodaran Excess Return (ROE-Book Value) model for financial firms."""
+        try:
+            base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
+            ticker_obj = None
+            info = {}
+            for base in base_symbols:
+                for suffix in ['.NS', '.BO']:
+                    try:
+                        t = yf.Ticker(f"{base}{suffix}")
+                        i = t.info
+                        if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                            ticker_obj = t
+                            info = i
+                            break
+                    except Exception:
+                        continue
+                if ticker_obj:
+                    break
+
+            if not ticker_obj or not info:
+                return None
+
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            if not current_price:
+                return None
+
+            shares = (info.get('sharesOutstanding') or
+                      info.get('impliedSharesOutstanding') or
+                      info.get('floatShares'))
+            if not shares or shares <= 0:
+                mktcap = info.get('marketCap')
+                if mktcap and current_price and current_price > 0:
+                    shares = mktcap / current_price
+            if not shares or shares <= 0:
+                return None
+
+            # --- Book Value Per Share ---
+            book_value_per_share = info.get('bookValue')
+            total_book_value = None
+
+            balance_sheet = None
+            try:
+                balance_sheet = ticker_obj.balance_sheet
+                if balance_sheet is not None and not balance_sheet.empty:
+                    for row_name in ['Stockholders Equity', 'Total Stockholder Equity',
+                                     'Common Stock Equity', 'Total Equity Gross Minority Interest',
+                                     'Stockholders\' Equity', 'Tangible Book Value',
+                                     'Net Tangible Assets']:
+                        if row_name in balance_sheet.index:
+                            val = balance_sheet.loc[row_name].iloc[0]
+                            if pd.notna(val) and float(val) > 0:
+                                total_book_value = float(val)
+                                break
+            except Exception as e:
+                print(f"Excess-return balance sheet parse error for {symbol}: {e}")
+
+            if not book_value_per_share or book_value_per_share <= 0:
+                if total_book_value and total_book_value > 0:
+                    book_value_per_share = total_book_value / shares
+                else:
+                    return None
+
+            if not total_book_value or total_book_value <= 0:
+                total_book_value = book_value_per_share * shares
+
+            # --- ROE (Return on Equity) ---
+            roe = info.get('returnOnEquity')
+
+            # Fallback: compute ROE from Net Income / Equity
+            net_income = None
+            roe_history = []
+            try:
+                income_stmt = ticker_obj.income_stmt
+                if income_stmt is not None and not income_stmt.empty:
+                    ni_row = None
+                    for row_name in ['Net Income', 'Net Income From Continuing Operations',
+                                     'Net Income Common Stockholders', 'Normalized Income']:
+                        if row_name in income_stmt.index:
+                            ni_row = income_stmt.loc[row_name]
+                            break
+                    if ni_row is not None:
+                        latest_ni = ni_row.dropna()
+                        if not latest_ni.empty:
+                            net_income = float(latest_ni.iloc[0])
+                            if roe is None and total_book_value and total_book_value > 0:
+                                roe = net_income / total_book_value
+
+                            # Build ROE history from available years
+                            equity_row = None
+                            if balance_sheet is not None and not balance_sheet.empty:
+                                for row_name in ['Stockholders Equity', 'Total Stockholder Equity',
+                                                 'Common Stock Equity', 'Total Equity Gross Minority Interest']:
+                                    if row_name in balance_sheet.index:
+                                        equity_row = balance_sheet.loc[row_name]
+                                        break
+
+                            ni_vals = ni_row.dropna()
+                            for col in ni_vals.index:
+                                yr = col.year if hasattr(col, 'year') else int(str(col)[:4])
+                                ni_val = float(ni_vals[col])
+                                eq_val = None
+                                if equity_row is not None and col in equity_row.index and pd.notna(equity_row[col]):
+                                    eq_val = float(equity_row[col])
+                                if eq_val and eq_val > 0:
+                                    roe_history.append({'year': yr, 'roe': round(ni_val / eq_val, 4),
+                                                       'net_income': int(round(ni_val)),
+                                                       'equity': int(round(eq_val))})
+                            roe_history.sort(key=lambda x: x['year'])
+            except Exception as e:
+                print(f"Excess-return income stmt parse error for {symbol}: {e}")
+
+            if roe is None or roe <= 0:
+                # Cannot run excess return model without a positive ROE
+                return None
+
+            # --- Cost of Equity (Ke) ---
+            # Use CAPM: Rf + beta * (Rm - Rf)
+            # Defaults: Rf=7% (India 10-yr govt bond), market premium=6%
+            beta = info.get('beta') or 1.0
+            risk_free_rate = 0.07
+            market_premium = 0.06
+            cost_of_equity = risk_free_rate + float(beta) * market_premium
+
+            # --- Book Value history ---
+            bv_history = []
+            try:
+                if balance_sheet is not None and not balance_sheet.empty:
+                    equity_row = None
+                    for row_name in ['Stockholders Equity', 'Total Stockholder Equity',
+                                     'Common Stock Equity', 'Total Equity Gross Minority Interest']:
+                        if row_name in balance_sheet.index:
+                            equity_row = balance_sheet.loc[row_name]
+                            break
+                    if equity_row is not None:
+                        eq_vals = equity_row.dropna()
+                        for col in eq_vals.index:
+                            yr = col.year if hasattr(col, 'year') else int(str(col)[:4])
+                            eq_val = float(eq_vals[col])
+                            bvps = eq_val / shares if shares > 0 else 0
+                            bv_history.append({'year': yr, 'equity': int(round(eq_val)),
+                                               'bvps': round(bvps, 2)})
+                        bv_history.sort(key=lambda x: x['year'])
+            except Exception as e:
+                print(f"Excess-return BV history parse error for {symbol}: {e}")
+
+            # --- Suggested growth rate for book value ---
+            bv_growth = None
+            if len(bv_history) >= 2:
+                first_eq = bv_history[0]['equity']
+                last_eq = bv_history[-1]['equity']
+                if first_eq > 0 and last_eq > 0:
+                    periods = len(bv_history) - 1
+                    bv_growth = (last_eq / first_eq) ** (1.0 / periods) - 1
+
+            suggested_growth = None
+            if bv_growth is not None:
+                suggested_growth = min(max(float(bv_growth), 0.03), 0.30)
+            else:
+                analyst_growth = (info.get('earningsGrowth') or
+                                  info.get('revenueGrowth') or 0.10)
+                suggested_growth = min(max(float(analyst_growth), 0.03), 0.30)
+
+            # --- Margin trend (reuse same logic as DCF) ---
+            margin_trend = []
+            try:
+                income_stmt = ticker_obj.income_stmt
+                if income_stmt is not None and not income_stmt.empty:
+                    revenue_row = None
+                    op_income_row = None
+                    net_income_row = None
+                    for r in ['Total Revenue', 'Revenue', 'Net Revenue',
+                              'Operating Revenue', 'Gross Revenue',
+                              'Interest Income', 'Net Interest Income',
+                              'Total Interest Income']:
+                        if r in income_stmt.index:
+                            revenue_row = income_stmt.loc[r]
+                            break
+                    for r in ['Operating Income', 'EBIT', 'Operating Income Or Loss']:
+                        if r in income_stmt.index:
+                            op_income_row = income_stmt.loc[r]
+                            break
+                    for r in ['Net Income', 'Net Income From Continuing Operations',
+                              'Net Income Common Stockholders']:
+                        if r in income_stmt.index:
+                            net_income_row = income_stmt.loc[r]
+                            break
+                    if revenue_row is not None:
+                        for col in revenue_row.dropna().index:
+                            yr = col.year if hasattr(col, 'year') else int(str(col)[:4])
+                            rev = float(revenue_row[col]) if pd.notna(revenue_row[col]) else None
+                            op = float(op_income_row[col]) if (op_income_row is not None and col in op_income_row.index and pd.notna(op_income_row[col])) else None
+                            net = float(net_income_row[col]) if (net_income_row is not None and col in net_income_row.index and pd.notna(net_income_row[col])) else None
+                            if rev and rev > 0:
+                                margin_trend.append({
+                                    'year': yr,
+                                    'revenue': int(round(rev)),
+                                    'op_margin': round(op / rev * 100, 1) if op is not None else None,
+                                    'net_margin': round(net / rev * 100, 1) if net is not None else None,
+                                })
+                        margin_trend.sort(key=lambda x: x['year'])
+            except Exception as e:
+                print(f"Excess-return margin trend parse error for {symbol}: {e}")
+
+            return {
+                'valuation_model': 'excess_return',
+                'symbol': symbol,
+                'name': info.get('longName') or info.get('shortName') or symbol,
+                'current_price': round(float(current_price), 2),
+                'shares_outstanding': int(round(float(shares))),
+                'book_value_per_share': round(float(book_value_per_share), 2),
+                'total_book_value': int(round(float(total_book_value))),
+                'roe': round(float(roe), 4),
+                'cost_of_equity': round(float(cost_of_equity), 4),
+                'beta': round(float(beta), 2),
+                'suggested_growth_rate': round(float(suggested_growth), 4),
+                'bv_growth': round(float(bv_growth), 4) if bv_growth is not None else None,
+                'market_cap': info.get('marketCap'),
+                'sector': info.get('sector') or '',
+                'industry': info.get('industry') or '',
+                'pe_ratio': info.get('trailingPE'),
+                'pb_ratio': info.get('priceToBook'),
+                'net_income': int(round(float(net_income))) if net_income else None,
+                'roe_history': roe_history,
+                'bv_history': bv_history,
+                'margin_trend': margin_trend,
+                # Include these for verdict compatibility
+                'current_fcf': None,
+                'total_debt': 0,
+                'cash': 0,
+                'historical_fcf_growth': None,
+                'roce': None,
+                'ev_ebitda': None,
+                'fcf_history': [],
+            }
+        except Exception as e:
+            print(f"Excess return valuation error for {symbol}: {e}")
+            return None
+
 
 analyzer = Analyzer()
 
@@ -6251,7 +6521,7 @@ def dashboard():
                     if (data.error) {
                         document.getElementById('dcf-result').innerHTML = '<div class="error">\u274c ' + data.error + '</div>';
                         setTimeout(function() { document.getElementById('dcf-result-view').style.display = 'none'; document.getElementById('dcf-search-view').style.display = 'block'; }, 3500);
-                    } else { dcfData = data; _dcfYears = 10; renderDCFResult(data); }
+                    } else if (data.valuation_model === 'excess_return') { dcfData = data; renderExcessReturnResult(data); } else { dcfData = data; _dcfYears = 10; renderDCFResult(data); }
                 })
                 .catch(function(e) { document.getElementById('dcf-result').innerHTML = '<div class="error">\u274c ' + e.message + '</div>'; });
         }
@@ -6486,6 +6756,206 @@ def dashboard():
         }
 
 
+        // ===== DAMODARAN EXCESS RETURN (ROE - BOOK VALUE) MODEL =====
+        function runExcessReturn(bvps, roe, coe, growthRate, years, shares) {
+            var projections = [], currentBV = bvps, sumPV = 0;
+            for (var yr = 1; yr <= years; yr++) {
+                var excessReturn = (roe - coe) * currentBV;
+                var pv = excessReturn / Math.pow(1 + coe, yr);
+                projections.push({ year: yr, bv: currentBV, excessReturn: excessReturn, pv: pv });
+                sumPV += pv;
+                currentBV = currentBV * (1 + growthRate);
+            }
+            // Terminal value of excess returns beyond projection period
+            var terminalER = (roe - coe) * currentBV;
+            var terminalValue = (coe > growthRate * 0.5) ? terminalER / (coe - growthRate * 0.5) : terminalER * 15;
+            var terminalPV = terminalValue / Math.pow(1 + coe, years);
+            var intrinsic = bvps + sumPV + terminalPV;
+            return { projections: projections, sumPV: sumPV, terminalValue: terminalValue, terminalPV: terminalPV, intrinsic: Math.max(intrinsic, 0) };
+        }
+
+        function renderExcessReturnResult(data) {
+            var roe = data.roe, coe = data.cost_of_equity, bvps = data.book_value_per_share;
+            var sugG = Math.round(data.suggested_growth_rate * 100);
+            var defaultKe = Math.round(coe * 100);
+            var priceStr = '\u20b9' + data.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            var mktCap = data.market_cap ? fmtCr(data.market_cap) : 'N/A';
+            var pe = data.pe_ratio ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
+            var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
+            var roeStr = (roe * 100).toFixed(1) + '%';
+            var bvGrowth = data.bv_growth !== null ? (data.bv_growth * 100).toFixed(1) + '%' : 'N/A';
+            var excessSpread = ((roe - coe) * 100).toFixed(1);
+            var h = '';
+            h += '<div class="dcf-stock-hero"><div>';
+            h += '<div class="dcf-stock-name">' + (data.name || data.symbol) + '</div>';
+            h += '<div class="dcf-stock-sub">' + data.symbol + (data.sector ? ' &bull; ' + data.sector : '') + (data.industry ? ' &bull; ' + data.industry : '') + '</div>';
+            h += '<div style="margin-top:6px;padding:4px 10px;background:var(--accent-purple);color:#fff;border-radius:6px;display:inline-block;font-size:0.78em;font-weight:600;">Damodaran Excess Return Model (Financial Firm)</div>';
+            h += '</div><div class="dcf-price-box"><div class="dcf-price-label">Current Price</div><div class="dcf-price-val">' + priceStr + '</div></div></div>';
+            h += '<div class="dcf-key-stats">';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">Book Value / Share</div><div class="dcf-stat-value">\u20b9' + bvps.toFixed(2) + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">Return on Equity</div><div class="dcf-stat-value" style="color:' + (roe*100>=15?'var(--accent-green)':roe*100>=8?'var(--warning)':'var(--danger)') + ';">' + roeStr + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-purple);"><div class="dcf-stat-label">Cost of Equity</div><div class="dcf-stat-value">' + (coe * 100).toFixed(1) + '%</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:' + (parseFloat(excessSpread)>0?'var(--accent-green)':'var(--danger)') + ';"><div class="dcf-stat-label">Excess Spread (ROE\u2212Ke)</div><div class="dcf-stat-value" style="color:' + (parseFloat(excessSpread)>0?'var(--accent-green)':'var(--danger)') + ';">' + (parseFloat(excessSpread)>0?'+':'') + excessSpread + '%</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-purple);"><div class="dcf-stat-label">Market Cap</div><div class="dcf-stat-value">' + mktCap + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--warning);"><div class="dcf-stat-label">P/E Ratio</div><div class="dcf-stat-value">' + pe + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--danger);"><div class="dcf-stat-label">P/B Ratio</div><div class="dcf-stat-value">' + pb + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--text-muted);"><div class="dcf-stat-label">Hist. BV CAGR</div><div class="dcf-stat-value">' + bvGrowth + '</div></div>';
+            h += '</div>';
+            // ROE history chart
+            if (data.roe_history && data.roe_history.length > 1) {
+                var roeVals = data.roe_history.map(function(r) { return r.roe * 100; });
+                var maxRoe = Math.max.apply(null, roeVals.map(Math.abs));
+                if (maxRoe === 0) maxRoe = 1;
+                var bars = data.roe_history.map(function(r) {
+                    var pct = Math.abs(r.roe * 100) / maxRoe * 100;
+                    var cls = r.roe >= 0 ? 'dcf-fcf-positive' : 'dcf-fcf-negative';
+                    return '<div class="dcf-fcf-bar-wrap"><div class="dcf-fcf-bar-inner ' + cls + '" style="height:' + pct + '%;"></div><div class="dcf-fcf-bar-year">' + String(r.year).slice(-2) + '</div></div>';
+                }).join('');
+                h += '<div style="background:var(--bg-card-hover);border-radius:12px;padding:18px 22px;margin-bottom:22px;border:1px solid var(--border-color);"><div style="font-size:0.78em;text-transform:uppercase;color:var(--text-muted);font-weight:600;letter-spacing:0.5px;margin-bottom:10px;">Historical Return on Equity</div><div class="dcf-fcf-hist">' + bars + '</div></div>';
+            }
+            h += '<div class="dcf-valuation-grid">';
+            h += '<div class="dcf-params-card"><h3>Assumptions</h3>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Projection Years</span></div>';
+            h += '<div class="dcf-years-group"><button class="dcf-year-btn" onclick="erSetYears(5, this)">5 Years</button><button class="dcf-year-btn active" onclick="erSetYears(10, this)">10 Years</button></div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Return on Equity (ROE)</span><span class="dcf-param-value" id="er-roe-val">' + Math.round(roe*100) + '%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="er-roe" min="1" max="40" step="0.5" value="' + Math.round(roe*100) + '" oninput="erSliderChange(this)">';
+            h += '<div class="dcf-param-hint">Current ROE: ' + roeStr + '. Higher ROE means more excess returns above cost of equity.</div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Cost of Equity (Ke)</span><span class="dcf-param-value" id="er-ke-val">' + defaultKe + '%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="er-ke" min="6" max="25" step="0.5" value="' + defaultKe + '" oninput="erSliderChange(this)">';
+            h += '<div class="dcf-param-hint">CAPM-derived: Rf(' + (0.07*100).toFixed(0) + '%) + \u03b2(' + data.beta.toFixed(2) + ') \u00d7 MRP(6%). Your required return.</div></div>';
+            h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Book Value Growth Rate</span><span class="dcf-param-value" id="er-g-val">' + sugG + '%</span></div>';
+            h += '<input type="range" class="dcf-slider" id="er-g" min="0" max="30" step="0.5" value="' + sugG + '" oninput="erSliderChange(this)">';
+            h += '<div class="dcf-param-hint">Rate at which book value per share grows. Historical BV CAGR: ' + bvGrowth + '.</div></div>';
+            h += '</div>';
+            h += '<div class="dcf-results-card"><h3>Valuation Output</h3>';
+            h += '<div class="dcf-intrinsic-hero"><div class="dcf-intrinsic-label">Intrinsic Value Per Share</div><div class="dcf-intrinsic-value" id="er-intrinsic-val">\u2014</div></div>';
+            h += '<div id="er-verdict-banner" class="dcf-verdict-banner"></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Current Market Price</span><span class="dcf-margin-val">' + priceStr + '</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Book Value / Share</span><span class="dcf-margin-val">\u20b9' + bvps.toFixed(2) + '</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Upside / Downside</span><span class="dcf-margin-val" id="er-updown">\u2014</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">PV of Excess Returns</span><span class="dcf-margin-val" id="er-pv-excess">\u2014</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Terminal Value of Excess Returns</span><span class="dcf-margin-val" id="er-tv">\u2014</span></div>';
+            h += '<div class="dcf-breakdown-bar"><div class="dcf-breakdown-label">Value Breakdown: Book Value vs Excess Returns</div>';
+            h += '<div class="dcf-bar-track"><div class="dcf-bar-fcf" id="er-bar-bv" style="width:50%;">Book Value</div><div class="dcf-bar-tv" id="er-bar-er" style="width:50%;">Excess Returns</div></div>';
+            h += '<div class="dcf-bar-legend"><div class="dcf-bar-legend-item"><div class="dcf-bar-legend-dot" style="background:var(--accent-cyan);"></div>Book Value</div><div class="dcf-bar-legend-item"><div class="dcf-bar-legend-dot" style="background:var(--accent-purple);"></div>PV of Excess Returns</div></div>';
+            h += '</div></div>';
+            h += '</div>';
+            h += '<div class="dcf-section"><div class="dcf-section-title">Year-by-Year Excess Return Projection</div><div style="overflow-x:auto;"><table class="dcf-proj-table"><thead><tr><th>Year</th><th>Book Value / Sh</th><th>Excess Return / Sh</th><th>Discount Factor</th><th>PV / Sh</th></tr></thead><tbody id="er-proj-tbody"></tbody></table></div></div>';
+            h += '<div class="dcf-sensitivity dcf-section"><div class="dcf-section-title">Sensitivity Analysis \u2014 Intrinsic Value vs Cost of Equity &amp; ROE</div>';
+            h += '<p style="color:var(--text-muted);font-size:0.82em;margin-bottom:12px;">Green = undervalued vs current price &bull; Red = overvalued &bull; Yellow = within \u00b115%.</p>';
+            h += '<div style="overflow-x:auto;"><table class="dcf-sens-table" id="er-sens-table"></table></div></div>';
+            h += '<div class="dcf-section" style="background:var(--bg-card-hover);border-radius:12px;padding:18px 22px;border:1px solid var(--border-color);">';
+            h += '<div class="dcf-section-title" style="margin-bottom:10px;">\U0001f4d6 About This Model</div>';
+            h += '<p style="color:var(--text-secondary);font-size:0.85em;line-height:1.7;margin:0;">The <strong>Damodaran Excess Return Model</strong> values financial firms (banks, NBFCs, insurance) using <strong>Book Value + PV of future Excess Returns</strong>. Unlike a traditional DCF, it recognises that financial firms\u2019 \u201cdebt\u201d is their raw material (deposits, borrowings), not a financing choice. If ROE exceeds the Cost of Equity, the firm creates value above its book; if ROE &lt; Ke, the stock should trade below book.</p>';
+            h += '</div>';
+            h += '<div class="dcf-disclaimer">\u26a0\ufe0f <strong>Disclaimer:</strong> Excess return valuations are sensitive to ROE sustainability and cost of equity assumptions. This tool is for educational and informational purposes only and does not constitute investment advice.</div>';
+            document.getElementById('dcf-result').innerHTML = h;
+            _erYears = 10;
+            updateExcessReturnDisplay();
+        }
+
+        var _erYears = 10;
+        function erSetYears(n, btn) {
+            _erYears = n;
+            document.querySelectorAll('.dcf-year-btn').forEach(function(b) { b.classList.remove('active'); });
+            btn.classList.add('active');
+            updateExcessReturnDisplay();
+        }
+        function erSliderChange(el) {
+            var targetId = el.id + '-val';
+            var display = document.getElementById(targetId);
+            if (display) display.textContent = el.value + '%';
+            updateExcessReturnDisplay();
+        }
+
+        function updateExcessReturnDisplay() {
+            if (!dcfData || dcfData.valuation_model !== 'excess_return') return;
+            var roe  = parseFloat(document.getElementById('er-roe').value) / 100;
+            var ke   = parseFloat(document.getElementById('er-ke').value) / 100;
+            var g    = parseFloat(document.getElementById('er-g').value) / 100;
+            var bvps = dcfData.book_value_per_share;
+            var shares = dcfData.shares_outstanding;
+            var price = dcfData.current_price;
+            var res  = runExcessReturn(bvps, roe, ke, g, _erYears, shares);
+            var intrinsic = res.intrinsic;
+            var ivEl = document.getElementById('er-intrinsic-val');
+            var isUnder = intrinsic > price;
+            ivEl.textContent = '\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            ivEl.className = 'dcf-intrinsic-value ' + (isUnder ? 'dcf-intrinsic-undervalued' : 'dcf-intrinsic-overvalued');
+            var ud = ((intrinsic - price) / price) * 100;
+            var udEl = document.getElementById('er-updown');
+            udEl.textContent = (ud >= 0 ? '+' : '') + ud.toFixed(1) + '%';
+            udEl.className = 'dcf-margin-val ' + (ud >= 0 ? 'dcf-upside' : 'dcf-downside');
+            document.getElementById('er-pv-excess').textContent = '\u20b9' + res.sumPV.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' / share';
+            document.getElementById('er-tv').textContent = '\u20b9' + res.terminalPV.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' / share';
+            // Breakdown bar
+            var totalExcess = res.sumPV + res.terminalPV;
+            var bvPct = intrinsic > 0 ? Math.max(0, Math.min(bvps / intrinsic * 100, 100)) : 50;
+            var erPct = 100 - bvPct;
+            var bBv = document.getElementById('er-bar-bv'), bEr = document.getElementById('er-bar-er');
+            bBv.style.width = bvPct.toFixed(1) + '%'; bEr.style.width = erPct.toFixed(1) + '%';
+            bBv.textContent = bvPct >= 18 ? 'Book Value ' + bvPct.toFixed(0) + '%' : '';
+            bEr.textContent = erPct >= 18 ? 'Excess Returns ' + erPct.toFixed(0) + '%' : '';
+            // Verdict banner
+            var vEl = document.getElementById('er-verdict-banner');
+            if (ud >= 25)       { vEl.className = 'dcf-verdict-banner dcf-verdict-buy';  vEl.textContent = '\u2705 Potentially Undervalued \u2014 ROE generates significant excess returns over cost of equity'; }
+            else if (ud >= -15) { vEl.className = 'dcf-verdict-banner dcf-verdict-hold'; vEl.textContent = '\u2696\ufe0f Fairly Valued \u2014 Price is near the estimated intrinsic value'; }
+            else                { vEl.className = 'dcf-verdict-banner dcf-verdict-sell'; vEl.textContent = '\u26a0\ufe0f Potentially Overvalued \u2014 Market premium exceeds estimated excess returns'; }
+            // Projection table
+            var tbody = document.getElementById('er-proj-tbody');
+            if (tbody) {
+                var rows = '';
+                // Historical ROE rows
+                if (dcfData.roe_history && dcfData.roe_history.length > 0) {
+                    var hist = dcfData.roe_history.slice(-5);
+                    hist.forEach(function(r) {
+                        var eqPerShare = r.equity / shares;
+                        rows += '<tr class="hist-row"><td>FY ' + r.year + '</td><td>\u20b9' + eqPerShare.toFixed(2) + '</td><td style="color:' + (r.roe>=0?'var(--accent-green)':'var(--danger)') + ';">ROE ' + (r.roe*100).toFixed(1) + '%</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td></tr>';
+                    });
+                    rows += '<tr class="hist-separator"><td colspan="5">\u25bc\u25bc Projections \u25bc\u25bc</td></tr>';
+                }
+                res.projections.forEach(function(p) {
+                    rows += '<tr><td>Year ' + p.year + '</td><td>\u20b9' + p.bv.toFixed(2) + '</td><td style="color:' + (p.excessReturn>=0?'var(--accent-green)':'var(--danger)') + ';">\u20b9' + p.excessReturn.toFixed(2) + '</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + ke, p.year)).toFixed(4) + '</td><td>\u20b9' + p.pv.toFixed(2) + '</td></tr>';
+                });
+                rows += '<tr class="total-row"><td>PV of Excess Returns</td><td colspan="3"></td><td>\u20b9' + res.sumPV.toFixed(2) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Terminal Excess Return (PV)</td><td colspan="3"></td><td>\u20b9' + res.terminalPV.toFixed(2) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Book Value / Share</td><td colspan="3"></td><td>\u20b9' + bvps.toFixed(2) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td></tr>';
+                tbody.innerHTML = rows;
+            }
+            // Sensitivity table: ROE vs Cost of Equity
+            renderERSensitivity(price, roe, ke, g, _erYears, bvps, shares);
+        }
+
+        function renderERSensitivity(price, baseROE, baseKe, g, years, bvps, shares) {
+            var keSteps  = [-0.03, -0.015, 0, 0.015, 0.03];
+            var roeSteps = [-0.04, -0.02, 0, 0.02, 0.04];
+            var tableEl = document.getElementById('er-sens-table');
+            if (!tableEl) return;
+            var html = '<thead><tr><th>Ke \\ ROE</th>';
+            roeSteps.forEach(function(dr) { html += '<th>' + ((baseROE + dr) * 100).toFixed(0) + '%</th>'; });
+            html += '</tr></thead><tbody>';
+            keSteps.forEach(function(dk) {
+                var k = baseKe + dk;
+                if (k <= 0) return;
+                html += '<tr><td>Ke ' + (k * 100).toFixed(1) + '%</td>';
+                roeSteps.forEach(function(dr) {
+                    var r = baseROE + dr;
+                    if (r <= 0) { html += '<td style="color:var(--text-muted);">N/A</td>'; return; }
+                    var res = runExcessReturn(bvps, r, k, g, years, shares);
+                    var ud = ((res.intrinsic - price) / price) * 100;
+                    var isCurrent = (Math.abs(dk) < 0.001 && Math.abs(dr) < 0.001);
+                    var cls = ud >= 15 ? 'dcf-sens-undervalue' : ud <= -15 ? 'dcf-sens-overvalue' : 'dcf-sens-near';
+                    if (isCurrent) cls += ' dcf-sens-highlight';
+                    html += '<td class="' + cls + '">\u20b9' + Math.round(res.intrinsic).toLocaleString('en-IN') + '</td>';
+                });
+                html += '</tr>';
+            });
+            html += '</tbody>';
+            tableEl.innerHTML = html;
+        }
+
+
         // ===== INVESTMENT VERDICT TAB =====
         function verdictGoBack() {
             document.getElementById('verdict-result-view').style.display = 'none';
@@ -6550,7 +7020,39 @@ def dashboard():
         function scoreLongTerm(tech, dcfD, regr) {
             let score = 40;
             const items = [];
-            if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
+            if (dcfD && !dcfD.error && dcfD.valuation_model === 'excess_return' && dcfD.book_value_per_share && dcfD.shares_outstanding) {
+                // --- Excess Return model scoring for financial firms ---
+                const roe = dcfD.roe || 0;
+                const ke = dcfD.cost_of_equity || 0.13;
+                const g = dcfD.suggested_growth_rate || 0.1;
+                const res = runExcessReturn(dcfD.book_value_per_share, roe, ke, g, 10, dcfD.shares_outstanding);
+                const up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
+                if (up >= 30) score += 25; else if (up >= 15) score += 12; else if (up >= 0) score += 5; else if (up < -20) score -= 15; else score -= 5;
+                items.push({ label: 'Excess Return Upside', value: (up >= 0 ? '+' : '') + up.toFixed(0) + '%', color: up >= 15 ? 'green' : up >= 0 ? 'yellow' : 'red' });
+                const roePct = roe * 100;
+                if (roePct >= 15) score += 12; else if (roePct >= 8) score += 6; else if (roePct >= 0) score += 2; else score -= 5;
+                items.push({ label: 'RoE', value: roePct.toFixed(1) + '%', color: roePct >= 15 ? 'green' : roePct >= 8 ? 'yellow' : 'red' });
+                const spread = (roe - ke) * 100;
+                if (spread >= 5) score += 15; else if (spread >= 0) score += 6; else if (spread >= -3) score += 0; else score -= 8;
+                items.push({ label: 'Excess Spread (ROE\u2212Ke)', value: (spread >= 0 ? '+' : '') + spread.toFixed(1) + '%', color: spread >= 3 ? 'green' : spread >= 0 ? 'yellow' : 'red' });
+                const pe = dcfD.pe_ratio;
+                if (pe && pe > 0) {
+                    if (pe < 15) score += 12; else if (pe < 25) score += 6; else if (pe > 50) score -= 5;
+                    items.push({ label: 'P/E Ratio', value: pe.toFixed(1) + 'x', color: pe < 20 ? 'green' : pe < 35 ? 'yellow' : 'red' });
+                }
+                const pb = dcfD.pb_ratio;
+                if (pb && pb > 0) {
+                    if (pb < 2) score += 6; else if (pb < 4) score += 3;
+                    items.push({ label: 'P/B Ratio', value: pb.toFixed(2) + 'x', color: pb < 2 ? 'green' : pb < 4 ? 'yellow' : 'red' });
+                }
+                const bvg = dcfD.bv_growth;
+                if (bvg !== null && bvg !== undefined) {
+                    const bvgPct = bvg * 100;
+                    if (bvgPct >= 15) score += 10; else if (bvgPct >= 8) score += 5; else if (bvgPct >= 0) score += 2;
+                    items.push({ label: 'BV Growth', value: bvgPct.toFixed(1) + '%/yr', color: bvgPct >= 12 ? 'green' : bvgPct >= 5 ? 'yellow' : 'red' });
+                }
+            } else if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
+                // --- Standard DCF scoring ---
                 const g1 = dcfD.suggested_growth_rate || 0.1;
                 const g2 = Math.max(g1 * 0.5, 0.04);
                 const _isFin2 = isFinancialSector(dcfD.sector);
@@ -6770,7 +7272,30 @@ def dashboard():
             h += vdSectionHeader('&#128200; Long-Term Holding', 'var(--accent-green)', badge, bdgClass, ltRes.score);
             h += buildMetricsHtml(ltRes.items);
             var narrativeParts = [];
-            if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
+            if (dcfD && !dcfD.error && dcfD.valuation_model === 'excess_return' && dcfD.book_value_per_share && dcfD.shares_outstanding) {
+                // --- Excess Return model narrative for financial firms ---
+                var roe = dcfD.roe || 0;
+                var ke = dcfD.cost_of_equity || 0.13;
+                var g = dcfD.suggested_growth_rate || 0.1;
+                var res = runExcessReturn(dcfD.book_value_per_share, roe, ke, g, 10, dcfD.shares_outstanding);
+                var up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
+                var ivStr = '\u20b9' + res.intrinsic.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;">
+                    <div class="vd-level"><div class="vd-level-label">Intrinsic Value (Excess Return)</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${ivStr}</div></div>
+                    <div class="vd-level"><div class="vd-level-label">Upside / Downside</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${(up >= 0 ? '+' : '') + up.toFixed(1)}%</div></div>
+                </div>`;
+                var spread = ((roe - ke) * 100).toFixed(1);
+                if (up >= 20) narrativeParts.push('Trading at a <strong style="color:var(--accent-green);">' + up.toFixed(0) + '% discount</strong> to its estimated intrinsic value (Damodaran Excess Return model) \u2014 potentially strong margin of safety for long-term investors.');
+                else if (up >= 5) narrativeParts.push('Modestly undervalued by ~' + up.toFixed(0) + '% on the Excess Return model \u2014 reasonable entry if ROE sustainability is sound.');
+                else if (up < -20) narrativeParts.push('Excess Return model suggests the stock is priced <strong style="color:var(--danger);">' + Math.abs(up).toFixed(0) + '% above</strong> its fair value \u2014 long-term upside may be limited.');
+                else narrativeParts.push('Trading near its estimated fair value according to the Damodaran Excess Return model.');
+                if (parseFloat(spread) > 0) narrativeParts.push('ROE exceeds the cost of equity by <strong>' + spread + '%</strong>, indicating the firm <strong style="color:var(--accent-green);">creates value</strong> above its book.');
+                else narrativeParts.push('ROE is <strong style="color:var(--danger);">below the cost of equity</strong> by ' + Math.abs(parseFloat(spread)).toFixed(1) + '% \u2014 the firm currently destroys value relative to its book.');
+                if (dcfD.bv_growth) {
+                    var bvPct = (dcfD.bv_growth * 100).toFixed(1);
+                    narrativeParts.push('Book value has grown at <strong>' + bvPct + '% per year</strong> \u2014 ' + (parseFloat(bvPct) >= 12 ? 'strong equity compounding.' : parseFloat(bvPct) >= 5 ? 'moderate book growth.' : 'slow equity expansion, worth monitoring.'));
+                }
+            } else if (dcfD && !dcfD.error && dcfD.current_fcf && dcfD.shares_outstanding) {
                 var g1 = dcfD.suggested_growth_rate || 0.1;
                 var g2 = Math.max(g1 * 0.5, 0.04);
                 var _isF3 = isFinancialSector(dcfD.sector);
@@ -7019,7 +7544,15 @@ def dashboard():
                 .catch(function(e) { verdictSetResult('tech', null, 'vd-load-tech', false, '\u274c ' + e.message); });
             fetch('/dcf-data?symbol=' + encodeURIComponent(symbol))
                 .then(function(r) { return r.json(); })
-                .then(function(data) { verdictSetResult('dcf', data, 'vd-load-dcf', !data.error, data.error ? '\u274c ' + data.error : '\u2705 Done'); })
+                .then(function(data) {
+                    var doneMsg = '\u2705 Done';
+                    if (!data.error && data.valuation_model === 'excess_return') {
+                        doneMsg = '\u2705 Excess Return Model';
+                        var lbl = document.querySelector('#vd-load-dcf')
+                        if (lbl) { var p = lbl.previousElementSibling; if (p) p.textContent = 'Excess Return Valuation'; }
+                    }
+                    verdictSetResult('dcf', data, 'vd-load-dcf', !data.error, data.error ? '\u274c ' + data.error : doneMsg);
+                })
                 .catch(function(e) { verdictSetResult('dcf', null, 'vd-load-dcf', false, '\u274c ' + e.message); });
             fetch('/dividend-info?symbol=' + encodeURIComponent(symbol))
                 .then(function(r) { return r.json(); })
@@ -7789,7 +8322,24 @@ def dcf_data_route():
         return jsonify(cached)
 
     try:
-        result = analyzer.dcf_valuation(normalized_symbol)
+        # Check if the stock belongs to a financial sector by looking up
+        # the local STOCKS sector assignment first (avoids an extra API call).
+        local_sector = TICKER_TO_SECTOR.get(normalized_symbol, '').lower()
+        is_financial = local_sector in ('banking', 'financial services')
+
+        if is_financial:
+            result = analyzer.excess_return_valuation(normalized_symbol)
+        else:
+            result = analyzer.dcf_valuation(normalized_symbol)
+
+        # If the DCF path returned data, do a second check: yfinance may
+        # report a financial sector/industry even when our local dict doesn't.
+        if result and result.get('valuation_model') != 'excess_return':
+            yf_sector = result.get('sector', '')
+            yf_industry = result.get('industry', '')
+            if Analyzer.is_financial_sector(yf_sector, yf_industry):
+                result = analyzer.excess_return_valuation(normalized_symbol)
+
         if not result:
             return jsonify({'error': f'Unable to fetch financial data for {normalized_symbol}. This stock may lack sufficient published financials.'})
         DCF_CACHE.set(normalized_symbol, result)
