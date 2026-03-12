@@ -3162,6 +3162,11 @@ class Analyzer:
             shares = (info.get('sharesOutstanding') or
                       info.get('impliedSharesOutstanding') or
                       info.get('floatShares'))
+            # Fallback: derive shares from market cap / price
+            if not shares or shares <= 0:
+                mktcap = info.get('marketCap')
+                if mktcap and current_price and current_price > 0:
+                    shares = mktcap / current_price
             if not shares or shares <= 0:
                 return None
 
@@ -3174,14 +3179,16 @@ class Analyzer:
                 if cashflow is not None and not cashflow.empty:
                     ocf = None
                     for row_name in ['Operating Cash Flow', 'Total Cash From Operating Activities',
-                                     'Cash From Operating Activities']:
+                                     'Cash From Operating Activities', 'Cash Flow From Operations',
+                                     'Net Cash Provided By Operating Activities']:
                         if row_name in cashflow.index:
                             ocf = cashflow.loc[row_name]
                             break
 
                     capex = None
                     for row_name in ['Capital Expenditure', 'Capital Expenditures',
-                                     'Purchase Of Property Plant And Equipment']:
+                                     'Purchase Of Property Plant And Equipment',
+                                     'Capital Expenditures Reported', 'Purchases Of Property']:
                         if row_name in cashflow.index:
                             capex = cashflow.loc[row_name]
                             break
@@ -3211,15 +3218,37 @@ class Analyzer:
             except Exception as e:
                 print(f"DCF cashflow parse error for {symbol}: {e}")
 
-            # Fallback: use EPS-based proxy if FCF unavailable
+            # Fallback chain when FCF from cashflow statement is unavailable/negative
             if current_fcf is None or current_fcf <= 0:
-                trailing_eps = info.get('trailingEps')
-                if trailing_eps and trailing_eps > 0:
-                    current_fcf = float(trailing_eps) * float(shares)
-                    historical_growth = info.get('earningsGrowth') or 0.10
+                # 1. freeCashflow field on info dict (yfinance pre-computes this)
+                info_fcf = info.get('freeCashflow')
+                if info_fcf and float(info_fcf) > 0:
+                    current_fcf = float(info_fcf)
+                    historical_growth = info.get('earningsGrowth') or info.get('revenueGrowth') or 0.10
                     fcf_history = []
                 else:
-                    return None
+                    # 2. operatingCashflow from info dict (common for capital-heavy sectors)
+                    info_ocf = info.get('operatingCashflow')
+                    if info_ocf and float(info_ocf) > 0:
+                        current_fcf = float(info_ocf) * 0.75  # conservative capex haircut
+                        historical_growth = info.get('revenueGrowth') or 0.08
+                        fcf_history = []
+                    else:
+                        # 3. EBITDA proxy (ebitda * ~0.5 ≈ levered FCF for heavy industries)
+                        ebitda = info.get('ebitda')
+                        if ebitda and float(ebitda) > 0:
+                            current_fcf = float(ebitda) * 0.50
+                            historical_growth = info.get('revenueGrowth') or 0.08
+                            fcf_history = []
+                        else:
+                            # 4. EPS proxy (trailingEps then forwardEps)
+                            eps = info.get('trailingEps') or info.get('forwardEps')
+                            if eps and float(eps) > 0:
+                                current_fcf = float(eps) * float(shares)
+                                historical_growth = info.get('earningsGrowth') or 0.10
+                                fcf_history = []
+                            else:
+                                return None
 
             # --- Parse Balance Sheet for Debt/Cash ---
             total_debt = 0.0
