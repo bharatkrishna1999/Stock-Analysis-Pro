@@ -61,6 +61,72 @@ YAHOO_TICKER_ALIASES = {
     "ETERNAL": ["ZOMATO"],
 }
 
+
+def _get_current_price(ticker_obj, info=None):
+    """Get current price from a yfinance Ticker, handling retired info keys.
+
+    Recent yfinance versions retired 'currentPrice' and 'regularMarketPrice'
+    from ticker.info.  This helper tries fast_info first (the official
+    replacement), then falls back to info dict keys, then to last close from
+    history().
+    """
+    # 1. fast_info (preferred in modern yfinance)
+    try:
+        fi = ticker_obj.fast_info
+        for key in ('lastPrice', 'last_price'):
+            try:
+                price = fi[key]
+                if price and float(price) > 0:
+                    return float(price)
+            except (KeyError, TypeError):
+                continue
+    except Exception:
+        pass
+
+    # 2. Legacy info dict keys (still works in some older versions)
+    if info:
+        price = info.get('currentPrice') or info.get('regularMarketPrice')
+        if price and float(price) > 0:
+            return float(price)
+
+    # 3. Last close from history
+    try:
+        hist = ticker_obj.history(period='5d')
+        if hist is not None and not hist.empty:
+            close = hist['Close']
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            close = close.dropna()
+            if not close.empty:
+                return float(close.iloc[-1])
+    except Exception:
+        pass
+
+    return None
+
+
+def _get_previous_close(ticker_obj, info=None):
+    """Get previous close price, handling retired info keys."""
+    try:
+        fi = ticker_obj.fast_info
+        for key in ('previousClose', 'previous_close'):
+            try:
+                pc = fi[key]
+                if pc and float(pc) > 0:
+                    return float(pc)
+            except (KeyError, TypeError):
+                continue
+    except Exception:
+        pass
+
+    if info:
+        pc = info.get('regularMarketPreviousClose') or info.get('previousClose')
+        if pc and float(pc) > 0:
+            return float(pc)
+
+    return 0
+
+
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX, but includes 500+ stocks
 
@@ -3138,25 +3204,24 @@ class Analyzer:
             base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
             ticker_obj = None
             info = {}
+            current_price = None
             for base in base_symbols:
                 for suffix in ['.NS', '.BO']:
                     try:
                         t = yf.Ticker(f"{base}{suffix}")
-                        i = t.info
-                        if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                        i = t.info or {}
+                        price = _get_current_price(t, i)
+                        if price and price > 0:
                             ticker_obj = t
                             info = i
+                            current_price = price
                             break
                     except Exception:
                         continue
                 if ticker_obj:
                     break
 
-            if not ticker_obj or not info:
-                return None
-
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
-            if not current_price:
+            if not ticker_obj or not current_price:
                 return None
 
             shares = (info.get('sharesOutstanding') or
@@ -7591,9 +7656,10 @@ def sector_quotes_route():
     for sym in page:
         ns_sym = sym + '.NS'
         try:
-            info = yf.Ticker(ns_sym).info
-            price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
-            prev_close = info.get('regularMarketPreviousClose') or info.get('previousClose') or 0
+            t = yf.Ticker(ns_sym)
+            info = t.info or {}
+            price = _get_current_price(t, info) or 0
+            prev_close = _get_previous_close(t, info)
             change_pct = ((price - prev_close) / prev_close * 100) if prev_close else 0
             mcap = info.get('marketCap') or 0
             name = info.get('shortName') or info.get('longName') or TICKER_TO_NAME.get(sym, sym)
