@@ -8355,22 +8355,16 @@ def _parse_groww_pnl_sections(raw_rows):
     Parse the Groww P&L report which has multiple sections:
       - Metadata (client code, date range)
       - Summary
-      - Realised trades (with its own header row)
-      - Unrealised trades (with its own header row)
+      - Realised trades (with its own header row)  — already sold
+      - Unrealised trades (with its own header row) — still held
       - Charges
       - Disclaimer
-    Returns a list of dicts with keys like stock_name, qty, buy_price,
-    sell_price, buy_value, sell_value, pnl, pnl_pct, trade_type.
+    Returns a list of dicts.  Each dict has a 'section' key that is either
+    'realised' or 'unrealised' (or 'unknown') so the aggregator can treat them
+    differently.
     """
-    # Normalise every cell to stripped string
     rows = [[str(c).strip() for c in r] for r in raw_rows]
 
-    # --- Detect section headers by finding rows whose first cell matches
-    # known Groww section markers ---
-    SECTION_MARKERS = {
-        'realised trades', 'realised trade', 'realized trades',
-        'unrealised trades', 'unrealised trade', 'unrealized trades',
-    }
     SKIP_MARKERS = {
         'unique client code', 'p&l statement', 'summary', 'p&l', 'charges',
         'realised p&l', 'unrealised p&l', 'realized p&l', 'unrealized p&l',
@@ -8379,41 +8373,48 @@ def _parse_groww_pnl_sections(raw_rows):
         'disclaimer:', 'groww invest tech',
     }
 
-    # Locate the header row for each trade section.
-    # A trade-section header row contains 'stock name' (or 'stock') in the first cell.
-    trade_sections = []   # list of (header_row_idx, header_cols)
+    # ---- Step 1: find section markers and their header rows ----
+    # Each entry: (header_row_idx, hdr_lower, section_type)
+    trade_sections = []
     for i, row in enumerate(rows):
-        first = row[0].lower() if row else ''
-        if first in SECTION_MARKERS:
-            # Next non-empty row should be the column header row
-            for j in range(i + 1, min(i + 4, len(rows))):
-                if rows[j] and rows[j][0].lower().replace(' ', '') != '':
-                    hdr_lower = [c.lower().strip() for c in rows[j]]
-                    if any('stock' in h for h in hdr_lower):
-                        trade_sections.append((j, hdr_lower, rows[j]))
-                    break
+        first = row[0].lower().strip() if row else ''
+        # Determine section type
+        section_type = None
+        if any(m in first for m in ('realised trade', 'realized trade')):
+            if 'unrealised' in first or 'unrealized' in first:
+                section_type = 'unrealised'
+            else:
+                section_type = 'realised'
+        if section_type is None:
+            continue
+        # Find the column-header row right after the section marker
+        for j in range(i + 1, min(i + 4, len(rows))):
+            if rows[j] and rows[j][0].strip():
+                hdr_lower = [c.lower().strip() for c in rows[j]]
+                if any('stock' in h for h in hdr_lower):
+                    trade_sections.append((j, hdr_lower, section_type))
+                break
 
-    # If no section markers found, look for any row with 'stock name' as first cell
+    # Fallback: no section markers — look for any 'stock name' header row
     if not trade_sections:
         for i, row in enumerate(rows):
-            if row and row[0].lower().strip() in ('stock name', 'stock', 'symbol', 'stock symbol', 'scrip name', 'company name', 'instrument'):
+            if row and row[0].lower().strip() in (
+                'stock name', 'stock', 'symbol', 'stock symbol',
+                'scrip name', 'company name', 'instrument',
+            ):
                 hdr_lower = [c.lower().strip() for c in row]
-                trade_sections.append((i, hdr_lower, row))
+                trade_sections.append((i, hdr_lower, 'unknown'))
 
-    # If STILL no sections found, fall back to treating the whole file as a
-    # single table with the first row as header
-    if not trade_sections:
-        if rows:
-            hdr_lower = [c.lower().strip() for c in rows[0]]
-            trade_sections.append((0, hdr_lower, rows[0]))
+    # Last resort: treat first row as header
+    if not trade_sections and rows:
+        hdr_lower = [c.lower().strip() for c in rows[0]]
+        trade_sections.append((0, hdr_lower, 'unknown'))
 
-    # --- Parse each trade section ---
+    # ---- Step 2: parse data rows in each section ----
     parsed_trades = []
-    for sec_idx, (hdr_idx, hdr_lower, _hdr_raw) in enumerate(trade_sections):
-        # Find end of section: next section header, or end of rows
+    for sec_idx, (hdr_idx, hdr_lower, section_type) in enumerate(trade_sections):
         next_hdr = trade_sections[sec_idx + 1][0] if sec_idx + 1 < len(trade_sections) else len(rows)
 
-        # Map column indices for known fields
         def _find_col(candidates):
             for cand in candidates:
                 for ci, h in enumerate(hdr_lower):
@@ -8432,10 +8433,11 @@ def _parse_groww_pnl_sections(raw_rows):
         col_pnl = _find_col(['p&l', 'pnl', 'profit/loss', 'realised p&l', 'unrealised p&l', 'realized p&l', 'unrealized p&l', 'profit & loss', 'gain/loss', 'total p&l'])
         col_pnl_pct = _find_col(['p&l(%)', 'pnl(%)', 'pnl %', 'p&l %', 'returns(%)', 'returns %'])
         col_isin = _find_col(['isin'])
-        col_trade_type = _find_col(['trade type', 'type'])
+        col_buy_date = _find_col(['buy date', 'purchase date', 'date'])
+        col_sell_date = _find_col(['sell date', 'sell/transfer date', 'transfer date'])
 
         if col_stock is None:
-            col_stock = 0  # fallback
+            col_stock = 0
 
         for ri in range(hdr_idx + 1, next_hdr):
             row = rows[ri]
@@ -8445,19 +8447,14 @@ def _parse_groww_pnl_sections(raw_rows):
             if not stock_name or stock_name.lower() == 'nan':
                 continue
 
-            # Skip known non-stock rows
             name_lower = stock_name.lower()
-            skip = False
-            for marker in SKIP_MARKERS:
-                if name_lower.startswith(marker):
-                    skip = True
-                    break
-            if skip:
+            if any(name_lower.startswith(m) for m in SKIP_MARKERS):
                 continue
-            # Also skip if it looks like a long disclaimer sentence
+            # Skip section marker rows that may appear within the data range
+            if any(m in name_lower for m in ('realised trade', 'realized trade', 'unrealised trade', 'unrealized trade')):
+                continue
             if len(stock_name) > 60 and ' ' in stock_name:
                 continue
-            # Skip "Stock name" (repeated header)
             if name_lower in ('stock name', 'stock', 'symbol'):
                 continue
 
@@ -8472,9 +8469,15 @@ def _parse_groww_pnl_sections(raw_rows):
                 except (ValueError, TypeError):
                     return None
 
+            def _str(col_idx):
+                if col_idx is None or col_idx >= len(row):
+                    return ''
+                return row[col_idx].strip()
+
             trade = {
+                'section': section_type,
                 'stock_name': stock_name,
-                'isin': row[col_isin].strip() if col_isin is not None and col_isin < len(row) else '',
+                'isin': _str(col_isin),
                 'qty': _num(col_qty),
                 'buy_price': _num(col_buy_price),
                 'sell_price': _num(col_sell_price),
@@ -8484,7 +8487,8 @@ def _parse_groww_pnl_sections(raw_rows):
                 'present_value': _num(col_present_val),
                 'pnl': _num(col_pnl),
                 'pnl_pct': _num(col_pnl_pct),
-                'trade_type': row[col_trade_type].strip().lower() if col_trade_type is not None and col_trade_type < len(row) else '',
+                'buy_date': _str(col_buy_date),
+                'sell_date': _str(col_sell_date),
             }
             parsed_trades.append(trade)
 
@@ -8494,19 +8498,30 @@ def _parse_groww_pnl_sections(raw_rows):
 def _aggregate_trades(parsed_trades):
     """
     Aggregate individual trades into per-stock holdings.
-    Returns a list of dicts ready for enrichment.
+
+    - **Unrealised trades** are current holdings: aggregate by stock to show
+      total qty held, weighted avg buy price, and current value.
+    - **Realised trades** are closed: aggregate P&L per stock.  We show them
+      separately so the user sees net realised gains.
+
+    The final output merges both into one list per stock: unrealised holdings
+    carry qty/avg/current_val, and realised P&L is added on top.
     """
     from collections import defaultdict
-    stock_agg = defaultdict(lambda: {
+
+    _empty_agg = lambda: {  # noqa: E731
         'stock_name': '', 'isin': '',
-        'total_qty': 0, 'total_buy_value': 0, 'total_sell_value': 0,
-        'total_present_value': 0, 'total_pnl': 0,
+        # unrealised (current holdings)
+        'held_qty': 0, 'held_buy_value': 0,
+        'held_present_value': 0, 'held_pnl': 0,
         'last_present_price': None, 'last_buy_price': None,
-        'count': 0,
-    })
+        # realised (closed trades)
+        'realised_pnl': 0, 'realised_buy_value': 0, 'realised_sell_value': 0,
+        'has_unrealised': False, 'has_realised': False,
+    }
+    stock_agg = defaultdict(_empty_agg)
 
     for t in parsed_trades:
-        # Normalise key: use ISIN if available, else uppercase stock name
         key = t['isin'] if t['isin'] else t['stock_name'].upper().strip()
         agg = stock_agg[key]
 
@@ -8516,51 +8531,76 @@ def _aggregate_trades(parsed_trades):
             agg['isin'] = t['isin']
 
         qty = t['qty'] or 0
-        agg['total_qty'] += qty
-        agg['count'] += 1
+        section = t.get('section', 'unknown')
 
-        if t['buy_value'] is not None:
-            agg['total_buy_value'] += t['buy_value']
-        elif t['buy_price'] is not None and qty:
-            agg['total_buy_value'] += t['buy_price'] * qty
+        if section == 'realised':
+            agg['has_realised'] = True
+            bv = t['buy_value'] if t['buy_value'] is not None else ((t['buy_price'] or 0) * qty)
+            sv = t['sell_value'] if t['sell_value'] is not None else ((t['sell_price'] or 0) * qty)
+            agg['realised_buy_value'] += bv
+            agg['realised_sell_value'] += sv
+            if t['pnl'] is not None:
+                agg['realised_pnl'] += t['pnl']
+            else:
+                agg['realised_pnl'] += sv - bv
 
-        if t['sell_value'] is not None:
-            agg['total_sell_value'] += t['sell_value']
-        elif t['sell_price'] is not None and qty:
-            agg['total_sell_value'] += t['sell_price'] * qty
+        elif section == 'unrealised':
+            agg['has_unrealised'] = True
+            agg['held_qty'] += qty
+            bv = t['buy_value'] if t['buy_value'] is not None else ((t['buy_price'] or 0) * qty)
+            agg['held_buy_value'] += bv
+            pv = t['present_value'] if t['present_value'] is not None else ((t['present_price'] or 0) * qty)
+            agg['held_present_value'] += pv
+            if t['pnl'] is not None:
+                agg['held_pnl'] += t['pnl']
+            else:
+                agg['held_pnl'] += pv - bv
+            if t['present_price'] is not None:
+                agg['last_present_price'] = t['present_price']
+            if t['buy_price'] is not None:
+                agg['last_buy_price'] = t['buy_price']
 
-        if t['present_value'] is not None:
-            agg['total_present_value'] += t['present_value']
-        elif t['present_price'] is not None and qty:
-            agg['total_present_value'] += t['present_price'] * qty
-
-        if t['pnl'] is not None:
-            agg['total_pnl'] += t['pnl']
-
-        if t['present_price'] is not None:
-            agg['last_present_price'] = t['present_price']
-        if t['buy_price'] is not None:
-            agg['last_buy_price'] = t['buy_price']
+        else:
+            # Unknown section — treat like unrealised
+            agg['has_unrealised'] = True
+            agg['held_qty'] += qty
+            bv = t['buy_value'] if t['buy_value'] is not None else ((t['buy_price'] or 0) * qty)
+            agg['held_buy_value'] += bv
+            pv = t['present_value'] if t['present_value'] is not None else (
+                t['sell_value'] if t['sell_value'] is not None else ((t['present_price'] or t['sell_price'] or 0) * qty)
+            )
+            agg['held_present_value'] += pv
+            if t['pnl'] is not None:
+                agg['held_pnl'] += t['pnl']
+            if t['present_price'] is not None:
+                agg['last_present_price'] = t['present_price']
+            if t['buy_price'] is not None:
+                agg['last_buy_price'] = t['buy_price']
 
     results = []
     for _key, agg in stock_agg.items():
-        avg_buy = round(agg['total_buy_value'] / agg['total_qty'], 2) if agg['total_qty'] > 0 and agg['total_buy_value'] > 0 else (agg['last_buy_price'] or 0)
-        invested = agg['total_buy_value'] if agg['total_buy_value'] > 0 else 0
-        current_val = agg['total_present_value'] if agg['total_present_value'] > 0 else agg['total_sell_value']
-        pnl = agg['total_pnl']
-        if not pnl and invested > 0 and current_val > 0:
-            pnl = current_val - invested
+        # Compute weighted avg buy price for held shares
+        avg_buy = round(agg['held_buy_value'] / agg['held_qty'], 2) if agg['held_qty'] > 0 and agg['held_buy_value'] > 0 else (agg['last_buy_price'] or 0)
+        invested = agg['held_buy_value'] if agg['held_buy_value'] > 0 else 0
+        current_val = agg['held_present_value'] if agg['held_present_value'] > 0 else 0
+        # Total P&L = unrealised + realised
+        total_pnl = agg['held_pnl'] + agg['realised_pnl']
+        if not total_pnl and invested > 0 and current_val > 0:
+            total_pnl = current_val - invested + agg['realised_pnl']
 
-        results.append({
+        entry = {
             'stock': agg['stock_name'],
             'isin': agg['isin'],
-            'qty': agg['total_qty'] if agg['total_qty'] else None,
+            'qty': agg['held_qty'] if agg['held_qty'] else None,
             'avg_price': avg_buy if avg_buy else None,
             'ltp': agg['last_present_price'],
             'invested': invested if invested else None,
             'current_val': current_val if current_val else None,
-            'pnl': pnl if pnl else None,
-        })
+            'pnl': total_pnl if total_pnl else None,
+            'realised_pnl': agg['realised_pnl'] if agg['realised_pnl'] else None,
+            'has_current_holding': agg['has_unrealised'],
+        }
+        results.append(entry)
 
     return results
 
