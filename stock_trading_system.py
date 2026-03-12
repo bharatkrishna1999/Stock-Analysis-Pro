@@ -31,6 +31,7 @@ import gc
 from scipy.optimize import minimize as scipy_minimize
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
+from stock_alerts import StockAlertMonitor
 
 # Set non-interactive backend for Render server
 matplotlib.use('Agg')
@@ -3342,6 +3343,12 @@ class Analyzer:
 
 
 analyzer = Analyzer()
+
+# ── Stock Alert Monitor (background thread) ───────────────────────────────────
+alert_monitor = StockAlertMonitor(analyzer)
+# Auto-start if a watchlist and email credentials are already set via env vars
+if alert_monitor.config.get("watchlist") and alert_monitor.config.get("smtp_user"):
+    alert_monitor.start()
 
 # ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
 # [Keeping your exact HTML - no changes needed]
@@ -8034,6 +8041,299 @@ def prefilter_stream_route():
         yield f"data: {json.dumps({'type': 'done', 'checked': checked, 'passed': passed})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# STOCK ALERT ROUTES
+# ═════════════════════════════════════════════════════════════════════════════
+
+@app.route('/alerts')
+def alerts_page():
+    """Stock Alert configuration UI."""
+    status = alert_monitor.status()
+    watchlist_str = ', '.join(status['watchlist'])
+    running_badge = (
+        '<span style="background:#10b98122;color:#10b981;border-radius:4px;'
+        'padding:2px 10px;font-size:12px;font-weight:600;">ACTIVE</span>'
+        if status['running'] else
+        '<span style="background:#ef444422;color:#ef4444;border-radius:4px;'
+        'padding:2px 10px;font-size:12px;font-weight:600;">STOPPED</span>'
+    )
+    smtp_badge = (
+        '<span style="background:#10b98122;color:#10b981;border-radius:4px;'
+        'padding:2px 10px;font-size:12px;font-weight:600;">Configured</span>'
+        if status['smtp_configured'] else
+        '<span style="background:#f59e0b22;color:#f59e0b;border-radius:4px;'
+        'padding:2px 10px;font-size:12px;font-weight:600;">Not configured</span>'
+    )
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Stock Alerts — Stock Analysis Pro</title>
+  <style>
+    *{{box-sizing:border-box;margin:0;padding:0}}
+    body{{background:#0a0c12;color:#f1f5f9;
+          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+          min-height:100vh;padding:32px 16px}}
+    .container{{max-width:780px;margin:0 auto}}
+    h1{{font-size:26px;font-weight:800;color:#f1f5f9;margin-bottom:4px}}
+    .subtitle{{color:#64748b;font-size:14px;margin-bottom:32px}}
+    .card{{background:#0f172a;border:1px solid #1e293b;border-radius:12px;
+           padding:24px;margin-bottom:20px}}
+    .card-title{{font-size:13px;font-weight:600;color:#f59e0b;text-transform:uppercase;
+                 letter-spacing:2px;margin-bottom:16px}}
+    .status-row{{display:flex;align-items:center;gap:12px;margin-bottom:10px}}
+    .status-label{{color:#64748b;font-size:13px;min-width:140px}}
+    label{{display:block;color:#94a3b8;font-size:13px;margin-bottom:6px;margin-top:14px}}
+    input,select{{width:100%;background:#1e293b;border:1px solid #334155;border-radius:6px;
+                  color:#f1f5f9;padding:10px 12px;font-size:14px;outline:none}}
+    input:focus,select:focus{{border-color:#f59e0b}}
+    .btn{{display:inline-block;padding:10px 22px;border-radius:6px;font-size:13px;
+          font-weight:600;cursor:pointer;border:none;transition:opacity .15s}}
+    .btn-primary{{background:#f59e0b;color:#0a0c12}}
+    .btn-green{{background:#10b981;color:#fff}}
+    .btn-red{{background:#ef4444;color:#fff}}
+    .btn-ghost{{background:#1e293b;color:#94a3b8;border:1px solid #334155}}
+    .btn:hover{{opacity:.85}}
+    .btn-row{{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}}
+    #msg{{margin-top:14px;padding:10px 14px;border-radius:6px;font-size:13px;display:none}}
+    .msg-ok{{background:#10b98122;color:#10b981;border:1px solid #10b98144}}
+    .msg-err{{background:#ef444422;color:#ef4444;border:1px solid #ef444444}}
+    .scan-result{{margin-top:14px}}
+    .sr-row{{display:flex;justify-content:space-between;align-items:center;
+             padding:10px 0;border-bottom:1px solid #1e293b;font-size:13px}}
+    .sr-sym{{font-weight:700;color:#f1f5f9}}
+    .sr-sig-buy{{color:#10b981}} .sr-sig-other{{color:#f59e0b}}
+    .note{{font-size:11px;color:#475569;margin-top:10px;line-height:1.6}}
+    a.back{{color:#f59e0b;font-size:13px;text-decoration:none;display:inline-block;
+            margin-bottom:20px}}
+    a.back:hover{{text-decoration:underline}}
+  </style>
+</head>
+<body>
+<div class="container">
+  <a class="back" href="/app">&larr; Back to Dashboard</a>
+  <h1>Stock Alerts</h1>
+  <p class="subtitle">Get emailed the moment a stock in your watchlist turns undervalued.</p>
+
+  <!-- Status -->
+  <div class="card">
+    <div class="card-title">Monitor Status</div>
+    <div class="status-row">
+      <span class="status-label">Monitor</span>{running_badge}
+    </div>
+    <div class="status-row">
+      <span class="status-label">SMTP / Email</span>{smtp_badge}
+    </div>
+    <div class="status-row">
+      <span class="status-label">Recipient</span>
+      <span style="color:#94a3b8;font-size:13px;">{status['recipient_email'] or '—'}</span>
+    </div>
+    <div class="status-row">
+      <span class="status-label">Check interval</span>
+      <span style="color:#94a3b8;font-size:13px;">every {status['check_interval_min']} min</span>
+    </div>
+    <div class="status-row">
+      <span class="status-label">Alert cooldown</span>
+      <span style="color:#94a3b8;font-size:13px;">{status['cooldown_hours']} hrs between repeat alerts</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-green" onclick="monitorAction('start')">Start Monitor</button>
+      <button class="btn btn-red"   onclick="monitorAction('stop')">Stop Monitor</button>
+    </div>
+  </div>
+
+  <!-- Config -->
+  <div class="card">
+    <div class="card-title">Email &amp; SMTP Configuration</div>
+    <p class="note" style="margin-bottom:0;">
+      For Gmail, use <strong>smtp.gmail.com</strong> port <strong>465</strong> with an
+      <a href="https://myaccount.google.com/apppasswords" target="_blank"
+         style="color:#f59e0b;">App Password</a>
+      (requires 2FA). Credentials are stored in memory only and reset on server restart —
+      set them as environment variables for persistence
+      (<code>ALERT_EMAIL</code>, <code>SMTP_HOST</code>, <code>SMTP_PORT</code>,
+      <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>).
+    </p>
+
+    <label>Recipient Email</label>
+    <input id="cfg_recipient" type="email" placeholder="you@example.com"
+           value="{status['recipient_email']}">
+
+    <label>SMTP Host</label>
+    <input id="cfg_smtp_host" type="text" placeholder="smtp.gmail.com"
+           value="{alert_monitor.config['smtp_host']}">
+
+    <label>SMTP Port</label>
+    <input id="cfg_smtp_port" type="number" placeholder="465"
+           value="{alert_monitor.config['smtp_port']}">
+
+    <label>SMTP Username (sender email)</label>
+    <input id="cfg_smtp_user" type="email" placeholder="sender@gmail.com"
+           value="{alert_monitor.config['smtp_user']}">
+
+    <label>SMTP Password / App Password</label>
+    <input id="cfg_smtp_pass" type="password" placeholder="••••••••">
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+    </div>
+    <div id="cfg_msg"></div>
+  </div>
+
+  <!-- Watchlist -->
+  <div class="card">
+    <div class="card-title">Watchlist &amp; Scan Settings</div>
+
+    <label>Watchlist (comma-separated NSE symbols)</label>
+    <input id="cfg_watchlist" type="text"
+           placeholder="RELIANCE, TCS, INFY, HDFC, ICICIBANK"
+           value="{watchlist_str}">
+
+    <label>Check Interval (minutes)</label>
+    <input id="cfg_interval" type="number" min="1" max="60"
+           value="{status['check_interval_min']}">
+
+    <label>Alert Cooldown (hours) — min time before re-alerting the same stock</label>
+    <input id="cfg_cooldown" type="number" min="1" max="72"
+           value="{status['cooldown_hours']}">
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveWatchlist()">Save Watchlist</button>
+      <button class="btn btn-ghost"   onclick="scanNow()">Scan Now (test)</button>
+    </div>
+    <div id="wl_msg"></div>
+    <div id="scan_results" class="scan-result"></div>
+  </div>
+
+</div>
+
+<script>
+async function post(url, body) {{
+  const r = await fetch(url, {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify(body)
+  }});
+  return r.json();
+}}
+
+function showMsg(id, ok, text) {{
+  const el = document.getElementById(id);
+  el.className = ok ? 'msg-ok' : 'msg-err';
+  el.textContent = text;
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', 5000);
+}}
+
+async function monitorAction(action) {{
+  const r = await post('/alerts/' + action, {{}});
+  location.reload();
+}}
+
+async function saveConfig() {{
+  const body = {{
+    recipient_email: document.getElementById('cfg_recipient').value.trim(),
+    smtp_host:       document.getElementById('cfg_smtp_host').value.trim(),
+    smtp_port:       parseInt(document.getElementById('cfg_smtp_port').value),
+    smtp_user:       document.getElementById('cfg_smtp_user').value.trim(),
+  }};
+  const pass = document.getElementById('cfg_smtp_pass').value;
+  if (pass) body.smtp_password = pass;
+  const r = await post('/alerts/config', body);
+  showMsg('cfg_msg', r.ok, r.message || (r.ok ? 'Saved.' : 'Error saving config.'));
+}}
+
+async function saveWatchlist() {{
+  const raw = document.getElementById('cfg_watchlist').value;
+  const symbols = raw.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  const body = {{
+    watchlist: symbols,
+    check_interval_min: parseInt(document.getElementById('cfg_interval').value),
+    cooldown_hours:     parseInt(document.getElementById('cfg_cooldown').value),
+  }};
+  const r = await post('/alerts/config', body);
+  showMsg('wl_msg', r.ok, r.message || (r.ok ? 'Watchlist saved.' : 'Error.'));
+}}
+
+async function scanNow() {{
+  document.getElementById('scan_results').innerHTML =
+    '<p style="color:#64748b;font-size:13px;margin-top:10px;">Scanning... (may take 1-2 min)</p>';
+  const r = await fetch('/alerts/scan-now', {{method:'POST'}});
+  const data = await r.json();
+  if (!data.results || !data.results.length) {{
+    document.getElementById('scan_results').innerHTML =
+      '<p style="color:#64748b;font-size:13px;margin-top:10px;">Watchlist is empty — add symbols above first.</p>';
+    return;
+  }}
+  let html = '<div style="margin-top:14px;">';
+  html += '<div style="font-size:11px;color:#64748b;margin-bottom:8px;">SCAN RESULTS (latest)</div>';
+  for (const s of data.results) {{
+    const sigCls = s.signal === 'BUY' ? 'sr-sig-buy' : 'sr-sig-other';
+    const triggered = s._triggered
+      ? '<span style="color:#10b981;font-weight:600;">UNDERVALUED</span>'
+      : '<span style="color:#475569;">OK</span>';
+    html += `<div class="sr-row">
+      <span class="sr-sym">${{s.symbol}}</span>
+      <span class="${{sigCls}}">${{s.signal || '—'}}</span>
+      <span style="color:#94a3b8;">RSI ${{s.rsi?.toFixed(1) ?? '—'}}</span>
+      <span style="color:#94a3b8;">Z ${{s.zscore?.toFixed(2) ?? '—'}}</span>
+      <span style="color:#94a3b8;">Score ${{s._score}}</span>
+      ${{triggered}}
+    </div>`;
+  }}
+  html += '</div>';
+  document.getElementById('scan_results').innerHTML = html;
+}};
+</script>
+</body>
+</html>"""
+    return html
+
+
+@app.route('/alerts/status')
+def alerts_status_route():
+    return jsonify(alert_monitor.status())
+
+
+@app.route('/alerts/start', methods=['POST'])
+def alerts_start_route():
+    alert_monitor.start()
+    return jsonify({'ok': True, 'message': 'Monitor started.'})
+
+
+@app.route('/alerts/stop', methods=['POST'])
+def alerts_stop_route():
+    alert_monitor.stop()
+    return jsonify({'ok': True, 'message': 'Monitor stopped.'})
+
+
+@app.route('/alerts/config', methods=['POST'])
+def alerts_config_route():
+    data = request.get_json(silent=True) or {}
+    # Validate watchlist: must be a list of strings
+    if 'watchlist' in data:
+        wl = data['watchlist']
+        if not isinstance(wl, list):
+            return jsonify({'ok': False, 'message': 'watchlist must be a JSON array.'})
+        data['watchlist'] = [str(s).strip().upper() for s in wl if str(s).strip()]
+    # smtp_port coercion
+    if 'smtp_port' in data:
+        try:
+            data['smtp_port'] = int(data['smtp_port'])
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'message': 'smtp_port must be an integer.'})
+    alert_monitor.update_config(data)
+    return jsonify({'ok': True, 'message': 'Configuration updated.'})
+
+
+@app.route('/alerts/scan-now', methods=['POST'])
+def alerts_scan_now_route():
+    results = alert_monitor.manual_scan()
+    return jsonify({'ok': True, 'results': results})
 
 
 if __name__ == '__main__':
