@@ -1,0 +1,24 @@
+[Unit]
+Description=Stock Analysis Pro - Trading Dashboard & Email Alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/user/Stock-Analysis-Pro
+ExecStart=/usr/local/bin/python3 stock_trading_system.py
+
+# ── Email alert credentials (fill these in) ──────────────────────────────────
+Environment=ALERT_EMAIL=your_email@gmail.com
+Environment=SMTP_USER=your_email@gmail.com
+Environment=SMTP_PASSWORD=your_16_char_app_password
+Environment=ALERT_WATCHLIST=RELIANCE,TCS,INFY
+Environment=ALERT_INTERVAL_MIN=5
+Environment=ALERT_COOLDOWN_HRS=4
+
+# ── Reliability ──────────────────────────────────────────────────────────────
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
