@@ -4981,23 +4981,24 @@ def dashboard():
             else if (tabContext === 'regression') { document.getElementById('regression-search').value = p; analyzeRegression(); }
             else if (tabContext === 'dcf') { document.getElementById('dcf-search').value = p; fetchDCFData(); }
             else if (tabContext === 'verdict') { document.getElementById('verdict-search').value = p; fetchVerdictData(); }
+            else if (tabContext === 'dividend-to-verdict') { switchTab('verdict'); document.getElementById('verdict-search').value = p; fetchVerdictData(); }
         }
         function buildPeerStocksHTML(symbol, tabContext) {
             var peers = getPeerStocks(symbol, 6);
             if (peers.length === 0) return '';
             var sector = getStockSector(symbol);
-            var h = '<div class="peer-stocks-section" style="margin-top:20px;padding:18px 20px;background:var(--bg-card-hover);border:1px solid var(--border-color);border-radius:12px;">';
-            h += '<div style="font-family:\'Space Grotesk\',sans-serif;font-weight:700;font-size:0.95em;color:var(--accent-cyan);margin-bottom:12px;">Peer Stocks' + (sector ? ' \u2014 ' + sector : '') + '</div>';
-            h += '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
+            var h = `<div class="peer-stocks-section" style="margin-top:20px;padding:18px 20px;background:var(--bg-card-hover);border:1px solid var(--border-color);border-radius:12px;">`;
+            h += `<div style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:0.95em;color:var(--accent-cyan);margin-bottom:12px;">Peer Stocks${sector ? ' \u2014 ' + sector : ''}</div>`;
+            h += `<div style="display:flex;flex-wrap:wrap;gap:8px;">`;
             for (var i = 0; i < peers.length; i++) {
                 var p = peers[i];
                 var name = getStockName(p);
-                h += '<button onclick="peerOnclick(\'' + p + '\',\'' + tabContext + '\')" style="background:rgba(0,217,255,0.08);border:1px solid var(--border-color);border-radius:8px;padding:8px 14px;cursor:pointer;transition:all 0.2s;color:var(--text-primary);font-size:0.85em;line-height:1.3;text-align:left;" onmouseover="this.style.borderColor=\'var(--accent-cyan)\';this.style.background=\'rgba(0,217,255,0.15)\'" onmouseout="this.style.borderColor=\'var(--border-color)\';this.style.background=\'rgba(0,217,255,0.08)\'">';
-                h += '<div style="font-weight:600;color:var(--accent-cyan);">' + p + '</div>';
-                h += '<div style="font-size:0.8em;color:var(--text-muted);">' + name + '</div>';
-                h += '</button>';
+                h += `<button onclick="peerOnclick('${p}','${tabContext}')" style="background:rgba(0,217,255,0.08);border:1px solid var(--border-color);border-radius:8px;padding:8px 14px;cursor:pointer;transition:all 0.2s;color:var(--text-primary);font-size:0.85em;line-height:1.3;text-align:left;" onmouseover="this.style.borderColor='var(--accent-cyan)';this.style.background='rgba(0,217,255,0.15)'" onmouseout="this.style.borderColor='var(--border-color)';this.style.background='rgba(0,217,255,0.08)'">`
+                + `<div style="font-weight:600;color:var(--accent-cyan);">${p}</div>`
+                + `<div style="font-size:0.8em;color:var(--text-muted);">${name}</div>`
+                + `</button>`;
             }
-            h += '</div></div>';
+            h += `</div></div>`;
             return h;
         }
 
@@ -6463,7 +6464,7 @@ def dashboard():
                     </div>
                 </div>`;
             if (data.allocation && data.allocation.length > 0) {
-                html += buildPeerStocksHTML(data.allocation[0].symbol, 'technical');
+                html += buildPeerStocksHTML(data.allocation[0].symbol, 'dividend-to-verdict');
             }
             document.getElementById('dividend-results').innerHTML = html;
         }
