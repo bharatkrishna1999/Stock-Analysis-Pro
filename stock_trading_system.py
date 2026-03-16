@@ -8201,7 +8201,9 @@ def similar_stocks_route():
     symbol = request.args.get('symbol', '').strip().upper()
     if not symbol:
         return jsonify({'error': 'No symbol provided', 'peers': []})
-    normalized = analyzer.normalize_symbol(symbol)
+    normalized, _ = analyzer.normalize_symbol(symbol)
+    if not normalized:
+        normalized = symbol
     sector = TICKER_TO_SECTOR.get(normalized, '')
     if not sector:
         return jsonify({'sector': '', 'symbol': normalized, 'peers': []})
