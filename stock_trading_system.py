@@ -4172,13 +4172,6 @@ def dashboard():
         #result-view { display: none; }
         .loading { text-align: center; color: var(--accent-cyan); font-size: 1.3em; padding: 40px; font-family: 'Space Grotesk', sans-serif; }
         .error { background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 20px; border-radius: 8px; border-left: 4px solid var(--danger); }
-        .sim-stocks-section { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border-color); }
-        .sim-stocks-title { font-size: 0.78em; font-weight: 700; text-transform: uppercase; letter-spacing: 0.7px; color: var(--text-muted); margin-bottom: 12px; }
-        .sim-stocks-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-        .sim-stock-chip { display: flex; flex-direction: column; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 14px; cursor: pointer; transition: all 0.2s; min-width: 100px; max-width: 160px; }
-        .sim-stock-chip:hover { border-color: rgba(201,168,76,0.45); background: var(--bg-card-hover); transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.18); }
-        .sim-stock-chip .ssc-symbol { font-weight: 700; font-size: 0.9em; color: var(--text-primary); font-family: 'Space Grotesk', sans-serif; }
-        .sim-stock-chip .ssc-name { font-size: 0.72em; color: var(--text-muted); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     </style>
     <style media="not all" id="deferred-css">
         .result-card { background: var(--bg-card); border-radius: 12px; padding: 35px; border: 1px solid var(--border-color); }
@@ -5925,7 +5918,6 @@ def dashboard():
                 </div>
             `;
             document.getElementById('result').innerHTML = html;
-            renderSimilarStocks(symbol, 'result', 'analysis');
             // Store signal data for capital calculator
             window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0, recRiskPct: s.rec_risk_pct || 1 };
             // Render projection chart if available
@@ -6152,34 +6144,7 @@ def dashboard():
                 </div>
             `;
             document.getElementById('regression-result').innerHTML = html;
-            renderSimilarStocks(symbol, 'regression-result', 'regression');
         }
-        function renderSimilarStocks(symbol, containerId, tabType) {
-            var sector = getStockSector(symbol);
-            if (!sector) return;
-            var peers = (stocks[sector] || []).filter(function(s) { return s !== symbol; }).slice(0, 10);
-            if (peers.length === 0) return;
-            var h = '<div class="sim-stocks-section">';
-            h += '<div class="sim-stocks-title">Similar Stocks &bull; ' + sector + '</div>';
-            h += '<div class="sim-stocks-grid">';
-            peers.forEach(function(sym) {
-                var safeSym = sym.replace(/'/g, "\\'");
-                var name = getStockName(sym);
-                var onclick = '';
-                if (tabType === 'analysis') onclick = "analyze('" + safeSym + "')";
-                else if (tabType === 'verdict') onclick = "document.getElementById('verdict-search').value='" + safeSym + "';fetchVerdictData()";
-                else if (tabType === 'dcf') onclick = "document.getElementById('dcf-search').value='" + safeSym + "';fetchDCFData()";
-                else if (tabType === 'regression') onclick = "document.getElementById('regression-search').value='" + safeSym + "';analyzeRegression()";
-                h += '<div class="sim-stock-chip" onclick="' + onclick + '">';
-                h += '<div class="ssc-symbol">' + sym + '</div>';
-                h += '<div class="ssc-name">' + name + '</div>';
-                h += '</div>';
-            });
-            h += '</div></div>';
-            var container = document.getElementById(containerId);
-            if (container) container.insertAdjacentHTML('beforeend', h);
-        }
-
         function goBack() {
             document.getElementById('search-view').style.display = 'block';
             document.getElementById('result-view').style.display = 'none';
@@ -6690,7 +6655,6 @@ def dashboard():
             h += '<div style="overflow-x:auto;"><table class="dcf-sens-table" id="dcf-sens-table"></table></div></div>';
             h += '<div class="dcf-disclaimer">\u26a0\ufe0f <strong>Disclaimer:</strong> DCF valuations are highly sensitive to input assumptions. Small changes in growth rate or WACC can materially affect the intrinsic value. This tool is for educational and informational purposes only and does not constitute investment advice. Always do your own due diligence.</div>';
             document.getElementById('dcf-result').innerHTML = h;
-            renderSimilarStocks(data.symbol, 'dcf-result', 'dcf');
             updateDCFDisplay();
         }
 
@@ -6886,7 +6850,6 @@ def dashboard():
             h += '</div>';
             h += '<div class="dcf-disclaimer">\u26a0\ufe0f <strong>Disclaimer:</strong> Excess return valuations are sensitive to ROE sustainability and cost of equity assumptions. This tool is for educational and informational purposes only and does not constitute investment advice.</div>';
             document.getElementById('dcf-result').innerHTML = h;
-            renderSimilarStocks(data.symbol, 'dcf-result', 'dcf');
             _erYears = 10;
             updateExcessReturnDisplay();
         }
@@ -7527,7 +7490,6 @@ def dashboard():
             h += '&#9888;&#65039; <strong>Disclaimer:</strong> This analysis combines multiple quantitative signals and is for educational purposes only. Scores are model-based estimates — not financial advice. Always do your own due diligence before investing.';
             h += '</div>';
             document.getElementById('verdict-result').innerHTML = h;
-            renderSimilarStocks(symbol, 'verdict-result', 'verdict');
         }
 
         var _vd = {};  // state store for current verdict fetch
@@ -8191,23 +8153,6 @@ def sector_quotes_route():
         'limit': limit,
         'quotes': quotes,
     })
-
-
-@app.route('/similar-stocks')
-def similar_stocks_route():
-    """Return sector peers for a given stock symbol."""
-    symbol = request.args.get('symbol', '').strip().upper()
-    if not symbol:
-        return jsonify({'error': 'No symbol provided', 'peers': []})
-    normalized, _ = analyzer.normalize_symbol(symbol)
-    if not normalized:
-        normalized = symbol
-    sector = TICKER_TO_SECTOR.get(normalized, '')
-    if not sector:
-        return jsonify({'sector': '', 'symbol': normalized, 'peers': []})
-    peers = [s for s in STOCKS.get(sector, []) if s != normalized][:10]
-    peers_data = [{'symbol': s, 'name': TICKER_TO_NAME.get(s, s)} for s in peers]
-    return jsonify({'sector': sector, 'symbol': normalized, 'peers': peers_data})
 
 
 @app.route('/duplicates')
