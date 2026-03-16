@@ -393,7 +393,7 @@ class StockAlertMonitor:
 
             score, details = self.score_undervaluation(symbol)
 
-            if score >= threshold and details.get("signal") == "BUY":
+            if score >= threshold:
                 triggered.append(details)
                 with self._lock:
                     self._alerted[symbol] = datetime.now()
@@ -492,8 +492,6 @@ class StockAlertMonitor:
         for symbol in watchlist:
             score, details = self.score_undervaluation(symbol)
             details["_score"] = score
-            details["_triggered"] = (
-                score >= threshold and details.get("signal") == "BUY"
-            )
+            details["_triggered"] = score >= threshold
             results.append(details)
         return results
