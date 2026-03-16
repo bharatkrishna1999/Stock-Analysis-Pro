@@ -6155,31 +6155,29 @@ def dashboard():
             renderSimilarStocks(symbol, 'regression-result', 'regression');
         }
         function renderSimilarStocks(symbol, containerId, tabType) {
-            fetch('/similar-stocks?symbol=' + encodeURIComponent(symbol))
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    if (!data.peers || data.peers.length === 0) return;
-                    var sectorLabel = data.sector || 'Same Sector';
-                    var h = '<div class="sim-stocks-section">';
-                    h += '<div class="sim-stocks-title">Similar Stocks &bull; ' + sectorLabel + '</div>';
-                    h += '<div class="sim-stocks-grid">';
-                    data.peers.forEach(function(p) {
-                        var sym = p.symbol.replace(/'/g, "\\'");
-                        var onclick = '';
-                        if (tabType === 'analysis') onclick = "analyze('" + sym + "')";
-                        else if (tabType === 'verdict') onclick = "document.getElementById('verdict-search').value='" + sym + "';fetchVerdictData()";
-                        else if (tabType === 'dcf') onclick = "document.getElementById('dcf-search').value='" + sym + "';fetchDCFData()";
-                        else if (tabType === 'regression') onclick = "document.getElementById('regression-search').value='" + sym + "';analyzeRegression()";
-                        h += '<div class="sim-stock-chip" onclick="' + onclick + '">';
-                        h += '<div class="ssc-symbol">' + p.symbol + '</div>';
-                        h += '<div class="ssc-name">' + p.name + '</div>';
-                        h += '</div>';
-                    });
-                    h += '</div></div>';
-                    var container = document.getElementById(containerId);
-                    if (container) container.insertAdjacentHTML('beforeend', h);
-                })
-                .catch(function() {});
+            var sector = getStockSector(symbol);
+            if (!sector) return;
+            var peers = (stocks[sector] || []).filter(function(s) { return s !== symbol; }).slice(0, 10);
+            if (peers.length === 0) return;
+            var h = '<div class="sim-stocks-section">';
+            h += '<div class="sim-stocks-title">Similar Stocks &bull; ' + sector + '</div>';
+            h += '<div class="sim-stocks-grid">';
+            peers.forEach(function(sym) {
+                var safeSym = sym.replace(/'/g, "\\'");
+                var name = getStockName(sym);
+                var onclick = '';
+                if (tabType === 'analysis') onclick = "analyze('" + safeSym + "')";
+                else if (tabType === 'verdict') onclick = "document.getElementById('verdict-search').value='" + safeSym + "';fetchVerdictData()";
+                else if (tabType === 'dcf') onclick = "document.getElementById('dcf-search').value='" + safeSym + "';fetchDCFData()";
+                else if (tabType === 'regression') onclick = "document.getElementById('regression-search').value='" + safeSym + "';analyzeRegression()";
+                h += '<div class="sim-stock-chip" onclick="' + onclick + '">';
+                h += '<div class="ssc-symbol">' + sym + '</div>';
+                h += '<div class="ssc-name">' + name + '</div>';
+                h += '</div>';
+            });
+            h += '</div></div>';
+            var container = document.getElementById(containerId);
+            if (container) container.insertAdjacentHTML('beforeend', h);
         }
 
         function goBack() {
