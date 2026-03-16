@@ -4970,6 +4970,38 @@ def dashboard():
         }
         const allTickers = [...new Set(Object.values(stocks).flat())];
 
+        function getPeerStocks(symbol, limit) {
+            limit = limit || 6;
+            var sector = getStockSector(symbol);
+            if (!sector || !stocks[sector]) return [];
+            return stocks[sector].filter(function(s) { return s !== symbol; }).slice(0, limit);
+        }
+        function peerOnclick(p, tabContext) {
+            if (tabContext === 'technical') { analyze(p); }
+            else if (tabContext === 'regression') { document.getElementById('regression-search').value = p; analyzeRegression(); }
+            else if (tabContext === 'dcf') { document.getElementById('dcf-search').value = p; fetchDCFData(); }
+            else if (tabContext === 'verdict') { document.getElementById('verdict-search').value = p; fetchVerdictData(); }
+        }
+        function buildPeerStocksHTML(symbol, tabContext) {
+            var peers = getPeerStocks(symbol, 6);
+            if (peers.length === 0) return '';
+            var sector = getStockSector(symbol);
+            var h = '<div class="peer-stocks-section" style="margin-top:20px;padding:18px 20px;background:var(--bg-card-hover);border:1px solid var(--border-color);border-radius:12px;">';
+            h += '<div style="font-family:\'Space Grotesk\',sans-serif;font-weight:700;font-size:0.95em;color:var(--accent-cyan);margin-bottom:12px;">Peer Stocks' + (sector ? ' \u2014 ' + sector : '') + '</div>';
+            h += '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
+            for (var i = 0; i < peers.length; i++) {
+                var p = peers[i];
+                var name = getStockName(p);
+                h += '<button onclick="peerOnclick(\'' + p + '\',\'' + tabContext + '\')" style="background:rgba(0,217,255,0.08);border:1px solid var(--border-color);border-radius:8px;padding:8px 14px;cursor:pointer;transition:all 0.2s;color:var(--text-primary);font-size:0.85em;line-height:1.3;text-align:left;" onmouseover="this.style.borderColor=\'var(--accent-cyan)\';this.style.background=\'rgba(0,217,255,0.15)\'" onmouseout="this.style.borderColor=\'var(--border-color)\';this.style.background=\'rgba(0,217,255,0.08)\'">';
+                h += '<div style="font-weight:600;color:var(--accent-cyan);">' + p + '</div>';
+                h += '<div style="font-size:0.8em;color:var(--text-muted);">' + name + '</div>';
+                h += '</button>';
+            }
+            h += '</div></div>';
+            return h;
+        }
+
+
         // ===== INVESTOR PROFILE =====
         var investorProfile = { horizon: 'long', risk: 'medium', goal: 'growth', mcap: 'mid', sector: 'all', view: 'selective' };
 
@@ -5917,7 +5949,7 @@ def dashboard():
                     </div>
                 </div>
             `;
-            document.getElementById('result').innerHTML = html;
+            document.getElementById('result').innerHTML = html + buildPeerStocksHTML(symbol, 'technical');
             // Store signal data for capital calculator
             window._tscSignalData = { riskPerShare: riskPer, price: d.price_raw || 0, stop: s.stop_raw || 0, target: s.target_raw || 0, recRiskPct: s.rec_risk_pct || 1 };
             // Render projection chart if available
@@ -6143,7 +6175,7 @@ def dashboard():
                     </div>
                 </div>
             `;
-            document.getElementById('regression-result').innerHTML = html;
+            document.getElementById('regression-result').innerHTML = html + buildPeerStocksHTML(symbol, 'regression');
         }
         function goBack() {
             document.getElementById('search-view').style.display = 'block';
@@ -6430,6 +6462,9 @@ def dashboard():
                         </table>
                     </div>
                 </div>`;
+            if (data.allocation && data.allocation.length > 0) {
+                html += buildPeerStocksHTML(data.allocation[0].symbol, 'technical');
+            }
             document.getElementById('dividend-results').innerHTML = html;
         }
         function renderLivePortfolio(data, capital, partial, scanned, dividendFound) {
@@ -6653,6 +6688,7 @@ def dashboard():
             h += '<div class="dcf-sensitivity dcf-section"><div class="dcf-section-title">Sensitivity Analysis \u2014 Intrinsic Value vs WACC &amp; Terminal Growth</div>';
             h += '<p style="color:var(--text-muted);font-size:0.82em;margin-bottom:12px;">Green = undervalued vs current price &bull; Red = overvalued &bull; Yellow = within \u00b115%.</p>';
             h += '<div style="overflow-x:auto;"><table class="dcf-sens-table" id="dcf-sens-table"></table></div></div>';
+            h += buildPeerStocksHTML(data.symbol, 'dcf');
             h += '<div class="dcf-disclaimer">\u26a0\ufe0f <strong>Disclaimer:</strong> DCF valuations are highly sensitive to input assumptions. Small changes in growth rate or WACC can materially affect the intrinsic value. This tool is for educational and informational purposes only and does not constitute investment advice. Always do your own due diligence.</div>';
             document.getElementById('dcf-result').innerHTML = h;
             updateDCFDisplay();
@@ -6848,6 +6884,7 @@ def dashboard():
             h += '<div class="dcf-section-title" style="margin-bottom:10px;">\U0001f4d6 About This Model</div>';
             h += '<p style="color:var(--text-secondary);font-size:0.85em;line-height:1.7;margin:0;">The <strong>Damodaran Excess Return Model</strong> values financial firms (banks, NBFCs, insurance) using <strong>Book Value + PV of future Excess Returns</strong>. Unlike a traditional DCF, it recognises that financial firms\u2019 \u201cdebt\u201d is their raw material (deposits, borrowings), not a financing choice. If ROE exceeds the Cost of Equity, the firm creates value above its book; if ROE &lt; Ke, the stock should trade below book.</p>';
             h += '</div>';
+            h += buildPeerStocksHTML(data.symbol, 'dcf');
             h += '<div class="dcf-disclaimer">\u26a0\ufe0f <strong>Disclaimer:</strong> Excess return valuations are sensitive to ROE sustainability and cost of equity assumptions. This tool is for educational and informational purposes only and does not constitute investment advice.</div>';
             document.getElementById('dcf-result').innerHTML = h;
             _erYears = 10;
@@ -7486,6 +7523,7 @@ def dashboard():
             h += buildSTSection(tech, stRes);
             h += buildLTSection(tech, dcfD, regr, ltRes);
             h += buildDivSection(divD, divRes);
+            h += buildPeerStocksHTML(symbol, 'verdict');
             h += '<div style="margin-top:16px;padding:12px 16px;background:rgba(113,128,150,0.07);border:1px solid var(--border-color);border-radius:8px;color:var(--text-muted);font-size:0.78em;line-height:1.6;">';
             h += '&#9888;&#65039; <strong>Disclaimer:</strong> This analysis combines multiple quantitative signals and is for educational purposes only. Scores are model-based estimates — not financial advice. Always do your own due diligence before investing.';
             h += '</div>';
