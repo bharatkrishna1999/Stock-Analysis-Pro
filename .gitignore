@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 *.pyo
 .nse_universe_cache.json
+.cache/
+.sector_classification_cache.json
