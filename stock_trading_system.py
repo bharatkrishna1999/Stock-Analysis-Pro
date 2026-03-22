@@ -4827,7 +4827,39 @@ def dashboard():
                         </div>
                     </div>
                 </div>
+                <!-- Universe Screener Card -->
+                <div class="card" style="margin-top:20px;border:1px solid rgba(61,122,181,0.25);background:linear-gradient(135deg,var(--bg-card) 0%,rgba(28,58,94,0.15) 100%);">
+                    <h2 style="display:flex;align-items:center;gap:8px;">
+                        <span style="font-size:1.1em;">&#x1F50D;</span>
+                        DCF Universe Screener
+                    </h2>
+                    <p style="color:var(--text-secondary);margin-bottom:14px;font-size:0.9em;line-height:1.7;">
+                        Run a DCF valuation on <strong style="color:var(--text-primary);">every stock</strong> in the universe and find the <strong style="color:var(--accent-green);">Top 50 most undervalued</strong> picks.
+                        Uses conservative assumptions (12% WACC, 3% terminal growth, 10-year projection).
+                        Stocks are processed iteratively to keep memory usage low.
+                    </p>
+                    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                        <button id="dcf-screen-btn" class="dcf-fetch-btn" onclick="startDCFScreen()" style="margin:0;flex:0 0 auto;">
+                            Screen All Stocks
+                        </button>
+                        <button id="dcf-screen-stop-btn" onclick="stopDCFScreen()" style="display:none;margin:0;flex:0 0 auto;padding:10px 22px;background:var(--danger);color:#fff;border:none;border-radius:8px;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;font-size:0.9em;">
+                            Stop
+                        </button>
+                        <span id="dcf-screen-status" style="color:var(--text-muted);font-size:0.85em;"></span>
+                    </div>
+                    <div id="dcf-screen-progress" style="display:none;margin-top:16px;">
+                        <div style="background:var(--bg-dark);border-radius:8px;height:8px;overflow:hidden;">
+                            <div id="dcf-screen-bar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent-cyan),var(--accent-green));border-radius:8px;transition:width 0.3s ease;"></div>
+                        </div>
+                        <div style="display:flex;justify-content:space-between;margin-top:6px;">
+                            <span id="dcf-screen-pct" style="font-size:0.8em;color:var(--text-muted);">0%</span>
+                            <span id="dcf-screen-found" style="font-size:0.8em;color:var(--accent-green);">0 undervalued found</span>
+                        </div>
+                    </div>
+                </div>
             </div>
+            <!-- Screener Results View -->
+            <div id="dcf-screen-results" style="display:none;margin-top:20px;"></div>
             <!-- Result View -->
             <div id="dcf-result-view" style="display:none;">
                 <button class="back-btn" onclick="dcfGoBack()">← Back to Search</button>
@@ -6994,6 +7026,149 @@ def dashboard():
         }
 
 
+        // ===== DCF UNIVERSE SCREENER =====
+        var _dcfScreenES = null;   // EventSource handle
+        function startDCFScreen() {
+            if (_dcfScreenES) { _dcfScreenES.close(); _dcfScreenES = null; }
+            document.getElementById('dcf-screen-btn').disabled = true;
+            document.getElementById('dcf-screen-btn').textContent = 'Screening\u2026';
+            document.getElementById('dcf-screen-stop-btn').style.display = 'inline-block';
+            document.getElementById('dcf-screen-progress').style.display = 'block';
+            document.getElementById('dcf-screen-results').style.display = 'none';
+            document.getElementById('dcf-screen-results').innerHTML = '';
+            document.getElementById('dcf-screen-bar').style.width = '0%';
+            document.getElementById('dcf-screen-pct').textContent = '0%';
+            document.getElementById('dcf-screen-found').textContent = '0 undervalued found';
+            document.getElementById('dcf-screen-status').textContent = 'Connecting\u2026';
+
+            _dcfScreenES = new EventSource('/dcf-screen');
+            _dcfScreenES.onmessage = function(ev) {
+                var d;
+                try { d = JSON.parse(ev.data); } catch(e) { return; }
+                if (d.type === 'start') {
+                    document.getElementById('dcf-screen-status').textContent = 'Screening ' + d.total + ' stocks\u2026';
+                } else if (d.type === 'progress') {
+                    var pct = Math.round(d.done / d.total * 100);
+                    document.getElementById('dcf-screen-bar').style.width = pct + '%';
+                    document.getElementById('dcf-screen-pct').textContent = pct + '% (' + d.done + '/' + d.total + ')';
+                    document.getElementById('dcf-screen-found').textContent = d.found + ' undervalued found';
+                    document.getElementById('dcf-screen-status').textContent = 'Processing ' + d.symbol + '\u2026';
+                } else if (d.type === 'complete') {
+                    _dcfScreenES.close();
+                    _dcfScreenES = null;
+                    document.getElementById('dcf-screen-btn').disabled = false;
+                    document.getElementById('dcf-screen-btn').textContent = 'Screen All Stocks';
+                    document.getElementById('dcf-screen-stop-btn').style.display = 'none';
+                    document.getElementById('dcf-screen-bar').style.width = '100%';
+                    document.getElementById('dcf-screen-pct').textContent = '100%';
+                    document.getElementById('dcf-screen-status').textContent = 'Done! ' + d.total_screened + ' screened, ' + d.total_undervalued + ' undervalued, ' + d.skipped + ' skipped, ' + d.errors + ' errors';
+                    renderDCFScreenResults(d.results, d.total_screened, d.total_undervalued);
+                }
+            };
+            _dcfScreenES.onerror = function() {
+                if (_dcfScreenES) { _dcfScreenES.close(); _dcfScreenES = null; }
+                document.getElementById('dcf-screen-btn').disabled = false;
+                document.getElementById('dcf-screen-btn').textContent = 'Screen All Stocks';
+                document.getElementById('dcf-screen-stop-btn').style.display = 'none';
+                document.getElementById('dcf-screen-status').textContent = 'Connection lost. Results shown below (if any).';
+            };
+        }
+        function stopDCFScreen() {
+            if (_dcfScreenES) { _dcfScreenES.close(); _dcfScreenES = null; }
+            document.getElementById('dcf-screen-btn').disabled = false;
+            document.getElementById('dcf-screen-btn').textContent = 'Screen All Stocks';
+            document.getElementById('dcf-screen-stop-btn').style.display = 'none';
+            document.getElementById('dcf-screen-status').textContent = 'Stopped by user.';
+        }
+
+        function renderDCFScreenResults(results, totalScreened, totalUndervalued) {
+            var container = document.getElementById('dcf-screen-results');
+            if (!results || results.length === 0) {
+                container.innerHTML = '<div class="card" style="text-align:center;padding:40px;"><p style="color:var(--text-muted);font-size:1.1em;">No undervalued stocks found with current assumptions.</p></div>';
+                container.style.display = 'block';
+                return;
+            }
+            var h = '';
+            // Summary header
+            h += '<div class="card" style="margin-bottom:20px;border:1px solid rgba(61,181,120,0.3);background:linear-gradient(135deg,var(--bg-card) 0%,rgba(16,185,129,0.06) 100%);">';
+            h += '<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">';
+            h += '<div style="flex:1;min-width:200px;">';
+            h += '<h2 style="margin:0 0 6px;font-size:1.3em;">Top 50 Undervalued Stocks</h2>';
+            h += '<p style="color:var(--text-secondary);margin:0;font-size:0.88em;">Screened ' + totalScreened + ' stocks &bull; ' + totalUndervalued + ' appear undervalued &bull; Showing top 50 by upside</p>';
+            h += '</div>';
+            h += '<div style="display:flex;gap:16px;flex-wrap:wrap;">';
+            h += '<div style="text-align:center;"><div style="font-size:1.8em;font-weight:800;color:var(--accent-green);">' + results.length + '</div><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Shown</div></div>';
+            var avgUpside = results.reduce(function(s, r) { return s + r.upside_pct; }, 0) / results.length;
+            h += '<div style="text-align:center;"><div style="font-size:1.8em;font-weight:800;color:var(--accent-cyan);">+' + avgUpside.toFixed(0) + '%</div><div style="font-size:0.72em;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">Avg Upside</div></div>';
+            h += '</div></div>';
+            h += '<p style="color:var(--text-muted);font-size:0.78em;margin-top:12px;margin-bottom:0;">Assumptions: 12% WACC, 3% terminal growth, 10-year projection, historical growth rates. Financial firms use Damodaran Excess Return model.</p>';
+            h += '</div>';
+
+            // Results table
+            h += '<div class="card" style="padding:0;overflow:hidden;">';
+            h += '<div style="overflow-x:auto;">';
+            h += '<table style="width:100%;border-collapse:collapse;font-size:0.88em;">';
+            h += '<thead><tr style="background:var(--bg-dark);text-align:left;">';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">#</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Stock</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Sector</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;text-align:right;">CMP</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;text-align:right;">Intrinsic</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;text-align:right;">Upside</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;text-align:right;">P/E</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;text-align:right;">RoCE/RoE</th>';
+            h += '<th style="padding:12px 14px;color:var(--text-muted);font-size:0.78em;text-transform:uppercase;letter-spacing:0.5px;font-weight:600;">Model</th>';
+            h += '</tr></thead><tbody>';
+
+            results.forEach(function(r, i) {
+                var bgColor = i % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)';
+                var upsideColor = r.upside_pct >= 50 ? 'var(--accent-green)' : r.upside_pct >= 25 ? '#10b981' : 'var(--accent-cyan)';
+                var peStr = r.pe_ratio ? r.pe_ratio.toFixed(1) + 'x' : 'N/A';
+                var roceVal = r.roce ? r.roce : r.roe;
+                var roceStr = roceVal ? (roceVal * 100).toFixed(1) + '%' : 'N/A';
+                var roceColor = roceVal ? (roceVal * 100 >= 15 ? 'var(--accent-green)' : roceVal * 100 >= 8 ? 'var(--warning)' : 'var(--danger)') : 'var(--text-muted)';
+                var modelBadge = r.model === 'excess_return'
+                    ? '<span style="padding:2px 8px;background:var(--accent-purple);color:#fff;border-radius:4px;font-size:0.75em;font-weight:600;">Excess Return</span>'
+                    : '<span style="padding:2px 8px;background:var(--accent-cyan);color:#0a1628;border-radius:4px;font-size:0.75em;font-weight:600;">DCF</span>';
+                h += '<tr style="background:' + bgColor + ';border-bottom:1px solid var(--border-color);cursor:pointer;" onclick="toggleScreenWriteup(' + i + ')">';
+                h += '<td style="padding:12px 14px;color:var(--text-muted);font-weight:600;">' + (i + 1) + '</td>';
+                h += '<td style="padding:12px 14px;"><div style="font-weight:700;color:var(--text-primary);">' + r.symbol + '</div><div style="font-size:0.78em;color:var(--text-muted);margin-top:2px;">' + (r.name || '') + '</div></td>';
+                h += '<td style="padding:12px 14px;color:var(--text-secondary);font-size:0.85em;">' + (r.sector || '') + '</td>';
+                h += '<td style="padding:12px 14px;text-align:right;color:var(--text-primary);font-weight:600;">\u20b9' + r.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
+                h += '<td style="padding:12px 14px;text-align:right;color:var(--accent-green);font-weight:700;">\u20b9' + r.intrinsic_value.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
+                h += '<td style="padding:12px 14px;text-align:right;font-weight:800;color:' + upsideColor + ';font-size:1.05em;">+' + r.upside_pct.toFixed(1) + '%</td>';
+                h += '<td style="padding:12px 14px;text-align:right;color:var(--text-secondary);">' + peStr + '</td>';
+                h += '<td style="padding:12px 14px;text-align:right;color:' + roceColor + ';font-weight:600;">' + roceStr + '</td>';
+                h += '<td style="padding:12px 14px;">' + modelBadge + '</td>';
+                h += '</tr>';
+                // Hidden write-up row
+                h += '<tr id="screen-writeup-' + i + '" style="display:none;"><td colspan="9" style="padding:0;">';
+                h += '<div style="padding:16px 20px 16px 44px;background:rgba(61,122,181,0.06);border-left:3px solid var(--accent-cyan);">';
+                h += '<div style="font-size:0.76em;text-transform:uppercase;color:var(--accent-cyan);font-weight:700;letter-spacing:0.5px;margin-bottom:8px;">Investment Thesis</div>';
+                h += '<p style="color:var(--text-secondary);font-size:0.88em;line-height:1.75;margin:0;">' + (r.writeup || 'No write-up available.') + '</p>';
+                h += '<div style="margin-top:10px;"><button onclick="event.stopPropagation();fetchDCFFromScreen(\'' + r.symbol + '\')" style="padding:6px 14px;background:var(--accent-cyan);color:#0a1628;border:none;border-radius:6px;font-size:0.8em;font-weight:700;cursor:pointer;font-family:\'Space Grotesk\',sans-serif;">View Full DCF Analysis</button></div>';
+                h += '</div></td></tr>';
+            });
+            h += '</tbody></table></div></div>';
+
+            h += '<div class="dcf-disclaimer" style="margin-top:16px;">\u26a0\ufe0f <strong>Disclaimer:</strong> This screener uses automated DCF assumptions (12% WACC, 3% terminal growth) which may not suit every stock. High upside figures can result from optimistic growth extrapolation. Always verify with your own analysis before making investment decisions.</div>';
+
+            container.innerHTML = h;
+            container.style.display = 'block';
+            container.scrollIntoView({behavior: 'smooth', block: 'start'});
+        }
+
+        function toggleScreenWriteup(idx) {
+            var el = document.getElementById('screen-writeup-' + idx);
+            if (el) el.style.display = el.style.display === 'none' ? 'table-row' : 'none';
+        }
+        function fetchDCFFromScreen(symbol) {
+            document.getElementById('dcf-search').value = symbol;
+            document.getElementById('dcf-screen-results').style.display = 'none';
+            fetchDCFData();
+        }
+
+
         // ===== INVESTMENT VERDICT TAB =====
         function verdictGoBack() {
             document.getElementById('verdict-result-view').style.display = 'none';
@@ -8386,6 +8561,252 @@ def dcf_data_route():
     except Exception as e:
         print(f"DCF route error for {normalized_symbol}: {e}")
         return jsonify({'error': f'DCF analysis failed: {str(e)}'})
+
+
+# ── DCF Universe Screener  ─────────────────────────────────────────────────────
+# Iteratively runs DCF / Excess-Return valuation on every stock in the universe,
+# streams progress via SSE, and returns the top-50 undervalued stocks with
+# write-ups explaining *why* they appear undervalued.
+
+def _server_side_dcf(data):
+    """Mirror the client-side runDCF / runExcessReturn to compute intrinsic
+    value per share on the server.  Returns (intrinsic, model_name) or (None, None)."""
+    try:
+        if data.get('valuation_model') == 'excess_return':
+            bvps = data.get('book_value_per_share', 0)
+            roe = data.get('roe', 0)
+            coe = data.get('cost_of_equity', 0.13)
+            g = data.get('suggested_growth_rate', 0.08)
+            years = 10
+            current_bv = bvps
+            sum_pv = 0.0
+            for yr in range(1, years + 1):
+                excess_return = (roe - coe) * current_bv
+                pv = excess_return / ((1 + coe) ** yr)
+                sum_pv += pv
+                current_bv *= (1 + g)
+            terminal_er = (roe - coe) * current_bv
+            if coe > g * 0.5:
+                terminal_value = terminal_er / (coe - g * 0.5)
+            else:
+                terminal_value = terminal_er * 15
+            terminal_pv = terminal_value / ((1 + coe) ** years)
+            intrinsic = max(bvps + sum_pv + terminal_pv, 0)
+            return intrinsic, 'excess_return'
+        else:
+            fcf = data.get('current_fcf', 0)
+            if not fcf or fcf <= 0:
+                return None, None
+            shares = data.get('shares_outstanding', 0)
+            if not shares or shares <= 0:
+                return None, None
+            debt = data.get('total_debt', 0)
+            cash = data.get('cash', 0)
+            sug_g = data.get('suggested_growth_rate', 0.10)
+            g1 = min(sug_g, 0.40)
+            g2 = max(g1 * 0.5, 0.05)
+            wacc = 0.12
+            tg = 0.03
+            years = 10
+            # Skip debt/cash adjustment for financial-sector stocks
+            sector = (data.get('sector') or '').lower()
+            if any(k in sector for k in ('financial', 'bank', 'insurance')):
+                debt, cash = 0, 0
+            current_fcf = fcf
+            sum_pv = 0.0
+            for yr in range(1, years + 1):
+                g = g1 if yr <= 5 else g2
+                current_fcf *= (1 + g)
+                pv = current_fcf / ((1 + wacc) ** yr)
+                sum_pv += pv
+            terminal_fcf = current_fcf * (1 + tg)
+            if tg < wacc:
+                terminal_value = terminal_fcf / (wacc - tg)
+            else:
+                terminal_value = current_fcf * 15
+            terminal_pv = terminal_value / ((1 + wacc) ** years)
+            ev = sum_pv + terminal_pv
+            equity_value = max(ev - debt + cash, 0)
+            intrinsic = equity_value / shares
+            return intrinsic, 'standard_dcf'
+    except Exception:
+        return None, None
+
+
+def _build_writeup(data, intrinsic, model_name):
+    """Generate a concise write-up explaining why the stock appears undervalued."""
+    symbol = data.get('symbol', '?')
+    name = data.get('name', symbol)
+    price = data.get('current_price', 0)
+    upside = ((intrinsic - price) / price * 100) if price else 0
+    sector = data.get('sector') or data.get('industry') or 'N/A'
+
+    parts = []
+    parts.append(f"{name} ({symbol}) trades at \u20b9{price:,.2f} against a DCF intrinsic value "
+                 f"of \u20b9{intrinsic:,.2f}, implying {upside:+.1f}% upside.")
+
+    if model_name == 'excess_return':
+        roe = (data.get('roe') or 0) * 100
+        coe = (data.get('cost_of_equity') or 0) * 100
+        spread = roe - coe
+        pb = data.get('pb_ratio')
+        parts.append(f"As a financial firm ({sector}), the Excess Return model is used. "
+                     f"ROE of {roe:.1f}% vs Cost of Equity {coe:.1f}% gives a "
+                     f"{'positive' if spread > 0 else 'negative'} spread of {spread:+.1f}%.")
+        if pb and pb < 1.5:
+            parts.append(f"Trading at just {pb:.2f}x book value, the market is underpricing "
+                         f"the bank\u2019s ability to generate returns above its cost of capital.")
+        elif pb:
+            parts.append(f"P/B of {pb:.2f}x remains attractive given the excess return spread.")
+    else:
+        fcf = data.get('current_fcf', 0)
+        growth = data.get('suggested_growth_rate', 0)
+        roce = data.get('roce')
+        pe = data.get('pe_ratio')
+        ev_ebitda = data.get('ev_ebitda')
+        hist_g = data.get('historical_fcf_growth')
+
+        if hist_g and hist_g > 0.10:
+            parts.append(f"Historical FCF CAGR of {hist_g*100:.1f}% demonstrates strong "
+                         f"cash-flow compounding.")
+        elif hist_g and hist_g > 0:
+            parts.append(f"Historical FCF CAGR of {hist_g*100:.1f}% shows steady cash generation.")
+
+        if roce and roce > 0.15:
+            parts.append(f"RoCE of {roce*100:.1f}% indicates efficient capital allocation.")
+
+        if pe and pe < 20:
+            parts.append(f"P/E of {pe:.1f}x is below the market average, "
+                         f"suggesting earnings are being discounted.")
+        if ev_ebitda and ev_ebitda < 15:
+            parts.append(f"EV/EBITDA of {ev_ebitda:.1f}x points to an undemanding valuation "
+                         f"relative to operating earnings.")
+
+        margin_trend = data.get('margin_trend') or []
+        if len(margin_trend) >= 2:
+            latest = margin_trend[-1]
+            earliest = margin_trend[0]
+            if latest.get('op_margin') and earliest.get('op_margin'):
+                delta = latest['op_margin'] - earliest['op_margin']
+                if delta > 2:
+                    parts.append(f"Operating margins have expanded from "
+                                 f"{earliest['op_margin']:.1f}% to {latest['op_margin']:.1f}% "
+                                 f"over {latest['year']-earliest['year']} years, "
+                                 f"indicating improving profitability.")
+
+    parts.append(f"At a 12% discount rate with conservative growth assumptions, "
+                 f"the stock offers a meaningful margin of safety for long-term investors.")
+    return ' '.join(parts)
+
+
+@app.route('/dcf-screen')
+def dcf_screen_route():
+    """SSE endpoint: iteratively screen all stocks via DCF, stream progress,
+    and finally emit the top-50 undervalued picks with write-ups."""
+
+    def generate():
+        tickers = sorted(ALL_VALID_TICKERS)
+        total = len(tickers)
+        results = []          # list of dicts kept small (only what we need)
+        errors = 0
+        skipped = 0
+
+        yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+
+        for idx, symbol in enumerate(tickers):
+            try:
+                # Determine valuation model
+                local_sector = TICKER_TO_SECTOR.get(symbol, '').lower()
+                is_financial = local_sector in ('banking', 'financial services')
+
+                if is_financial:
+                    data = analyzer.excess_return_valuation(symbol)
+                else:
+                    data = analyzer.dcf_valuation(symbol)
+
+                # Secondary check: yfinance might report financial sector
+                if data and data.get('valuation_model') != 'excess_return':
+                    yf_sector = data.get('sector', '')
+                    yf_industry = data.get('industry', '')
+                    if Analyzer.is_financial_sector(yf_sector, yf_industry):
+                        data = analyzer.excess_return_valuation(symbol)
+
+                if not data:
+                    skipped += 1
+                    if (idx + 1) % 5 == 0 or idx == total - 1:
+                        yield f"data: {json.dumps({'type': 'progress', 'done': idx + 1, 'total': total, 'symbol': symbol, 'status': 'skipped', 'found': len(results)})}\n\n"
+                    continue
+
+                # Cache the result for the regular single-stock DCF route too
+                DCF_CACHE.set(symbol, data)
+
+                intrinsic, model_name = _server_side_dcf(data)
+                if intrinsic is None or intrinsic <= 0:
+                    skipped += 1
+                    if (idx + 1) % 5 == 0 or idx == total - 1:
+                        yield f"data: {json.dumps({'type': 'progress', 'done': idx + 1, 'total': total, 'symbol': symbol, 'status': 'skipped', 'found': len(results)})}\n\n"
+                    continue
+
+                price = data.get('current_price', 0)
+                if not price or price <= 0:
+                    skipped += 1
+                    continue
+
+                upside = ((intrinsic - price) / price) * 100
+
+                # Only keep undervalued stocks (upside > 0)
+                if upside > 0:
+                    results.append({
+                        'symbol': symbol,
+                        'name': data.get('name', symbol),
+                        'sector': data.get('sector') or TICKER_TO_SECTOR.get(symbol, ''),
+                        'industry': data.get('industry', ''),
+                        'current_price': round(price, 2),
+                        'intrinsic_value': round(intrinsic, 2),
+                        'upside_pct': round(upside, 1),
+                        'model': model_name,
+                        'pe_ratio': data.get('pe_ratio'),
+                        'pb_ratio': data.get('pb_ratio'),
+                        'roe': data.get('roe'),
+                        'roce': data.get('roce'),
+                        'ev_ebitda': data.get('ev_ebitda'),
+                        'market_cap': data.get('market_cap'),
+                        'suggested_growth_rate': data.get('suggested_growth_rate'),
+                        'historical_fcf_growth': data.get('historical_fcf_growth'),
+                        'margin_trend': data.get('margin_trend'),
+                        'writeup': _build_writeup(data, intrinsic, model_name),
+                    })
+
+                # Stream progress every 5 stocks or on last stock
+                if (idx + 1) % 5 == 0 or idx == total - 1:
+                    yield f"data: {json.dumps({'type': 'progress', 'done': idx + 1, 'total': total, 'symbol': symbol, 'status': 'ok', 'found': len(results)})}\n\n"
+
+            except Exception as e:
+                errors += 1
+                print(f"DCF screen error for {symbol}: {e}")
+                if (idx + 1) % 5 == 0:
+                    yield f"data: {json.dumps({'type': 'progress', 'done': idx + 1, 'total': total, 'symbol': symbol, 'status': 'error', 'found': len(results)})}\n\n"
+
+            # Periodic garbage collection to keep memory lean
+            if (idx + 1) % 20 == 0:
+                gc.collect()
+
+        # Sort by upside descending and take top 50
+        results.sort(key=lambda r: r['upside_pct'], reverse=True)
+        top50 = results[:50]
+
+        yield f"data: {json.dumps({'type': 'complete', 'total_screened': total, 'total_undervalued': len(results), 'errors': errors, 'skipped': skipped, 'results': top50})}\n\n"
+        gc.collect()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive',
+        }
+    )
 
 
 # Sector group keywords matched against STOCKS dictionary keys (lowercase)
