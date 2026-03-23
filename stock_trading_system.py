@@ -7146,7 +7146,7 @@ def dashboard():
                 h += '<div style="padding:16px 20px 16px 44px;background:rgba(61,122,181,0.06);border-left:3px solid var(--accent-cyan);">';
                 h += '<div style="font-size:0.76em;text-transform:uppercase;color:var(--accent-cyan);font-weight:700;letter-spacing:0.5px;margin-bottom:8px;">Investment Thesis</div>';
                 h += '<p style="color:var(--text-secondary);font-size:0.88em;line-height:1.75;margin:0;">' + (r.writeup || 'No write-up available.') + '</p>';
-                h += '<div style="margin-top:10px;"><button onclick="event.stopPropagation();fetchDCFFromScreen(\'' + r.symbol + '\')" style="padding:6px 14px;background:var(--accent-cyan);color:#0a1628;border:none;border-radius:6px;font-size:0.8em;font-weight:700;cursor:pointer;font-family:\'Space Grotesk\',sans-serif;">View Full DCF Analysis</button></div>';
+                h += `<div style="margin-top:10px;"><button onclick="event.stopPropagation();fetchDCFFromScreen('${r.symbol}')" style="padding:6px 14px;background:var(--accent-cyan);color:#0a1628;border:none;border-radius:6px;font-size:0.8em;font-weight:700;cursor:pointer;font-family:'Space Grotesk',sans-serif;">View Full DCF Analysis</button></div>`;
                 h += '</div></td></tr>';
             });
             h += '</tbody></table></div></div>';
