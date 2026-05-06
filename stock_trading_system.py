@@ -15,6 +15,7 @@ from flask_compress import Compress
 import json
 import os
 import pickle
+import random
 import time
 import yfinance as yf
 import pandas as pd
@@ -9956,6 +9957,19 @@ def _gemini_parse_retry_after(resp):
 _GEMINI_API_LOCK = Lock()
 _GEMINI_API_LAST_CALL = [0.0]
 _GEMINI_MIN_GAP_SEC = float(os.environ.get("GEMINI_MIN_GAP_SEC", "1.0"))
+_GEMINI_RETRY_MAX_ATTEMPTS = int(os.environ.get("GEMINI_RETRY_MAX_ATTEMPTS", "5"))
+_GEMINI_RETRY_BASE_SEC = float(os.environ.get("GEMINI_RETRY_BASE_SEC", "1.0"))
+_GEMINI_RETRY_CAP_SEC = float(os.environ.get("GEMINI_RETRY_CAP_SEC", "30.0"))
+_GEMINI_RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
+def _gemini_backoff_delay(attempt, retry_after=None):
+    # Truncated exponential backoff with full jitter; honor server hint as a floor.
+    capped = min(_GEMINI_RETRY_CAP_SEC, _GEMINI_RETRY_BASE_SEC * (2 ** attempt))
+    delay = random.uniform(0, capped)
+    if retry_after:
+        delay = max(delay, float(retry_after))
+    return min(delay, _GEMINI_RETRY_CAP_SEC)
 
 
 def _gemini_post(url, payload, headers, timeout=60):
@@ -9998,17 +10012,15 @@ def _run_agent_gemini(history):
             "tools": [{"function_declarations": function_decls}],
             "generationConfig": {"maxOutputTokens": 1024},
         }
-        backoffs = [2, 5, 10]
         resp = None
-        for attempt, wait in enumerate([0] + backoffs):
-            if wait:
-                time.sleep(wait)
+        for attempt in range(_GEMINI_RETRY_MAX_ATTEMPTS):
             resp = _gemini_post(url, payload, headers, timeout=60)
-            if resp.status_code not in (429, 503):
+            if resp.status_code not in _GEMINI_RETRY_STATUSES:
                 break
-            if attempt == len(backoffs):
+            if attempt == _GEMINI_RETRY_MAX_ATTEMPTS - 1:
                 retry_after = _gemini_parse_retry_after(resp) or 30
                 raise _GeminiRateLimitError(retry_after)
+            time.sleep(_gemini_backoff_delay(attempt, _gemini_parse_retry_after(resp)))
         resp.raise_for_status()
         data = resp.json()
 
