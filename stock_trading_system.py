@@ -9892,7 +9892,8 @@ def _agent_dispatch_tool(name, inputs):
 def _run_agent_gemini(history):
     import requests
     api_key = os.environ["GEMINI_API_KEY"]
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
     function_decls = [
         {
@@ -9916,7 +9917,7 @@ def _run_agent_gemini(history):
             "tools": [{"function_declarations": function_decls}],
             "generationConfig": {"maxOutputTokens": 1024},
         }
-        resp = requests.post(url, json=payload, timeout=60)
+        resp = requests.post(url, json=payload, headers=headers, timeout=60)
         resp.raise_for_status()
         data = resp.json()
 
@@ -10004,7 +10005,12 @@ def agent_query_route():
         reply = _run_agent_gemini(history)
         return jsonify({"response": reply})
     except Exception as e:
-        print(f"Agent error: {e}")
+        import re
+        sanitized = re.sub(r"key=[A-Za-z0-9_\-]+", "key=***", str(e))
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        print(f"Agent error: {sanitized}")
+        if status == 429:
+            return jsonify({"error": "AI assistant is rate-limited right now. Please wait a minute and try again."}), 429
         return jsonify({"error": "Agent request failed. Please try again."}), 500
 
 
