@@ -9953,8 +9953,24 @@ def _gemini_parse_retry_after(resp):
     return None
 
 
-def _run_agent_gemini(history):
+_GEMINI_API_LOCK = Lock()
+_GEMINI_API_LAST_CALL = [0.0]
+_GEMINI_MIN_GAP_SEC = float(os.environ.get("GEMINI_MIN_GAP_SEC", "1.0"))
+
+
+def _gemini_post(url, payload, headers, timeout=60):
     import requests
+    with _GEMINI_API_LOCK:
+        gap = _GEMINI_MIN_GAP_SEC - (time.time() - _GEMINI_API_LAST_CALL[0])
+        if gap > 0:
+            time.sleep(gap)
+        try:
+            return requests.post(url, json=payload, headers=headers, timeout=timeout)
+        finally:
+            _GEMINI_API_LAST_CALL[0] = time.time()
+
+
+def _run_agent_gemini(history):
     api_key = os.environ["GEMINI_API_KEY"]
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -9987,7 +10003,7 @@ def _run_agent_gemini(history):
         for attempt, wait in enumerate([0] + backoffs):
             if wait:
                 time.sleep(wait)
-            resp = requests.post(url, json=payload, headers=headers, timeout=60)
+            resp = _gemini_post(url, payload, headers, timeout=60)
             if resp.status_code not in (429, 503):
                 break
             if attempt == len(backoffs):
