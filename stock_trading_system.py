@@ -9892,7 +9892,7 @@ def _agent_dispatch_tool(name, inputs):
 def _run_agent_gemini(history):
     import requests
     api_key = os.environ["GEMINI_API_KEY"]
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
     function_decls = [
