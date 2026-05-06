@@ -9817,6 +9817,65 @@ def _agent_dispatch_tool(name, inputs):
     return {"error": f"Unknown tool: {name}"}
 
 
+def _run_agent_gemini(history):
+    import requests
+    api_key = os.environ["GEMINI_API_KEY"]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+
+    function_decls = [
+        {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        }
+        for t in _AGENT_TOOLS
+    ]
+
+    contents = []
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    max_turns = 6
+    for _ in range(max_turns):
+        payload = {
+            "system_instruction": {"parts": [{"text": _AGENT_SYSTEM_PROMPT}]},
+            "contents": contents,
+            "tools": [{"function_declarations": function_decls}],
+            "generationConfig": {"maxOutputTokens": 1024},
+        }
+        resp = requests.post(url, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return "No response generated."
+        parts = candidates[0].get("content", {}).get("parts", []) or []
+
+        function_calls = [p["functionCall"] for p in parts if "functionCall" in p]
+        if not function_calls:
+            text_parts = [p.get("text", "") for p in parts if "text" in p]
+            joined = "".join(text_parts).strip()
+            return joined or "No response generated."
+
+        contents.append({"role": "model", "parts": parts})
+        tool_response_parts = []
+        for fc in function_calls:
+            result = _agent_dispatch_tool(fc.get("name", ""), fc.get("args", {}) or {})
+            if not isinstance(result, dict):
+                result = {"result": result}
+            tool_response_parts.append({
+                "functionResponse": {
+                    "name": fc.get("name", ""),
+                    "response": result,
+                }
+            })
+        contents.append({"role": "user", "parts": tool_response_parts})
+
+    return "Reached tool-call limit without final answer. Please rephrase or narrow the question."
+
+
 def _run_agent(history):
     import anthropic
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -9852,12 +9911,8 @@ def _run_agent(history):
 
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not os.environ.get("GEMINI_API_KEY"):
         return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return jsonify({"error": "AI assistant package not installed."}), 503
 
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
@@ -9874,13 +9929,8 @@ def agent_query_route():
     history.append({"role": "user", "content": message[:4000]})
 
     try:
-        import anthropic
-        reply = _run_agent(history)
+        reply = _run_agent_gemini(history)
         return jsonify({"response": reply})
-    except anthropic.AuthenticationError:
-        return jsonify({"error": "Invalid Anthropic API key."}), 401
-    except anthropic.RateLimitError:
-        return jsonify({"error": "Rate limit reached. Please try again later."}), 429
     except Exception as e:
         print(f"Agent error: {e}")
         return jsonify({"error": "Agent request failed. Please try again."}), 500
