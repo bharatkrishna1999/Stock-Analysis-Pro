@@ -4666,6 +4666,43 @@ def dashboard():
             .vd-trade-levels { grid-template-columns:1fr 1fr 1fr; }
             .trend-label { min-width:100px; }
         }
+
+        /* ===== AI Assistant Tab ===== */
+        .ai-hero { text-align:center; padding:48px 20px 18px; max-width:680px; margin:0 auto; }
+        .ai-pill { display:inline-flex; align-items:center; gap:7px; background:rgba(201,168,76,0.13); border:1px solid rgba(201,168,76,0.3); border-radius:20px; padding:5px 16px; font-size:0.76em; font-weight:700; color:var(--accent-cyan); letter-spacing:0.6px; text-transform:uppercase; margin-bottom:22px; }
+        .ai-hero h1 { font-family:'Space Grotesk',sans-serif; font-size:2.6em; font-weight:800; color:var(--text-primary); line-height:1.15; margin-bottom:16px; letter-spacing:-0.5px; }
+        .ai-hero p { color:var(--text-secondary); font-size:1em; line-height:1.75; max-width:560px; margin:0 auto; }
+        .ai-shell { max-width:880px; margin:0 auto; padding:0 20px 60px; }
+        .ai-suggest-row { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin:22px auto 22px; max-width:780px; }
+        .ai-suggest-chip { background:var(--bg-card); border:1px solid var(--border-color); color:var(--text-secondary); padding:9px 14px; border-radius:20px; font-size:0.83em; cursor:pointer; transition:border-color .2s,color .2s,transform .2s; font-family:inherit; }
+        .ai-suggest-chip:hover { border-color:var(--accent-gold); color:var(--text-primary); transform:translateY(-1px); }
+        .ai-chat-card { background:var(--bg-card); border:1px solid var(--border-color); border-radius:18px; overflow:hidden; box-shadow:0 8px 40px rgba(27,45,63,0.18); display:flex; flex-direction:column; min-height:520px; max-height:72vh; }
+        .ai-chat-header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border-color); background:rgba(255,255,255,0.02); }
+        .ai-chat-title { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:0.95em; color:var(--text-primary); display:flex; align-items:center; gap:10px; }
+        .ai-status-dot { width:8px; height:8px; border-radius:50%; background:var(--accent-green); display:inline-block; box-shadow:0 0 0 4px rgba(46,204,113,0.18); }
+        .ai-rate-tag { font-size:0.76em; color:var(--text-muted); }
+        .ai-messages { flex:1; overflow-y:auto; padding:20px 22px; display:flex; flex-direction:column; gap:14px; min-height:0; }
+        .ai-messages::-webkit-scrollbar { width:6px; }
+        .ai-messages::-webkit-scrollbar-track { background:transparent; }
+        .ai-messages::-webkit-scrollbar-thumb { background:var(--border-color); border-radius:3px; }
+        .ai-msg { max-width:78%; padding:12px 16px; border-radius:14px; font-size:0.92em; line-height:1.6; word-break:break-word; white-space:pre-wrap; }
+        .ai-msg.user { align-self:flex-end; background:rgba(201,168,76,0.18); color:var(--text-primary); border:1px solid rgba(201,168,76,0.28); border-bottom-right-radius:4px; }
+        .ai-msg.agent { align-self:flex-start; background:var(--bg-card-hover,rgba(255,255,255,0.04)); color:var(--text-primary); border:1px solid var(--border-color); border-bottom-left-radius:4px; }
+        .ai-msg.error { align-self:flex-start; background:rgba(239,68,68,0.1); color:var(--danger); border:1px solid rgba(239,68,68,0.25); border-bottom-left-radius:4px; }
+        .ai-msg.thinking { align-self:flex-start; color:var(--text-muted); font-style:italic; background:transparent; border:none; padding:6px 4px; }
+        .ai-input-row { display:flex; gap:10px; padding:14px 16px; border-top:1px solid var(--border-color); background:rgba(255,255,255,0.02); }
+        #ai-input { flex:1; background:var(--bg-dark); border:1px solid var(--border-color); border-radius:10px; padding:12px 14px; color:var(--text-primary); font-size:0.92em; font-family:'Inter',sans-serif; resize:none; height:46px; max-height:140px; line-height:1.45; transition:border-color .2s; }
+        #ai-input:focus { outline:none; border-color:var(--accent-gold); }
+        #ai-send-btn { background:var(--accent-gold); border:none; border-radius:10px; padding:0 22px; cursor:pointer; color:var(--bg-dark); font-size:0.92em; font-weight:700; transition:opacity .2s; flex-shrink:0; font-family:inherit; }
+        #ai-send-btn:hover { opacity:0.88; }
+        #ai-send-btn:disabled { opacity:0.4; cursor:not-allowed; }
+        .ai-disclaimer { font-size:0.72em; color:var(--text-muted); text-align:center; padding:14px 16px 0; }
+        @media (max-width:720px) {
+            .ai-hero { padding:32px 16px 12px; }
+            .ai-hero h1 { font-size:1.9em; }
+            .ai-msg { max-width:90%; }
+            .ai-chat-card { min-height:60vh; max-height:75vh; border-radius:14px; }
+        }
     </style>
 </head>
 <body>
@@ -4679,6 +4716,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
+                <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; AI Assistant</button>
             </div>
             <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
                 <span></span><span></span><span></span>
@@ -4693,6 +4731,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
         <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
+        <button class="mobile-menu-item" data-tab="ai" onclick="switchTab('ai', event); closeMobileMenu()">&#10024; AI Assistant</button>
     </div>
     <header>
         <div class="container">
@@ -4982,6 +5021,35 @@ def dashboard():
                 <div class="sc-stat-row" id="sc-stat-row"></div>
             </div>
             <div id="scanner-results-area" style="margin-top:18px;max-width:860px;margin-left:auto;margin-right:auto;"></div>
+        </div>
+        <div id="ai-tab" class="tab-content">
+            <div class="ai-hero">
+                <div class="ai-pill">&#10024; Powered by Claude Sonnet</div>
+                <h1>AI Research Assistant</h1>
+                <p>Ask anything about NSE stocks. The assistant pulls live verdicts, DCF valuations, technicals, dividends and market correlation from this platform before answering &mdash; no fabricated numbers.</p>
+            </div>
+            <div class="ai-shell">
+                <div class="ai-suggest-row">
+                    <button class="ai-suggest-chip" type="button" onclick="aiUseSuggestion('Is TCS a buy at the current price?')">Is TCS a buy right now?</button>
+                    <button class="ai-suggest-chip" type="button" onclick="aiUseSuggestion('Find undervalued large caps based on DCF.')">Undervalued large caps</button>
+                    <button class="ai-suggest-chip" type="button" onclick="aiUseSuggestion('Compare Reliance and TCS on momentum and valuation.')">Compare Reliance vs TCS</button>
+                    <button class="ai-suggest-chip" type="button" onclick="aiUseSuggestion('High dividend yield stocks in the banking sector.')">High dividend banking stocks</button>
+                </div>
+                <div class="ai-chat-card">
+                    <div class="ai-chat-header">
+                        <div class="ai-chat-title"><span class="ai-status-dot"></span> Live Research Session</div>
+                        <div class="ai-rate-tag" id="ai-rate-tag">15 queries remaining today</div>
+                    </div>
+                    <div class="ai-messages" id="ai-messages">
+                        <div class="ai-msg agent">Welcome. I can pull live data for any of the 292 NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
+                    </div>
+                    <div class="ai-input-row">
+                        <textarea id="ai-input" placeholder="e.g. Compare HDFC Bank and ICICI Bank on dividends and momentum" rows="1" aria-label="Message input"></textarea>
+                        <button id="ai-send-btn" type="button" onclick="aiSendQuery()">Send</button>
+                    </div>
+                </div>
+                <div class="ai-disclaimer">For research and educational use only. Not investment advice.</div>
+            </div>
         </div>
     </main>
     <script>
@@ -7780,8 +7848,100 @@ def dashboard():
             init(); initDividendSectors(); setupCapitalInput(); loadProfile();
             requestAnimationFrame(()=>{const ds=document.getElementById('deferred-css');if(ds)ds.media='all';});
             const hash = window.location.hash.replace('#','');
-            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner'];
+            const validTabs = ['verdict','analysis','dcf','dividend','regression','scanner','ai'];
             if (hash && validTabs.includes(hash)) { switchTab(hash); }
+        });
+
+        // ── AI Assistant tab ─────────────────────────────────────────────
+        const AI_MAX_QUERIES = 15;
+        const AI_STORAGE_KEY = 'ai_agent_queries_v2';
+        let aiHistory = [];
+        let aiSending = false;
+
+        function aiGetCount() {
+            try { return parseInt(sessionStorage.getItem(AI_STORAGE_KEY), 10) || 0; }
+            catch(e) { return 0; }
+        }
+        function aiBumpCount() {
+            try { sessionStorage.setItem(AI_STORAGE_KEY, String(aiGetCount() + 1)); }
+            catch(e) {}
+        }
+        function aiUpdateRate() {
+            const t = document.getElementById('ai-rate-tag');
+            if (!t) return;
+            const left = Math.max(0, AI_MAX_QUERIES - aiGetCount());
+            t.textContent = left + ' queries remaining today';
+            t.style.color = left <= 3 ? 'var(--danger)' : 'var(--text-muted)';
+        }
+        function aiAppend(role, text) {
+            const box = document.getElementById('ai-messages');
+            if (!box) return null;
+            const el = document.createElement('div');
+            el.className = 'ai-msg ' + role;
+            el.textContent = text;
+            box.appendChild(el);
+            box.scrollTop = box.scrollHeight;
+            return el;
+        }
+        function aiUseSuggestion(text) {
+            const inp = document.getElementById('ai-input');
+            if (!inp) return;
+            inp.value = text;
+            inp.focus();
+        }
+        async function aiSendQuery() {
+            if (aiSending) return;
+            const inp = document.getElementById('ai-input');
+            if (!inp) return;
+            const message = inp.value.trim();
+            if (!message) return;
+            if (aiGetCount() >= AI_MAX_QUERIES) {
+                aiAppend('error', 'Daily limit of ' + AI_MAX_QUERIES + ' queries reached.');
+                return;
+            }
+            inp.value = '';
+            aiAppend('user', message);
+            aiHistory.push({ role: 'user', content: message });
+            const thinking = aiAppend('thinking', 'Analysing live market data…');
+            aiSending = true;
+            const sendBtn = document.getElementById('ai-send-btn');
+            if (sendBtn) sendBtn.disabled = true;
+            inp.disabled = true;
+            try {
+                const res = await fetch('/api/agent/query', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message, history: aiHistory.slice(0, -1) })
+                });
+                const data = await res.json();
+                if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
+                if (data.error) {
+                    aiAppend('error', data.error);
+                    aiHistory.pop();
+                } else {
+                    aiBumpCount();
+                    const reply = data.response || '(empty response)';
+                    aiAppend('agent', reply);
+                    aiHistory.push({ role: 'assistant', content: reply });
+                }
+            } catch(e) {
+                if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
+                aiAppend('error', 'Network error. Please try again.');
+                aiHistory.pop();
+            } finally {
+                aiSending = false;
+                if (sendBtn) sendBtn.disabled = false;
+                inp.disabled = false;
+                aiUpdateRate();
+                inp.focus();
+            }
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            const inp = document.getElementById('ai-input');
+            if (inp) inp.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSendQuery(); }
+            });
+            aiUpdateRate();
         });
     </script>
 </body>
@@ -9383,6 +9543,347 @@ def alerts_config_route():
 def alerts_scan_now_route():
     results = alert_monitor.manual_scan()
     return jsonify({'ok': True, 'results': results})
+
+
+# ── Claude Sonnet AI Research Assistant ──────────────────────────────────────
+
+_AGENT_SYSTEM_PROMPT = """You are a stock research assistant for Stock Analysis Pro, an NSE equity research platform.
+
+You have live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, and a universe scanner across 500+ NSE stocks.
+
+Rules:
+- Always call the relevant tool before answering any stock-specific question. Never fabricate numbers.
+- When asked about a specific stock, default to calling get_investment_verdict first, then supplement with other tools if more depth is needed.
+- Structure responses: verdict first, key numbers second, brief reasoning third.
+- Do not repeat financial-advice disclaimers on every message.
+- For general or educational questions, answer directly without tool calls.
+- Be direct. No filler."""
+
+_AGENT_TOOLS = [
+    {
+        "name": "get_investment_verdict",
+        "description": "Returns the unified 4-in-1 investment score and buy/sell/hold recommendation for a ticker.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string", "description": "NSE ticker e.g. TCS, RELIANCE, HDFCBANK"}},
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_dcf_valuation",
+        "description": "Returns DCF intrinsic value, current price, and margin of safety for a ticker.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_technical_signals",
+        "description": "Returns RSI, MACD, Bollinger Band signals and momentum score for a ticker.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_dividend_analysis",
+        "description": "Returns dividend yield, payout ratio, and sustainability score for a ticker.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_market_correlation",
+        "description": "Returns HSIC correlation vs Nifty 50 and systematic risk exposure for a ticker.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "scan_universe",
+        "description": "Filters NSE universe by sector or simple criteria. Use when the user asks for stock ideas or screening.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sector": {"type": "string", "description": "Optional sector filter"},
+                "filter_criteria": {"type": "string", "description": "e.g. undervalued, high dividend, bullish momentum"},
+            },
+            "required": [],
+        },
+    },
+]
+
+
+def _agent_get_investment_verdict(ticker):
+    sym, _orig = Analyzer.normalize_symbol(ticker)
+    if not sym:
+        return {"error": f"Unknown ticker: {ticker}"}
+    result = analyzer.analyze(sym)
+    if not result:
+        return {"error": f"No data for {sym}"}
+    sig = result.get("signal", {}) or {}
+    det = result.get("details", {}) or {}
+    return {
+        "ticker": sym,
+        "signal": sig.get("signal"),
+        "confidence": sig.get("confidence"),
+        "reason": sig.get("reason"),
+        "current_price": det.get("current_price"),
+        "target_price": det.get("target_price"),
+        "bullish_factors": sig.get("bullish_count"),
+        "bearish_factors": sig.get("bearish_count"),
+        "verdict": (result.get("verdict") or "")[:500],
+    }
+
+
+def _agent_get_dcf_valuation(ticker):
+    sym, _orig = Analyzer.normalize_symbol(ticker)
+    if not sym:
+        return {"error": f"Unknown ticker: {ticker}"}
+    data = DCF_CACHE.get(sym)
+    if not data:
+        local_sector = TICKER_TO_SECTOR.get(sym, "").lower()
+        is_financial = local_sector in ("banking", "financial services")
+        data = analyzer.excess_return_valuation(sym) if is_financial else analyzer.dcf_valuation(sym)
+        if data and data.get("valuation_model") != "excess_return":
+            if Analyzer.is_financial_sector(data.get("sector", ""), data.get("industry", "")):
+                data = analyzer.excess_return_valuation(sym)
+        if data:
+            DCF_CACHE.set(sym, data)
+    if not data:
+        return {"error": f"DCF data unavailable for {sym}"}
+    intrinsic, model = _server_side_dcf(data)
+    price = data.get("current_price") or 0
+    margin = round((intrinsic - price) / price * 100, 1) if intrinsic and price else None
+    return {
+        "ticker": sym,
+        "current_price": price,
+        "intrinsic_value": round(intrinsic, 2) if intrinsic else None,
+        "margin_of_safety_pct": margin,
+        "valuation_model": model,
+        "sector": data.get("sector"),
+        "revenue_growth": data.get("revenue_growth"),
+        "suggested_growth_rate": data.get("suggested_growth_rate"),
+    }
+
+
+def _agent_get_technical_signals(ticker):
+    sym, _orig = Analyzer.normalize_symbol(ticker)
+    if not sym:
+        return {"error": f"Unknown ticker: {ticker}"}
+    result = analyzer.analyze(sym)
+    if not result:
+        return {"error": f"No data for {sym}"}
+    det = result.get("details", {}) or {}
+    sig = result.get("signal", {}) or {}
+    return {
+        "ticker": sym,
+        "rsi": det.get("rsi_raw"),
+        "macd_bullish": det.get("macd_bullish"),
+        "bb_position_pct": det.get("bb_position"),
+        "zscore": det.get("zscore"),
+        "momentum_signal": sig.get("signal"),
+        "confidence": sig.get("confidence"),
+        "current_price": det.get("current_price"),
+        "sma20": det.get("sma20"),
+        "sma50": det.get("sma50"),
+    }
+
+
+def _agent_get_dividend_analysis(ticker):
+    sym = (ticker or "").strip().upper()
+    if sym not in ALL_VALID_TICKERS:
+        return {"error": f"{sym} is not a recognized NSE ticker"}
+    results, _found = analyzer.fetch_dividend_data([sym], limit_results=False, exclude_downtrend=False)
+    if not results:
+        return {"ticker": sym, "pays_dividend": False, "message": "No dividend data found"}
+    stock = results[0]
+    return {
+        "ticker": sym,
+        "pays_dividend": True,
+        "dividend_yield_pct": stock.get("yield"),
+        "annual_dividend": stock.get("annual_dividend"),
+        "payout_ratio": stock.get("payout_ratio"),
+        "trend": stock.get("trend"),
+        "sustainability_score": stock.get("sustainability_score"),
+        "years_consistent": stock.get("years_consistent"),
+    }
+
+
+def _agent_get_market_correlation(ticker):
+    sym, _orig = Analyzer.normalize_symbol(ticker)
+    if not sym:
+        return {"error": f"Unknown ticker: {ticker}"}
+    cached = REGRESSION_CACHE.get(sym)
+    if cached:
+        return {
+            "ticker": sym,
+            "hsic_score": cached.get("hsic_score"),
+            "correlation_label": cached.get("label"),
+            "systematic_risk": cached.get("systematic_risk"),
+            "beta": cached.get("beta"),
+        }
+    fut = _submit_regression_job(sym)
+    try:
+        res = fut.result(timeout=REGRESSION_WAIT_TIMEOUT_SECONDS)
+    except Exception:
+        res = None
+    if not res:
+        return {"ticker": sym, "status": "computing", "message": "Correlation analysis still running; retry shortly."}
+    return {
+        "ticker": sym,
+        "hsic_score": res.get("hsic_score"),
+        "correlation_label": res.get("label"),
+        "systematic_risk": res.get("systematic_risk"),
+        "beta": res.get("beta"),
+    }
+
+
+def _agent_scan_universe(sector=None, filter_criteria=None):
+    criteria = (filter_criteria or "").lower()
+    candidates = []
+    if sector:
+        sector_lower = sector.lower()
+        for sec_name, tickers in STOCKS.items():
+            if sector_lower in sec_name.lower():
+                candidates.extend(tickers)
+    if not candidates:
+        candidates = list(STOCKS.get("Nifty 50", [])[:25]) + list(STOCKS.get("Nifty Next 50", [])[:25])
+
+    seen, unique = set(), []
+    for t in candidates:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+
+    matches = []
+    for sym in unique[:40]:
+        cached = ANALYSIS_CACHE.get(sym)
+        if not cached:
+            continue
+        sig = cached.get("signal", {}) or {}
+        det = cached.get("details", {}) or {}
+        signal_val = sig.get("signal", "")
+        confidence = sig.get("confidence", 0) or 0
+
+        if "bullish" in criteria or "momentum" in criteria:
+            if signal_val != "BUY":
+                continue
+        elif "bearish" in criteria or "sell" in criteria:
+            if signal_val != "SELL":
+                continue
+        elif "undervalued" in criteria:
+            if signal_val != "BUY" or confidence < 60:
+                continue
+
+        matches.append({
+            "ticker": sym,
+            "signal": signal_val,
+            "confidence": confidence,
+            "current_price": det.get("current_price"),
+            "reason": (sig.get("reason") or "")[:120],
+        })
+        if len(matches) >= 15:
+            break
+
+    return {
+        "sector_filter": sector or "broad",
+        "criteria": filter_criteria or "all",
+        "matches": matches,
+        "note": "Results from cached analyses only; run a fresh analysis for full universe coverage.",
+    }
+
+
+def _agent_dispatch_tool(name, inputs):
+    inputs = inputs or {}
+    if name == "get_investment_verdict":
+        return _agent_get_investment_verdict(inputs.get("ticker", ""))
+    if name == "get_dcf_valuation":
+        return _agent_get_dcf_valuation(inputs.get("ticker", ""))
+    if name == "get_technical_signals":
+        return _agent_get_technical_signals(inputs.get("ticker", ""))
+    if name == "get_dividend_analysis":
+        return _agent_get_dividend_analysis(inputs.get("ticker", ""))
+    if name == "get_market_correlation":
+        return _agent_get_market_correlation(inputs.get("ticker", ""))
+    if name == "scan_universe":
+        return _agent_scan_universe(inputs.get("sector"), inputs.get("filter_criteria"))
+    return {"error": f"Unknown tool: {name}"}
+
+
+def _run_agent(history):
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    messages = list(history)
+    max_turns = 6
+
+    for _ in range(max_turns):
+        response = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1024,
+            system=_AGENT_SYSTEM_PROMPT,
+            tools=_AGENT_TOOLS,
+            messages=messages,
+        )
+        if response.stop_reason != "tool_use":
+            text_blocks = [b for b in response.content if hasattr(b, "text")]
+            return text_blocks[0].text if text_blocks else "No response generated."
+
+        tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
+        tool_results = []
+        for block in tool_uses:
+            result = _agent_dispatch_tool(block.name, block.input)
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": json.dumps(result),
+            })
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+
+    return "Reached tool-call limit without final answer. Please rephrase or narrow the question."
+
+
+@app.route("/api/agent/query", methods=["POST"])
+def agent_query_route():
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
+    try:
+        import anthropic  # noqa: F401
+    except ImportError:
+        return jsonify({"error": "AI assistant package not installed."}), 503
+
+    data = request.get_json(silent=True) or {}
+    message = (data.get("message") or "").strip()
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    raw_history = data.get("history") or []
+    history = []
+    for turn in raw_history[-12:]:
+        role = turn.get("role")
+        content = turn.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            history.append({"role": role, "content": content[:4000]})
+    history.append({"role": "user", "content": message[:4000]})
+
+    try:
+        import anthropic
+        reply = _run_agent(history)
+        return jsonify({"response": reply})
+    except anthropic.AuthenticationError:
+        return jsonify({"error": "Invalid Anthropic API key."}), 401
+    except anthropic.RateLimitError:
+        return jsonify({"error": "Rate limit reached. Please try again later."}), 429
+    except Exception as e:
+        print(f"Agent error: {e}")
+        return jsonify({"error": "Agent request failed. Please try again."}), 500
 
 
 if __name__ == '__main__':
