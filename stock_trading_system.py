@@ -27,6 +27,7 @@ import io
 import base64
 import requests
 import logging
+import traceback
 import gc
 from scipy.optimize import minimize as scipy_minimize
 from concurrent.futures import ThreadPoolExecutor
@@ -9877,13 +9878,19 @@ def agent_query_route():
         import anthropic
         reply = _run_agent(history)
         return jsonify({"response": reply})
-    except anthropic.AuthenticationError:
-        return jsonify({"error": "Invalid Anthropic API key."}), 401
-    except anthropic.RateLimitError:
-        return jsonify({"error": "Rate limit reached. Please try again later."}), 429
+    except anthropic.AuthenticationError as e:
+        return jsonify({"error": f"Invalid Anthropic API key: {e}"}), 401
+    except anthropic.RateLimitError as e:
+        return jsonify({"error": f"Rate limit reached: {e}"}), 429
+    except anthropic.BadRequestError as e:
+        traceback.print_exc()
+        return jsonify({"error": f"Bad request to Anthropic API: {e}"}), 400
+    except anthropic.APIError as e:
+        traceback.print_exc()
+        return jsonify({"error": f"Anthropic API error: {e}"}), 502
     except Exception as e:
-        print(f"Agent error: {e}")
-        return jsonify({"error": "Agent request failed. Please try again."}), 500
+        traceback.print_exc()
+        return jsonify({"error": f"Agent failed: {type(e).__name__}: {e}"}), 500
 
 
 if __name__ == '__main__':
