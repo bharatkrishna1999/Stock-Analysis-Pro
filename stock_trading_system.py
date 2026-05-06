@@ -9547,17 +9547,26 @@ def alerts_scan_now_route():
 
 # ── Claude Sonnet AI Research Assistant ──────────────────────────────────────
 
-_AGENT_SYSTEM_PROMPT = """You are a stock research assistant for Stock Analysis Pro, an NSE equity research platform.
+_AGENT_SYSTEM_PROMPT = """You are a stock research assistant for Stock Analysis Pro, an NSE equity research platform. Your audience is everyday investors who may not have a finance background, so your job is to make professional-grade analysis easy to understand.
 
-You have live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, and a universe scanner across 500+ NSE stocks.
+You have live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, a recent-news feed (get_company_news), and a universe scanner across 500+ NSE stocks.
 
-Rules:
+Data rules:
 - Always call the relevant tool before answering any stock-specific question. Never fabricate numbers.
-- When asked about a specific stock, default to calling get_investment_verdict first, then supplement with other tools if more depth is needed.
-- Structure responses: verdict first, key numbers second, brief reasoning third.
-- Do not repeat financial-advice disclaimers on every message.
+- When asked about a specific stock, default to calling get_investment_verdict AND get_company_news in parallel first. The numbers tell you what the stock is doing; the news tells you why and surfaces event-driven context (demergers, lawsuits, management changes, regulatory actions, earnings surprises) that the financial-ratio tools cannot see.
+- Pull additional tools (DCF, technicals, dividends, correlation) when the user's question needs that depth.
+- If get_company_news returns a relevant headline (e.g. a demerger, fraud probe, big order win), call it out explicitly in the verdict and the "What this means for you" section — these qualitative events often matter more than the ratios.
 - For general or educational questions, answer directly without tool calls.
-- Be direct. No filler."""
+
+Response style (write for a non-finance reader):
+1. Start with a one-line plain-English verdict (e.g. "Looks like a reasonable buy right now" or "Looks expensive — better to wait").
+2. Then a short "Key numbers" section with 3-5 bullets. For each number, show the value AND a quick parenthetical explanation of what it means in everyday terms (e.g. "RSI 72 (momentum is hot — stock has been rallying fast, may be due for a pause)", "Margin of safety -15% (price is about 15% above what the model thinks it's truly worth)").
+3. Then a short "What this means for you" section in 2-3 sentences of plain English — no jargon. Translate the data into a practical takeaway.
+4. The first time you use any technical term (DCF, RSI, MACD, beta, HSIC, payout ratio, intrinsic value, margin of safety, etc.), add a brief plain-English gloss in parentheses.
+5. Avoid finance jargon walls. Prefer "the stock is moving up faster than usual" over "bullish momentum divergence".
+6. Keep the whole reply tight — aim for under ~180 words unless the user explicitly asks for a deep dive.
+7. Do not repeat financial-advice disclaimers on every message. One short reminder at the end is fine when giving a buy/sell view.
+8. Be warm and clear, not stiff. No filler, no hedging fluff."""
 
 _AGENT_TOOLS = [
     {
@@ -9602,6 +9611,18 @@ _AGENT_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_company_news",
+        "description": "Returns recent news headlines about a company (mergers, demergers, lawsuits, management changes, earnings, scandals, regulatory actions, etc.). Use this for any qualitative or event-driven context that would not appear in financial-ratio tools. Always call this alongside get_investment_verdict when the user asks 'should I buy X', 'what's happening with X', or anything that depends on current events.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "NSE ticker e.g. VEDL, RELIANCE, TCS"},
+                "max_results": {"type": "integer", "description": "Number of headlines to return (default 5, max 10)"},
+            },
             "required": ["ticker"],
         },
     },
@@ -9800,6 +9821,55 @@ def _agent_scan_universe(sector=None, filter_criteria=None):
     }
 
 
+def _agent_get_company_news(ticker, max_results=5):
+    import requests
+    api_key = os.environ.get("GNEWS_API_KEY")
+    if not api_key:
+        return {"error": "News service not configured (missing GNEWS_API_KEY)."}
+    sym, _orig = Analyzer.normalize_symbol(ticker)
+    if not sym:
+        return {"error": f"Unknown ticker: {ticker}"}
+    company = TICKER_TO_NAME.get(sym, sym)
+    try:
+        max_results = max(1, min(int(max_results or 5), 10))
+    except (TypeError, ValueError):
+        max_results = 5
+    query = f'"{company}"' if company and company != sym else sym
+    try:
+        resp = requests.get(
+            "https://gnews.io/api/v4/search",
+            params={
+                "q": query,
+                "token": api_key,
+                "lang": "en",
+                "country": "in",
+                "max": max_results,
+                "sortby": "publishedAt",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        return {"error": f"News fetch failed: {e}"}
+    articles = []
+    for art in (data.get("articles") or [])[:max_results]:
+        articles.append({
+            "title": (art.get("title") or "")[:200],
+            "description": (art.get("description") or "")[:400],
+            "source": (art.get("source") or {}).get("name"),
+            "published_at": art.get("publishedAt"),
+            "url": art.get("url"),
+        })
+    return {
+        "ticker": sym,
+        "company": company,
+        "article_count": len(articles),
+        "articles": articles,
+        "note": "Use these headlines to surface event-driven context (demergers, lawsuits, regulatory actions, earnings surprises, etc.).",
+    }
+
+
 def _agent_dispatch_tool(name, inputs):
     inputs = inputs or {}
     if name == "get_investment_verdict":
@@ -9812,9 +9882,70 @@ def _agent_dispatch_tool(name, inputs):
         return _agent_get_dividend_analysis(inputs.get("ticker", ""))
     if name == "get_market_correlation":
         return _agent_get_market_correlation(inputs.get("ticker", ""))
+    if name == "get_company_news":
+        return _agent_get_company_news(inputs.get("ticker", ""), inputs.get("max_results", 5))
     if name == "scan_universe":
         return _agent_scan_universe(inputs.get("sector"), inputs.get("filter_criteria"))
     return {"error": f"Unknown tool: {name}"}
+
+
+def _run_agent_gemini(history):
+    import requests
+    api_key = os.environ["GEMINI_API_KEY"]
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+
+    function_decls = [
+        {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        }
+        for t in _AGENT_TOOLS
+    ]
+
+    contents = []
+    for msg in history:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+    max_turns = 6
+    for _ in range(max_turns):
+        payload = {
+            "system_instruction": {"parts": [{"text": _AGENT_SYSTEM_PROMPT}]},
+            "contents": contents,
+            "tools": [{"function_declarations": function_decls}],
+            "generationConfig": {"maxOutputTokens": 1024},
+        }
+        resp = requests.post(url, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return "No response generated."
+        parts = candidates[0].get("content", {}).get("parts", []) or []
+
+        function_calls = [p["functionCall"] for p in parts if "functionCall" in p]
+        if not function_calls:
+            text_parts = [p.get("text", "") for p in parts if "text" in p]
+            joined = "".join(text_parts).strip()
+            return joined or "No response generated."
+
+        contents.append({"role": "model", "parts": parts})
+        tool_response_parts = []
+        for fc in function_calls:
+            result = _agent_dispatch_tool(fc.get("name", ""), fc.get("args", {}) or {})
+            if not isinstance(result, dict):
+                result = {"result": result}
+            tool_response_parts.append({
+                "functionResponse": {
+                    "name": fc.get("name", ""),
+                    "response": result,
+                }
+            })
+        contents.append({"role": "user", "parts": tool_response_parts})
+
+    return "Reached tool-call limit without final answer. Please rephrase or narrow the question."
 
 
 def _run_agent(history):
@@ -9852,12 +9983,8 @@ def _run_agent(history):
 
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not os.environ.get("GEMINI_API_KEY"):
         return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
-    try:
-        import anthropic  # noqa: F401
-    except ImportError:
-        return jsonify({"error": "AI assistant package not installed."}), 503
 
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
@@ -9874,13 +10001,8 @@ def agent_query_route():
     history.append({"role": "user", "content": message[:4000]})
 
     try:
-        import anthropic
-        reply = _run_agent(history)
+        reply = _run_agent_gemini(history)
         return jsonify({"response": reply})
-    except anthropic.AuthenticationError:
-        return jsonify({"error": "Invalid Anthropic API key."}), 401
-    except anthropic.RateLimitError:
-        return jsonify({"error": "Rate limit reached. Please try again later."}), 429
     except Exception as e:
         print(f"Agent error: {e}")
         return jsonify({"error": "Agent request failed. Please try again."}), 500
