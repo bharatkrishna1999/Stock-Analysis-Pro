@@ -9549,11 +9549,13 @@ def alerts_scan_now_route():
 
 _AGENT_SYSTEM_PROMPT = """You are a stock research assistant for Stock Analysis Pro, an NSE equity research platform. Your audience is everyday investors who may not have a finance background, so your job is to make professional-grade analysis easy to understand.
 
-You have live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, and a universe scanner across 500+ NSE stocks.
+You have live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, a recent-news feed (get_company_news), and a universe scanner across 500+ NSE stocks.
 
 Data rules:
 - Always call the relevant tool before answering any stock-specific question. Never fabricate numbers.
-- When asked about a specific stock, default to calling get_investment_verdict first, then supplement with other tools if more depth is needed.
+- When asked about a specific stock, default to calling get_investment_verdict AND get_company_news in parallel first. The numbers tell you what the stock is doing; the news tells you why and surfaces event-driven context (demergers, lawsuits, management changes, regulatory actions, earnings surprises) that the financial-ratio tools cannot see.
+- Pull additional tools (DCF, technicals, dividends, correlation) when the user's question needs that depth.
+- If get_company_news returns a relevant headline (e.g. a demerger, fraud probe, big order win), call it out explicitly in the verdict and the "What this means for you" section — these qualitative events often matter more than the ratios.
 - For general or educational questions, answer directly without tool calls.
 
 Response style (write for a non-finance reader):
@@ -9609,6 +9611,18 @@ _AGENT_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {"ticker": {"type": "string"}},
+            "required": ["ticker"],
+        },
+    },
+    {
+        "name": "get_company_news",
+        "description": "Returns recent news headlines about a company (mergers, demergers, lawsuits, management changes, earnings, scandals, regulatory actions, etc.). Use this for any qualitative or event-driven context that would not appear in financial-ratio tools. Always call this alongside get_investment_verdict when the user asks 'should I buy X', 'what's happening with X', or anything that depends on current events.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "NSE ticker e.g. VEDL, RELIANCE, TCS"},
+                "max_results": {"type": "integer", "description": "Number of headlines to return (default 5, max 10)"},
+            },
             "required": ["ticker"],
         },
     },
@@ -9807,6 +9821,55 @@ def _agent_scan_universe(sector=None, filter_criteria=None):
     }
 
 
+def _agent_get_company_news(ticker, max_results=5):
+    import requests
+    api_key = os.environ.get("GNEWS_API_KEY")
+    if not api_key:
+        return {"error": "News service not configured (missing GNEWS_API_KEY)."}
+    sym, _orig = Analyzer.normalize_symbol(ticker)
+    if not sym:
+        return {"error": f"Unknown ticker: {ticker}"}
+    company = TICKER_TO_NAME.get(sym, sym)
+    try:
+        max_results = max(1, min(int(max_results or 5), 10))
+    except (TypeError, ValueError):
+        max_results = 5
+    query = f'"{company}"' if company and company != sym else sym
+    try:
+        resp = requests.get(
+            "https://gnews.io/api/v4/search",
+            params={
+                "q": query,
+                "token": api_key,
+                "lang": "en",
+                "country": "in",
+                "max": max_results,
+                "sortby": "publishedAt",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException as e:
+        return {"error": f"News fetch failed: {e}"}
+    articles = []
+    for art in (data.get("articles") or [])[:max_results]:
+        articles.append({
+            "title": (art.get("title") or "")[:200],
+            "description": (art.get("description") or "")[:400],
+            "source": (art.get("source") or {}).get("name"),
+            "published_at": art.get("publishedAt"),
+            "url": art.get("url"),
+        })
+    return {
+        "ticker": sym,
+        "company": company,
+        "article_count": len(articles),
+        "articles": articles,
+        "note": "Use these headlines to surface event-driven context (demergers, lawsuits, regulatory actions, earnings surprises, etc.).",
+    }
+
+
 def _agent_dispatch_tool(name, inputs):
     inputs = inputs or {}
     if name == "get_investment_verdict":
@@ -9819,6 +9882,8 @@ def _agent_dispatch_tool(name, inputs):
         return _agent_get_dividend_analysis(inputs.get("ticker", ""))
     if name == "get_market_correlation":
         return _agent_get_market_correlation(inputs.get("ticker", ""))
+    if name == "get_company_news":
+        return _agent_get_company_news(inputs.get("ticker", ""), inputs.get("max_results", 5))
     if name == "scan_universe":
         return _agent_scan_universe(inputs.get("sector"), inputs.get("filter_criteria"))
     return {"error": f"Unknown tool: {name}"}
