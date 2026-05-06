@@ -7857,6 +7857,8 @@ def dashboard():
         const AI_STORAGE_KEY = 'ai_agent_queries_v2';
         let aiHistory = [];
         let aiSending = false;
+        let aiCooldownUntil = 0;
+        let aiCooldownTimer = null;
 
         function aiGetCount() {
             try { return parseInt(sessionStorage.getItem(AI_STORAGE_KEY), 10) || 0; }
@@ -7889,8 +7891,35 @@ def dashboard():
             inp.value = text;
             inp.focus();
         }
+        function aiStartCooldown(seconds, errEl) {
+            const secs = Math.max(1, parseInt(seconds, 10) || 0);
+            aiCooldownUntil = Date.now() + secs * 1000;
+            const sendBtn = document.getElementById('ai-send-btn');
+            const inp = document.getElementById('ai-input');
+            if (sendBtn) sendBtn.disabled = true;
+            if (inp) inp.disabled = true;
+            if (aiCooldownTimer) clearInterval(aiCooldownTimer);
+            const tick = function() {
+                const left = Math.max(0, Math.ceil((aiCooldownUntil - Date.now()) / 1000));
+                if (errEl && errEl.parentNode) {
+                    errEl.dataset.cooldown = '1';
+                    errEl.textContent = left > 0
+                        ? 'Rate-limited. Retrying available in ' + left + 's.'
+                        : 'Ready. Try again.';
+                }
+                if (left <= 0) {
+                    clearInterval(aiCooldownTimer);
+                    aiCooldownTimer = null;
+                    if (sendBtn) sendBtn.disabled = false;
+                    if (inp) inp.disabled = false;
+                }
+            };
+            tick();
+            aiCooldownTimer = setInterval(tick, 1000);
+        }
         async function aiSendQuery() {
             if (aiSending) return;
+            if (Date.now() < aiCooldownUntil) return;
             const inp = document.getElementById('ai-input');
             if (!inp) return;
             const message = inp.value.trim();
@@ -7916,8 +7945,14 @@ def dashboard():
                 const data = await res.json();
                 if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
                 if (data.error) {
-                    aiAppend('error', data.error);
+                    const errEl = aiAppend('error', data.error);
                     aiHistory.pop();
+                    if (res.status === 429) {
+                        const ra = parseInt(data.retryAfter, 10)
+                            || parseInt(res.headers.get('Retry-After'), 10)
+                            || 30;
+                        aiStartCooldown(ra, errEl);
+                    }
                 } else {
                     aiBumpCount();
                     const reply = data.response || '(empty response)';
@@ -7930,10 +7965,11 @@ def dashboard():
                 aiHistory.pop();
             } finally {
                 aiSending = false;
-                if (sendBtn) sendBtn.disabled = false;
-                inp.disabled = false;
+                const onCooldown = Date.now() < aiCooldownUntil;
+                if (sendBtn) sendBtn.disabled = onCooldown;
+                inp.disabled = onCooldown;
                 aiUpdateRate();
-                inp.focus();
+                if (!onCooldown) inp.focus();
             }
         }
         document.addEventListener('DOMContentLoaded', function() {
@@ -9889,10 +9925,39 @@ def _agent_dispatch_tool(name, inputs):
     return {"error": f"Unknown tool: {name}"}
 
 
+class _GeminiRateLimitError(Exception):
+    def __init__(self, retry_after):
+        super().__init__("Gemini rate limit")
+        self.retry_after = retry_after
+
+
+def _gemini_parse_retry_after(resp):
+    try:
+        body = resp.json() or {}
+    except Exception:
+        body = {}
+    err = body.get("error") or {}
+    for d in err.get("details") or []:
+        delay = d.get("retryDelay")
+        if isinstance(delay, str) and delay.endswith("s"):
+            try:
+                return max(1, int(float(delay[:-1])))
+            except ValueError:
+                pass
+    ra = resp.headers.get("Retry-After")
+    if ra:
+        try:
+            return max(1, int(float(ra)))
+        except ValueError:
+            pass
+    return None
+
+
 def _run_agent_gemini(history):
     import requests
     api_key = os.environ["GEMINI_API_KEY"]
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
     function_decls = [
@@ -9917,7 +9982,17 @@ def _run_agent_gemini(history):
             "tools": [{"function_declarations": function_decls}],
             "generationConfig": {"maxOutputTokens": 1024},
         }
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        backoffs = [2, 5, 10]
+        resp = None
+        for attempt, wait in enumerate([0] + backoffs):
+            if wait:
+                time.sleep(wait)
+            resp = requests.post(url, json=payload, headers=headers, timeout=60)
+            if resp.status_code not in (429, 503):
+                break
+            if attempt == len(backoffs):
+                retry_after = _gemini_parse_retry_after(resp) or 30
+                raise _GeminiRateLimitError(retry_after)
         resp.raise_for_status()
         data = resp.json()
 
@@ -9982,6 +10057,31 @@ def _run_agent(history):
     return "Reached tool-call limit without final answer. Please rephrase or narrow the question."
 
 
+_AGENT_IP_LAST_CALL = {}
+_AGENT_IP_LOCK = Lock()
+_AGENT_MIN_INTERVAL_SEC = float(os.environ.get("AGENT_MIN_INTERVAL_SEC", "3"))
+_AGENT_GLOBAL_SEMAPHORE = __import__("threading").BoundedSemaphore(
+    int(os.environ.get("AGENT_MAX_CONCURRENCY", "2"))
+)
+
+
+def _agent_throttle_check(ip):
+    if _AGENT_MIN_INTERVAL_SEC <= 0 or not ip:
+        return 0
+    now = time.time()
+    with _AGENT_IP_LOCK:
+        last = _AGENT_IP_LAST_CALL.get(ip, 0)
+        wait = _AGENT_MIN_INTERVAL_SEC - (now - last)
+        if wait > 0:
+            return int(wait) + 1
+        _AGENT_IP_LAST_CALL[ip] = now
+        if len(_AGENT_IP_LAST_CALL) > 1024:
+            cutoff = now - 600
+            for k in [k for k, v in _AGENT_IP_LAST_CALL.items() if v < cutoff]:
+                _AGENT_IP_LAST_CALL.pop(k, None)
+    return 0
+
+
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
     if not os.environ.get("GEMINI_API_KEY"):
@@ -9992,6 +10092,17 @@ def agent_query_route():
     if not message:
         return jsonify({"error": "message is required"}), 400
 
+    client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                 or request.remote_addr or "")
+    wait_secs = _agent_throttle_check(client_ip)
+    if wait_secs:
+        resp = jsonify({
+            "error": f"You're sending requests too quickly. Try again in {wait_secs}s.",
+            "retryAfter": wait_secs,
+        })
+        resp.headers["Retry-After"] = str(wait_secs)
+        return resp, 429
+
     raw_history = data.get("history") or []
     history = []
     for turn in raw_history[-12:]:
@@ -10001,17 +10112,35 @@ def agent_query_route():
             history.append({"role": role, "content": content[:4000]})
     history.append({"role": "user", "content": message[:4000]})
 
+    if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
+        return jsonify({
+            "error": "AI assistant is busy. Please try again in a moment.",
+            "retryAfter": 10,
+        }), 429
     try:
         reply = _run_agent_gemini(history)
         return jsonify({"response": reply})
+    except _GeminiRateLimitError as e:
+        retry_after = int(getattr(e, "retry_after", 30) or 30)
+        resp = jsonify({
+            "error": f"AI assistant is rate-limited upstream. Try again in {retry_after}s.",
+            "retryAfter": retry_after,
+        })
+        resp.headers["Retry-After"] = str(retry_after)
+        return resp, 429
     except Exception as e:
         import re
         sanitized = re.sub(r"key=[A-Za-z0-9_\-]+", "key=***", str(e))
         status = getattr(getattr(e, "response", None), "status_code", None)
         print(f"Agent error: {sanitized}")
         if status == 429:
-            return jsonify({"error": "AI assistant is rate-limited right now. Please wait a minute and try again."}), 429
+            return jsonify({
+                "error": "AI assistant is rate-limited right now. Please wait a minute and try again.",
+                "retryAfter": 30,
+            }), 429
         return jsonify({"error": "Agent request failed. Please try again."}), 500
+    finally:
+        _AGENT_GLOBAL_SEMAPHORE.release()
 
 
 if __name__ == '__main__':
