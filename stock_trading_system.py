@@ -16,7 +16,12 @@ import json
 import os
 import pickle
 import time
-import anthropic
+try:
+    import anthropic as _anthropic_module
+    _ANTHROPIC_AVAILABLE = True
+except ImportError:
+    _anthropic_module = None
+    _ANTHROPIC_AVAILABLE = False
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -9550,12 +9555,13 @@ def alerts_scan_now_route():
 
 _AGENT_SYSTEM_PROMPT = """You are a stock research assistant for Stock Analysis Pro, an NSE equity research platform.
 
-You have access to live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, and a universe scanner across 500+ NSE stocks.
+You have access to live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, a universe scanner across 500+ NSE stocks, and a news tool for recent market events.
 
 Rules:
 - Always call the relevant tool before answering any stock-specific question. Never fabricate numbers.
 - When asked about a specific stock, default to calling get_investment_verdict first, then supplement with other tools if the user needs more depth.
-- Return structured responses: verdict first, key numbers second, brief reasoning third.
+- When the user asks about recent events, demergers, fraud, management changes, promoter actions, regulatory news, or any context requiring current information, call get_recent_news first or alongside other tools.
+- Return structured responses: verdict first, key numbers second, brief reasoning third. Include relevant news context when available.
 - Do not add financial advice disclaimers on every message. One disclaimer in the first session message is enough.
 - If the user asks a general market or educational question, answer directly without tool calls.
 - Be direct. No filler sentences."""
@@ -9626,6 +9632,18 @@ _AGENT_TOOLS = [
                 "filter_criteria": {"type": "string", "description": "e.g. undervalued, high dividend, bullish momentum"}
             },
             "required": []
+        }
+    },
+    {
+        "name": "get_recent_news",
+        "description": "Fetches recent news headlines and market events for a stock — demergers, promoter fraud, regulatory actions, results, analyst upgrades, corporate announcements. Always call this when the user asks about recent events or needs context beyond price data.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ticker": {"type": "string", "description": "NSE ticker symbol e.g. VEDL, TCS, RELIANCE"},
+                "query_hint": {"type": "string", "description": "Optional extra search context e.g. 'demerger', 'fraud', 'quarterly results', 'promoter'"}
+            },
+            "required": ["ticker"]
         }
     }
 ]
@@ -9821,6 +9839,63 @@ def _agent_scan_universe(sector=None, filter_criteria=None):
     }
 
 
+def _agent_get_recent_news(ticker, query_hint=None):
+    """Fetch recent news via GNews API (free tier). Requires GNEWS_API_KEY env var."""
+    api_key = os.environ.get("GNEWS_API_KEY", "")
+    sym, _ = Analyzer.normalize_symbol(ticker) if ticker else ("", "")
+    if not sym:
+        sym = ticker.strip().upper() if ticker else ""
+
+    company_name = TICKER_TO_NAME.get(sym, sym)
+    query_parts = [company_name, "NSE India"]
+    if query_hint:
+        query_parts.append(query_hint)
+    query = " ".join(query_parts)
+
+    if not api_key:
+        return {
+            "status": "unavailable",
+            "message": (
+                "News tool requires a free GNews API key. "
+                "Register at https://gnews.io (free: 100 req/day) and set GNEWS_API_KEY env var."
+            ),
+            "ticker": sym,
+            "company": company_name,
+        }
+
+    try:
+        import urllib.parse
+        url = (
+            "https://gnews.io/api/v4/search"
+            f"?q={urllib.parse.quote(query)}"
+            "&lang=en&country=in&max=7"
+            f"&apikey={api_key}"
+        )
+        resp = requests.get(url, timeout=10, headers={"User-Agent": "StockAnalysisPro/1.0"})
+        if resp.status_code == 403:
+            return {"error": "GNews API key invalid or daily quota exceeded (100/day on free plan)", "ticker": sym}
+        resp.raise_for_status()
+        data = resp.json()
+
+        articles = []
+        for a in data.get("articles", []):
+            articles.append({
+                "title": a.get("title", ""),
+                "source": a.get("source", {}).get("name", ""),
+                "published": a.get("publishedAt", ""),
+                "summary": (a.get("description") or "")[:250],
+            })
+
+        return {
+            "ticker": sym,
+            "company": company_name,
+            "articles": articles,
+            "count": len(articles),
+        }
+    except Exception as e:
+        return {"error": f"News fetch failed: {str(e)}", "ticker": sym}
+
+
 def _dispatch_tool(name, inputs):
     if name == "get_investment_verdict":
         return _agent_get_investment_verdict(inputs.get("ticker", ""))
@@ -9834,11 +9909,13 @@ def _dispatch_tool(name, inputs):
         return _agent_get_market_correlation(inputs.get("ticker", ""))
     if name == "scan_universe":
         return _agent_scan_universe(inputs.get("sector"), inputs.get("filter_criteria"))
+    if name == "get_recent_news":
+        return _agent_get_recent_news(inputs.get("ticker", ""), inputs.get("query_hint"))
     return {"error": f"Unknown tool: {name}"}
 
 
 def _run_agent(user_message):
-    _anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    _anthropic_client = _anthropic_module.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     messages = [{"role": "user", "content": user_message}]
 
     response = _anthropic_client.messages.create(
@@ -9882,8 +9959,10 @@ def _run_agent(user_message):
 
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
+    if not _ANTHROPIC_AVAILABLE:
+        return jsonify({"error": "anthropic package not installed on server. Run: pip install anthropic"}), 503
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return jsonify({"error": "ANTHROPIC_API_KEY not configured"}), 503
+        return jsonify({"error": "ANTHROPIC_API_KEY environment variable is not set on the server"}), 503
     data = request.get_json(silent=True) or {}
     message = (data.get("message") or "").strip()
     ticker = (data.get("ticker") or "").strip()
@@ -9894,13 +9973,25 @@ def agent_query_route():
     try:
         reply = _run_agent(message)
         return jsonify({"response": reply})
-    except anthropic.AuthenticationError:
-        return jsonify({"error": "Invalid Anthropic API key"}), 401
-    except anthropic.RateLimitError:
-        return jsonify({"error": "Rate limit reached. Please try again later."}), 429
+    except _anthropic_module.AuthenticationError:
+        return jsonify({"error": "Invalid Anthropic API key. Check ANTHROPIC_API_KEY env var."}), 401
+    except _anthropic_module.RateLimitError:
+        return jsonify({"error": "Anthropic rate limit reached. Please wait and try again."}), 429
+    except _anthropic_module.APIConnectionError as e:
+        print(f"Agent connection error: {e}")
+        return jsonify({"error": "Could not reach Anthropic API. Check server connectivity."}), 503
+    except _anthropic_module.APITimeoutError:
+        return jsonify({"error": "Anthropic API timed out. Please try again."}), 504
+    except _anthropic_module.BadRequestError as e:
+        print(f"Agent bad request: {e}")
+        return jsonify({"error": f"Bad request to AI: {e.message}"}), 400
+    except _anthropic_module.APIStatusError as e:
+        print(f"Agent API status error {e.status_code}: {e.message}")
+        return jsonify({"error": f"AI service error ({e.status_code}): {e.message}"}), 500
     except Exception as e:
-        print(f"Agent error: {e}")
-        return jsonify({"error": "Agent request failed. Please try again."}), 500
+        import traceback
+        print(f"Agent unexpected error: {traceback.format_exc()}")
+        return jsonify({"error": f"Unexpected error: {type(e).__name__}: {str(e)}"}), 500
 
 
 if __name__ == '__main__':
