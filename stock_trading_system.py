@@ -9961,6 +9961,10 @@ _GEMINI_RETRY_MAX_ATTEMPTS = int(os.environ.get("GEMINI_RETRY_MAX_ATTEMPTS", "5"
 _GEMINI_RETRY_BASE_SEC = float(os.environ.get("GEMINI_RETRY_BASE_SEC", "1.0"))
 _GEMINI_RETRY_CAP_SEC = float(os.environ.get("GEMINI_RETRY_CAP_SEC", "30.0"))
 _GEMINI_RETRY_STATUSES = (429, 500, 502, 503, 504)
+_GEMINI_CB_THRESHOLD = int(os.environ.get("GEMINI_CB_THRESHOLD", "5"))
+_GEMINI_CB_COOLDOWN_SEC = float(os.environ.get("GEMINI_CB_COOLDOWN_SEC", "60"))
+_GEMINI_CB_LOCK = Lock()
+_GEMINI_CB_STATE = {"failures": 0, "open_until": 0.0}
 
 
 def _gemini_backoff_delay(attempt, retry_after=None):
@@ -9970,6 +9974,25 @@ def _gemini_backoff_delay(attempt, retry_after=None):
     if retry_after:
         delay = max(delay, float(retry_after))
     return min(delay, _GEMINI_RETRY_CAP_SEC)
+
+
+def _gemini_cb_remaining():
+    with _GEMINI_CB_LOCK:
+        return max(0.0, _GEMINI_CB_STATE["open_until"] - time.time())
+
+
+def _gemini_cb_record_failure():
+    with _GEMINI_CB_LOCK:
+        _GEMINI_CB_STATE["failures"] += 1
+        if _GEMINI_CB_STATE["failures"] >= _GEMINI_CB_THRESHOLD:
+            _GEMINI_CB_STATE["open_until"] = time.time() + _GEMINI_CB_COOLDOWN_SEC
+            _GEMINI_CB_STATE["failures"] = 0
+
+
+def _gemini_cb_record_success():
+    with _GEMINI_CB_LOCK:
+        _GEMINI_CB_STATE["failures"] = 0
+        _GEMINI_CB_STATE["open_until"] = 0.0
 
 
 def _gemini_post(url, payload, headers, timeout=60):
@@ -9985,6 +10008,10 @@ def _gemini_post(url, payload, headers, timeout=60):
 
 
 def _run_agent_gemini(history):
+    cb_wait = _gemini_cb_remaining()
+    if cb_wait > 0:
+        raise _GeminiRateLimitError(int(cb_wait) + 1)
+
     api_key = os.environ["GEMINI_API_KEY"]
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -10017,10 +10044,15 @@ def _run_agent_gemini(history):
             resp = _gemini_post(url, payload, headers, timeout=60)
             if resp.status_code not in _GEMINI_RETRY_STATUSES:
                 break
+            server_hint = _gemini_parse_retry_after(resp)
             if attempt == _GEMINI_RETRY_MAX_ATTEMPTS - 1:
-                retry_after = _gemini_parse_retry_after(resp) or 30
-                raise _GeminiRateLimitError(retry_after)
-            time.sleep(_gemini_backoff_delay(attempt, _gemini_parse_retry_after(resp)))
+                _gemini_cb_record_failure()
+                raise _GeminiRateLimitError(server_hint or 30)
+            delay = _gemini_backoff_delay(attempt, server_hint)
+            print(f"Gemini {resp.status_code}; retry {attempt + 1}/{_GEMINI_RETRY_MAX_ATTEMPTS - 1} in {delay:.1f}s")
+            time.sleep(delay)
+        if resp.status_code == 200:
+            _gemini_cb_record_success()
         resp.raise_for_status()
         data = resp.json()
 
@@ -10112,7 +10144,9 @@ def _agent_throttle_check(ip):
 
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
-    if not os.environ.get("GEMINI_API_KEY"):
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
+    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    if not (has_gemini or has_anthropic):
         return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
 
     data = request.get_json(silent=True) or {}
@@ -10146,7 +10180,15 @@ def agent_query_route():
             "retryAfter": 10,
         }), 429
     try:
-        reply = _run_agent_gemini(history)
+        if has_gemini:
+            try:
+                reply = _run_agent_gemini(history)
+                return jsonify({"response": reply})
+            except _GeminiRateLimitError as e:
+                if not has_anthropic:
+                    raise
+                print(f"Gemini rate-limited (retry_after={e.retry_after}s); falling back to Anthropic")
+        reply = _run_agent(history)
         return jsonify({"response": reply})
     except _GeminiRateLimitError as e:
         retry_after = int(getattr(e, "retry_after", 30) or 30)
