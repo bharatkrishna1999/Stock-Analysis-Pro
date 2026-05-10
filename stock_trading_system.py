@@ -5025,9 +5025,9 @@ def dashboard():
         </div>
         <div id="ai-tab" class="tab-content">
             <div class="ai-hero">
-                <div class="ai-pill">&#10024; Powered by Claude Sonnet</div>
+                <div class="ai-pill">&#10024; Powered by Groq AI</div>
                 <h1>AI Research Assistant</h1>
-                <p>Ask anything about NSE stocks. The assistant pulls live verdicts, DCF valuations, technicals, dividends and market correlation from this platform before answering &mdash; no fabricated numbers.</p>
+                <p>Ask anything about NSE stocks. The assistant automatically runs all analyses &mdash; verdict, DCF valuation, technicals, dividends, and market correlation &mdash; and explains everything in plain English.</p>
             </div>
             <div class="ai-shell">
                 <div class="ai-suggest-row">
@@ -9582,7 +9582,7 @@ def alerts_scan_now_route():
     return jsonify({'ok': True, 'results': results})
 
 
-# ── Claude Sonnet AI Research Assistant ──────────────────────────────────────
+# ── Groq AI Research Assistant ───────────────────────────────────────────────
 
 _AGENT_SYSTEM_PROMPT = """You are a stock research assistant for Stock Analysis Pro, an NSE equity research platform. Your audience is everyday investors who may not have a finance background, so your job is to make professional-grade analysis easy to understand.
 
@@ -9590,18 +9590,17 @@ You have live data tools covering DCF valuation, technical signals, investment v
 
 Data rules:
 - Always call the relevant tool before answering any stock-specific question. Never fabricate numbers.
-- When asked about a specific stock, default to calling get_investment_verdict AND get_company_news in parallel first. The numbers tell you what the stock is doing; the news tells you why and surfaces event-driven context (demergers, lawsuits, management changes, regulatory actions, earnings surprises) that the financial-ratio tools cannot see.
-- Pull additional tools (DCF, technicals, dividends, correlation) when the user's question needs that depth.
-- If get_company_news returns a relevant headline (e.g. a demerger, fraud probe, big order win), call it out explicitly in the verdict and the "What this means for you" section — these qualitative events often matter more than the ratios.
+- When asked about a specific stock, ALWAYS run ALL of these tools in sequence: get_investment_verdict, get_technical_signals, get_dcf_valuation, get_dividend_analysis, get_market_correlation, AND get_company_news. Every tab's data contributes to a complete picture — never skip any of them for a stock question.
+- If get_company_news returns a relevant headline (e.g. a demerger, fraud probe, big order win), call it out explicitly — these qualitative events often matter more than the ratios.
 - For general or educational questions, answer directly without tool calls.
 
 Response style (write for a non-finance reader):
 1. Start with a one-line plain-English verdict (e.g. "Looks like a reasonable buy right now" or "Looks expensive — better to wait").
-2. Then a short "Key numbers" section with 3-5 bullets. For each number, show the value AND a quick parenthetical explanation of what it means in everyday terms (e.g. "RSI 72 (momentum is hot — stock has been rallying fast, may be due for a pause)", "Margin of safety -15% (price is about 15% above what the model thinks it's truly worth)").
+2. Then a short "Key numbers" section with 4-6 bullets covering all dimensions: momentum, valuation, dividends, and market link. For each number, show the value AND a quick parenthetical explanation of what it means in everyday terms (e.g. "RSI 72 (momentum is hot — stock has been rallying fast, may be due for a pause)", "Margin of safety -15% (price is about 15% above what the model thinks it's truly worth)").
 3. Then a short "What this means for you" section in 2-3 sentences of plain English — no jargon. Translate the data into a practical takeaway.
 4. The first time you use any technical term (DCF, RSI, MACD, beta, HSIC, payout ratio, intrinsic value, margin of safety, etc.), add a brief plain-English gloss in parentheses.
 5. Avoid finance jargon walls. Prefer "the stock is moving up faster than usual" over "bullish momentum divergence".
-6. Keep the whole reply tight — aim for under ~180 words unless the user explicitly asks for a deep dive.
+6. Keep the whole reply tight — aim for under ~220 words unless the user explicitly asks for a deep dive.
 7. Do not repeat financial-advice disclaimers on every message. One short reminder at the end is fine when giving a buy/sell view.
 8. Be warm and clear, not stiff. No filler, no hedging fluff."""
 
@@ -9926,161 +9925,103 @@ def _agent_dispatch_tool(name, inputs):
     return {"error": f"Unknown tool: {name}"}
 
 
-class _GeminiRateLimitError(Exception):
+class _GroqRateLimitError(Exception):
     def __init__(self, retry_after):
-        super().__init__("Gemini rate limit")
+        super().__init__("Groq rate limit")
         self.retry_after = retry_after
 
 
-def _gemini_parse_retry_after(resp):
-    try:
-        body = resp.json() or {}
-    except Exception:
-        body = {}
-    err = body.get("error") or {}
-    for d in err.get("details") or []:
-        delay = d.get("retryDelay")
-        if isinstance(delay, str) and delay.endswith("s"):
-            try:
-                return max(1, int(float(delay[:-1])))
-            except ValueError:
-                pass
-    ra = resp.headers.get("Retry-After")
-    if ra:
-        try:
-            return max(1, int(float(ra)))
-        except ValueError:
-            pass
-    return None
+_GROQ_RETRY_STATUSES = (429, 500, 502, 503, 504)
+_GROQ_RETRY_MAX_ATTEMPTS = 5
+_GROQ_RETRY_BASE_SEC = 1.0
+_GROQ_RETRY_CAP_SEC = 30.0
 
 
-_GEMINI_API_LOCK = Lock()
-_GEMINI_API_LAST_CALL = [0.0]
-_GEMINI_MIN_GAP_SEC = float(os.environ.get("GEMINI_MIN_GAP_SEC", "1.0"))
-_GEMINI_RETRY_MAX_ATTEMPTS = int(os.environ.get("GEMINI_RETRY_MAX_ATTEMPTS", "5"))
-_GEMINI_RETRY_BASE_SEC = float(os.environ.get("GEMINI_RETRY_BASE_SEC", "1.0"))
-_GEMINI_RETRY_CAP_SEC = float(os.environ.get("GEMINI_RETRY_CAP_SEC", "30.0"))
-_GEMINI_RETRY_STATUSES = (429, 500, 502, 503, 504)
-
-
-def _gemini_backoff_delay(attempt, retry_after=None):
-    # Truncated exponential backoff with full jitter; honor server hint as a floor.
-    capped = min(_GEMINI_RETRY_CAP_SEC, _GEMINI_RETRY_BASE_SEC * (2 ** attempt))
+def _groq_backoff_delay(attempt, retry_after=None):
+    capped = min(_GROQ_RETRY_CAP_SEC, _GROQ_RETRY_BASE_SEC * (2 ** attempt))
     delay = random.uniform(0, capped)
     if retry_after:
         delay = max(delay, float(retry_after))
-    return min(delay, _GEMINI_RETRY_CAP_SEC)
+    return min(delay, _GROQ_RETRY_CAP_SEC)
 
 
-def _gemini_post(url, payload, headers, timeout=60):
-    import requests
-    with _GEMINI_API_LOCK:
-        gap = _GEMINI_MIN_GAP_SEC - (time.time() - _GEMINI_API_LAST_CALL[0])
-        if gap > 0:
-            time.sleep(gap)
-        try:
-            return requests.post(url, json=payload, headers=headers, timeout=timeout)
-        finally:
-            _GEMINI_API_LAST_CALL[0] = time.time()
+def _run_agent_groq(history):
+    import requests as _requests
+    api_key = os.environ["GROQ_API_KEY"]
+    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
-
-def _run_agent_gemini(history):
-    api_key = os.environ["GEMINI_API_KEY"]
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
-
-    function_decls = [
+    tools = [
         {
-            "name": t["name"],
-            "description": t["description"],
-            "parameters": t["input_schema"],
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t["description"],
+                "parameters": t["input_schema"],
+            },
         }
         for t in _AGENT_TOOLS
     ]
 
-    contents = []
+    messages = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
     for msg in history:
-        role = "user" if msg["role"] == "user" else "model"
-        contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        messages.append({"role": msg["role"], "content": msg["content"]})
 
-    max_turns = 6
+    max_turns = 10
     for _ in range(max_turns):
         payload = {
-            "system_instruction": {"parts": [{"text": _AGENT_SYSTEM_PROMPT}]},
-            "contents": contents,
-            "tools": [{"function_declarations": function_decls}],
-            "generationConfig": {"maxOutputTokens": 1024},
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "max_tokens": 1500,
         }
+
         resp = None
-        for attempt in range(_GEMINI_RETRY_MAX_ATTEMPTS):
-            resp = _gemini_post(url, payload, headers, timeout=60)
-            if resp.status_code not in _GEMINI_RETRY_STATUSES:
+        for attempt in range(_GROQ_RETRY_MAX_ATTEMPTS):
+            resp = _requests.post(url, json=payload, headers=headers, timeout=60)
+            if resp.status_code not in _GROQ_RETRY_STATUSES:
                 break
-            if attempt == _GEMINI_RETRY_MAX_ATTEMPTS - 1:
-                retry_after = _gemini_parse_retry_after(resp) or 30
-                raise _GeminiRateLimitError(retry_after)
-            time.sleep(_gemini_backoff_delay(attempt, _gemini_parse_retry_after(resp)))
+            retry_after = None
+            try:
+                ra = resp.headers.get("Retry-After") or (resp.json().get("error") or {}).get("retry_after")
+                retry_after = max(1, int(float(ra))) if ra else None
+            except Exception:
+                pass
+            if attempt == _GROQ_RETRY_MAX_ATTEMPTS - 1:
+                raise _GroqRateLimitError(retry_after or 30)
+            time.sleep(_groq_backoff_delay(attempt, retry_after))
+
         resp.raise_for_status()
         data = resp.json()
 
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return "No response generated."
-        parts = candidates[0].get("content", {}).get("parts", []) or []
+        choice = data["choices"][0]
+        assistant_msg = choice["message"]
+        finish_reason = choice.get("finish_reason")
 
-        function_calls = [p["functionCall"] for p in parts if "functionCall" in p]
-        if not function_calls:
-            text_parts = [p.get("text", "") for p in parts if "text" in p]
-            joined = "".join(text_parts).strip()
-            return joined or "No response generated."
+        if finish_reason != "tool_calls":
+            return assistant_msg.get("content") or "No response generated."
 
-        contents.append({"role": "model", "parts": parts})
-        tool_response_parts = []
-        for fc in function_calls:
-            result = _agent_dispatch_tool(fc.get("name", ""), fc.get("args", {}) or {})
+        messages.append(assistant_msg)
+        tool_calls = assistant_msg.get("tool_calls") or []
+        for tc in tool_calls:
+            fn = tc.get("function", {})
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            result = _agent_dispatch_tool(fn.get("name", ""), args)
             if not isinstance(result, dict):
                 result = {"result": result}
-            tool_response_parts.append({
-                "functionResponse": {
-                    "name": fc.get("name", ""),
-                    "response": result,
-                }
-            })
-        contents.append({"role": "user", "parts": tool_response_parts})
-
-    return "Reached tool-call limit without final answer. Please rephrase or narrow the question."
-
-
-def _run_agent(history):
-    import anthropic
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    messages = list(history)
-    max_turns = 6
-
-    for _ in range(max_turns):
-        response = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1024,
-            system=_AGENT_SYSTEM_PROMPT,
-            tools=_AGENT_TOOLS,
-            messages=messages,
-        )
-        if response.stop_reason != "tool_use":
-            text_blocks = [b for b in response.content if hasattr(b, "text")]
-            return text_blocks[0].text if text_blocks else "No response generated."
-
-        tool_uses = [b for b in response.content if getattr(b, "type", None) == "tool_use"]
-        tool_results = []
-        for block in tool_uses:
-            result = _agent_dispatch_tool(block.name, block.input)
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
                 "content": json.dumps(result),
             })
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": tool_results})
 
     return "Reached tool-call limit without final answer. Please rephrase or narrow the question."
 
@@ -10112,7 +10053,7 @@ def _agent_throttle_check(ip):
 
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
-    if not os.environ.get("GEMINI_API_KEY"):
+    if not os.environ.get("GROQ_API_KEY"):
         return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
 
     data = request.get_json(silent=True) or {}
@@ -10146,9 +10087,9 @@ def agent_query_route():
             "retryAfter": 10,
         }), 429
     try:
-        reply = _run_agent_gemini(history)
+        reply = _run_agent_groq(history)
         return jsonify({"response": reply})
-    except _GeminiRateLimitError as e:
+    except _GroqRateLimitError as e:
         retry_after = int(getattr(e, "retry_after", 30) or 30)
         resp = jsonify({
             "error": f"AI assistant is rate-limited upstream. Try again in {retry_after}s.",
