@@ -5039,7 +5039,6 @@ def dashboard():
                 <div class="ai-chat-card">
                     <div class="ai-chat-header">
                         <div class="ai-chat-title"><span class="ai-status-dot"></span> Live Research Session</div>
-                        <div class="ai-rate-tag" id="ai-rate-tag">15 queries remaining today</div>
                     </div>
                     <div class="ai-messages" id="ai-messages">
                         <div class="ai-msg agent">Welcome. I can pull live data for any of the 292 NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
@@ -7854,28 +7853,11 @@ def dashboard():
         });
 
         // ── AI Assistant tab ─────────────────────────────────────────────
-        const AI_MAX_QUERIES = 15;
-        const AI_STORAGE_KEY = 'ai_agent_queries_v2';
         let aiHistory = [];
         let aiSending = false;
         let aiCooldownUntil = 0;
         let aiCooldownTimer = null;
 
-        function aiGetCount() {
-            try { return parseInt(sessionStorage.getItem(AI_STORAGE_KEY), 10) || 0; }
-            catch(e) { return 0; }
-        }
-        function aiBumpCount() {
-            try { sessionStorage.setItem(AI_STORAGE_KEY, String(aiGetCount() + 1)); }
-            catch(e) {}
-        }
-        function aiUpdateRate() {
-            const t = document.getElementById('ai-rate-tag');
-            if (!t) return;
-            const left = Math.max(0, AI_MAX_QUERIES - aiGetCount());
-            t.textContent = left + ' queries remaining today';
-            t.style.color = left <= 3 ? 'var(--danger)' : 'var(--text-muted)';
-        }
         function aiAppend(role, text) {
             const box = document.getElementById('ai-messages');
             if (!box) return null;
@@ -7925,10 +7907,6 @@ def dashboard():
             if (!inp) return;
             const message = inp.value.trim();
             if (!message) return;
-            if (aiGetCount() >= AI_MAX_QUERIES) {
-                aiAppend('error', 'Daily limit of ' + AI_MAX_QUERIES + ' queries reached.');
-                return;
-            }
             inp.value = '';
             aiAppend('user', message);
             aiHistory.push({ role: 'user', content: message });
@@ -7955,7 +7933,6 @@ def dashboard():
                         aiStartCooldown(ra, errEl);
                     }
                 } else {
-                    aiBumpCount();
                     const reply = data.response || '(empty response)';
                     aiAppend('agent', reply);
                     aiHistory.push({ role: 'assistant', content: reply });
@@ -7969,7 +7946,6 @@ def dashboard():
                 const onCooldown = Date.now() < aiCooldownUntil;
                 if (sendBtn) sendBtn.disabled = onCooldown;
                 inp.disabled = onCooldown;
-                aiUpdateRate();
                 if (!onCooldown) inp.focus();
             }
         }
@@ -7978,7 +7954,6 @@ def dashboard():
             if (inp) inp.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSendQuery(); }
             });
-            aiUpdateRate();
         });
     </script>
 </body>
@@ -9584,25 +9559,42 @@ def alerts_scan_now_route():
 
 # ── Groq AI Research Assistant ───────────────────────────────────────────────
 
-_AGENT_SYSTEM_PROMPT = """You are a stock research assistant for Stock Analysis Pro, an NSE equity research platform. Your audience is everyday investors who may not have a finance background, so your job is to make professional-grade analysis easy to understand.
+_AGENT_SYSTEM_PROMPT = """You are the AI research assistant for Stock Analysis Pro, an NSE equity research platform. Your audience is everyday investors, so explain professional-grade analysis in plain English.
 
-You have live data tools covering DCF valuation, technical signals, investment verdicts, dividend analysis, market correlation, a recent-news feed (get_company_news), and a universe scanner across 500+ NSE stocks.
+CONVERSATION SCOPE (very important)
+- Answer ONLY the user's most recent question. Treat every new question as independent.
+- Do NOT bring in companies, tickers, news, or numbers from earlier turns unless the user explicitly references them in the current question.
+- Never pad an answer with leftover context from a previous query. If the new question is about oil, do not mention IT services. If it's about Saudi Arabia, do not mention Infosys.
+- For follow-ups ("tell me more", "what about its dividend?"), use prior turns only to identify the subject — then pull fresh data with tools.
 
-Data rules:
-- Always call the relevant tool before answering any stock-specific question. Never fabricate numbers.
-- When asked about a specific stock, ALWAYS run ALL of these tools in sequence: get_investment_verdict, get_technical_signals, get_dcf_valuation, get_dividend_analysis, get_market_correlation, AND get_company_news. Every tab's data contributes to a complete picture — never skip any of them for a stock question.
-- If get_company_news returns a relevant headline (e.g. a demerger, fraud probe, big order win), call it out explicitly — these qualitative events often matter more than the ratios.
-- For general or educational questions, answer directly without tool calls.
+WHEN TO CALL TOOLS (be precise — don't over-fetch)
+- "Should I buy/sell X", "what do you think of X", full analysis of X → call get_investment_verdict, get_dcf_valuation, get_technical_signals, get_dividend_analysis, get_market_correlation, AND get_company_news.
+- "News on X", "what's happening with X", "any updates on X" → call ONLY get_company_news.
+- "Price of X", "CMP of X", "where is X trading" → call ONLY get_investment_verdict (it includes the live price). Do NOT invent prices.
+- "Compare X and Y" → call get_investment_verdict for both, plus the specific dimension(s) the user asked about.
+- "Find undervalued / high-dividend / momentum stocks" → call scan_universe.
+- General/educational questions ("what is RSI?", "how does DCF work?") → answer directly, no tools.
+- Macro/sector/commodity questions without a specific ticker (oil prices, Fed rates, geopolitics) → answer in plain English, no tools. If the user also asks for prices of specific stocks, call get_investment_verdict for each ticker.
+- Never fabricate numbers, prices, or news. If a tool returns no data or fails, say so plainly instead of guessing.
 
-Response style (write for a non-finance reader):
-1. Start with a one-line plain-English verdict (e.g. "Looks like a reasonable buy right now" or "Looks expensive — better to wait").
-2. Then a short "Key numbers" section with 4-6 bullets covering all dimensions: momentum, valuation, dividends, and market link. For each number, show the value AND a quick parenthetical explanation of what it means in everyday terms (e.g. "RSI 72 (momentum is hot — stock has been rallying fast, may be due for a pause)", "Margin of safety -15% (price is about 15% above what the model thinks it's truly worth)").
-3. Then a short "What this means for you" section in 2-3 sentences of plain English — no jargon. Translate the data into a practical takeaway.
-4. The first time you use any technical term (DCF, RSI, MACD, beta, HSIC, payout ratio, intrinsic value, margin of safety, etc.), add a brief plain-English gloss in parentheses.
-5. Avoid finance jargon walls. Prefer "the stock is moving up faster than usual" over "bullish momentum divergence".
-6. Keep the whole reply tight — aim for under ~220 words unless the user explicitly asks for a deep dive.
-7. Do not repeat financial-advice disclaimers on every message. One short reminder at the end is fine when giving a buy/sell view.
-8. Be warm and clear, not stiff. No filler, no hedging fluff."""
+DATA SOURCES (when asked)
+- Live market prices and fundamentals come from Yahoo Finance via yfinance.
+- News headlines come from GNews.
+- DCF valuations, technical signals, dividend sustainability, and Nifty correlation are computed in-house on top of that data.
+- Coverage: 500+ NSE-listed stocks.
+- Do NOT list internal function names. Describe sources in user-friendly terms.
+
+RESPONSE STYLE
+1. Open with a direct one-line takeaway. Be confident and plain — skip hedging openers like "Looks like" or "It seems". Examples: "TCS is fairly valued; momentum is cooling — a hold for now." or "ONGC is trading at ₹156.10."
+2. For data-driven answers, follow with a tight "Key numbers" section: 3-5 bullets, only the dimensions you actually pulled. Each bullet shows the value plus a short parenthetical translation in everyday terms (e.g. "RSI 72 (momentum is hot — stock has been rallying fast, may be due for a pause)", "Margin of safety -15% (price is ~15% above what the model thinks it's worth)").
+3. Close with "What this means for you" — 2-3 sentences of practical takeaway, grounded ONLY in the numbers you just showed. Do not introduce unrelated companies or topics here.
+4. The first time you use a technical term (DCF, RSI, MACD, beta, HSIC, payout ratio, intrinsic value, margin of safety), add a brief plain-English gloss in parentheses.
+5. Prefer "the stock has been moving up fast" over "bullish momentum divergence".
+6. For news-only questions, skip the "Key numbers" structure — just summarise the headlines in 2-4 short bullets, then a one-line takeaway.
+7. For pure-price questions, one or two sentences is enough. Don't pad.
+8. Stay tight: under ~220 words unless the user asks for a deep dive.
+9. One short risk reminder at the end is fine for buy/sell views — don't repeat it on every message.
+10. Be warm and clear. No filler, no boilerplate disclaimers, no hedging fluff."""
 
 _AGENT_TOOLS = [
     {
@@ -10074,11 +10066,11 @@ def agent_query_route():
 
     raw_history = data.get("history") or []
     history = []
-    for turn in raw_history[-12:]:
+    for turn in raw_history[-4:]:
         role = turn.get("role")
         content = turn.get("content")
         if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-            history.append({"role": role, "content": content[:4000]})
+            history.append({"role": role, "content": content[:2000]})
     history.append({"role": "user", "content": message[:4000]})
 
     if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
