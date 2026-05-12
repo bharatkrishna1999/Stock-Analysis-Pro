@@ -4750,10 +4750,33 @@ def dashboard():
         .ai-messages::-webkit-scrollbar { width:6px; }
         .ai-messages::-webkit-scrollbar-track { background:transparent; }
         .ai-messages::-webkit-scrollbar-thumb { background:var(--border-color); border-radius:3px; }
-        .ai-msg { max-width:78%; padding:12px 16px; border-radius:14px; font-size:0.92em; line-height:1.6; word-break:break-word; white-space:pre-wrap; }
-        .ai-msg.user { align-self:flex-end; background:rgba(201,168,76,0.18); color:var(--text-primary); border:1px solid rgba(201,168,76,0.28); border-bottom-right-radius:4px; }
-        .ai-msg.agent { align-self:flex-start; background:var(--bg-card-hover,rgba(255,255,255,0.04)); color:var(--text-primary); border:1px solid var(--border-color); border-bottom-left-radius:4px; }
-        .ai-msg.agent.streaming::after { content:'▋'; display:inline-block; animation:ai-blink .7s step-end infinite; margin-left:2px; }
+        .ai-msg { max-width:80%; padding:13px 17px; border-radius:16px; font-size:0.92em; line-height:1.6; word-break:break-word; }
+        .ai-msg.user { align-self:flex-end; background:linear-gradient(135deg, rgba(201,168,76,0.22), rgba(201,168,76,0.14)); color:var(--text-primary); border:1px solid rgba(201,168,76,0.32); border-bottom-right-radius:5px; white-space:pre-wrap; box-shadow:0 2px 8px rgba(201,168,76,0.08); }
+        .ai-msg.agent { align-self:flex-start; background:var(--bg-card-hover,rgba(255,255,255,0.04)); color:var(--text-primary); border:1px solid var(--border-color); border-bottom-left-radius:5px; box-shadow:0 2px 8px rgba(0,0,0,0.12); }
+        .ai-msg.agent.streaming::after { content:'▋'; display:inline-block; animation:ai-blink .7s step-end infinite; margin-left:2px; color:var(--accent-gold); }
+        .ai-msg.agent > *:first-child { margin-top:0; }
+        .ai-msg.agent > *:last-child { margin-bottom:0; }
+        .ai-msg.agent p { margin:0 0 10px; }
+        .ai-msg.agent h1, .ai-msg.agent h2, .ai-msg.agent h3, .ai-msg.agent h4 { font-family:'Space Grotesk',sans-serif; font-weight:700; color:var(--text-primary); margin:16px 0 8px; line-height:1.25; letter-spacing:-0.01em; }
+        .ai-msg.agent h1 { font-size:1.18em; padding-bottom:6px; border-bottom:1px solid var(--border-color); }
+        .ai-msg.agent h2 { font-size:1.08em; color:var(--accent-gold); }
+        .ai-msg.agent h3 { font-size:1.0em; color:var(--accent-gold); }
+        .ai-msg.agent h4 { font-size:0.94em; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.04em; }
+        .ai-msg.agent ul, .ai-msg.agent ol { margin:6px 0 12px; padding-left:22px; }
+        .ai-msg.agent li { margin:4px 0; padding-left:2px; }
+        .ai-msg.agent li::marker { color:var(--accent-gold); }
+        .ai-msg.agent ul ul, .ai-msg.agent ol ol, .ai-msg.agent ul ol, .ai-msg.agent ol ul { margin:4px 0; }
+        .ai-msg.agent strong { color:var(--text-primary); font-weight:700; }
+        .ai-msg.agent em { color:var(--text-secondary); font-style:italic; }
+        .ai-msg.agent code { background:rgba(255,255,255,0.06); border:1px solid var(--border-color); padding:1px 6px; border-radius:5px; font-size:0.86em; font-family:'JetBrains Mono','SF Mono',Menlo,monospace; color:var(--accent-gold); }
+        .ai-msg.agent pre { background:rgba(0,0,0,0.28); border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; overflow-x:auto; margin:8px 0; }
+        .ai-msg.agent pre code { background:transparent; border:none; padding:0; color:var(--text-primary); font-size:0.84em; line-height:1.5; }
+        .ai-msg.agent hr { border:none; border-top:1px solid var(--border-color); margin:12px 0; }
+        .ai-msg.agent blockquote { border-left:3px solid var(--accent-gold); margin:8px 0; padding:2px 12px; color:var(--text-secondary); background:rgba(201,168,76,0.06); border-radius:0 6px 6px 0; }
+        .ai-msg.agent a { color:var(--accent-gold); text-decoration:underline; text-underline-offset:2px; }
+        .ai-msg.agent table { border-collapse:collapse; margin:8px 0; font-size:0.88em; width:100%; }
+        .ai-msg.agent th, .ai-msg.agent td { border:1px solid var(--border-color); padding:6px 10px; text-align:left; }
+        .ai-msg.agent th { background:rgba(255,255,255,0.04); font-weight:700; }
         @keyframes ai-blink { 0%,100%{opacity:1} 50%{opacity:0} }
         .ai-msg.error { align-self:flex-start; background:rgba(239,68,68,0.1); color:var(--danger); border:1px solid rgba(239,68,68,0.25); border-bottom-left-radius:4px; }
         .ai-msg.thinking { align-self:flex-start; color:var(--text-muted); font-style:italic; background:transparent; border:none; padding:6px 4px; }
@@ -7929,12 +7952,109 @@ def dashboard():
         let aiCooldownUntil = 0;
         let aiCooldownTimer = null;
 
+        function aiEscapeHtml(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        }
+        function aiRenderInline(s) {
+            let t = aiEscapeHtml(s);
+            // inline code first so its content isn't touched by bold/italic
+            t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // bold **text**
+            t = t.replace(/\\*\\*([^*\\n]+?)\\*\\*/g, '<strong>$1</strong>');
+            // italic *text* (must not be inside ** which is already replaced)
+            t = t.replace(/(^|[^*\\w])\\*([^*\\n]+?)\\*(?!\\*)/g, '$1<em>$2</em>');
+            // links [text](url) — only http(s)
+            t = t.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+            return t;
+        }
+        function aiRenderMarkdown(text) {
+            if (!text) return '';
+            const lines = String(text).replace(/\\r\\n/g,'\\n').split('\\n');
+            const out = [];
+            const listStack = []; // [{type, indent}]
+            let inCode = false;
+            let codeBuf = [];
+            let paraBuf = [];
+            const flushPara = () => {
+                if (paraBuf.length) {
+                    out.push('<p>' + aiRenderInline(paraBuf.join(' ')) + '</p>');
+                    paraBuf = [];
+                }
+            };
+            const closeListsTo = (indent) => {
+                while (listStack.length && listStack[listStack.length-1].indent >= indent) {
+                    out.push('</' + listStack.pop().type + '>');
+                }
+            };
+            const closeAllLists = () => closeListsTo(-1);
+            for (let i = 0; i < lines.length; i++) {
+                const raw = lines[i];
+                if (inCode) {
+                    if (/^\\s*```/.test(raw)) {
+                        out.push('<pre><code>' + aiEscapeHtml(codeBuf.join('\\n')) + '</code></pre>');
+                        codeBuf = []; inCode = false;
+                    } else {
+                        codeBuf.push(raw);
+                    }
+                    continue;
+                }
+                if (/^\\s*```/.test(raw)) { flushPara(); closeAllLists(); inCode = true; continue; }
+                if (raw.trim() === '') { flushPara(); closeAllLists(); continue; }
+                const h = raw.match(/^\\s*(#{1,6})\\s+(.+?)\\s*#*\\s*$/);
+                if (h) {
+                    flushPara(); closeAllLists();
+                    const lvl = Math.min(h[1].length, 4);
+                    out.push('<h' + lvl + '>' + aiRenderInline(h[2]) + '</h' + lvl + '>');
+                    continue;
+                }
+                if (/^\\s*(-{3,}|\\*{3,}|_{3,})\\s*$/.test(raw)) {
+                    flushPara(); closeAllLists(); out.push('<hr>'); continue;
+                }
+                const bq = raw.match(/^\\s*>\\s?(.*)$/);
+                if (bq) {
+                    flushPara(); closeAllLists();
+                    out.push('<blockquote>' + aiRenderInline(bq[1]) + '</blockquote>');
+                    continue;
+                }
+                const indent = (raw.match(/^(\\s*)/)[1] || '').length;
+                const trimmed = raw.slice(indent);
+                const ul = trimmed.match(/^[-*+]\\s+(.+)$/);
+                const ol = trimmed.match(/^\\d+\\.\\s+(.+)$/);
+                if (ul || ol) {
+                    flushPara();
+                    const type = ul ? 'ul' : 'ol';
+                    const content = ul ? ul[1] : ol[1];
+                    closeListsTo(indent + 1);
+                    const top = listStack[listStack.length-1];
+                    if (!top || top.indent < indent) {
+                        out.push('<' + type + '>');
+                        listStack.push({ type: type, indent: indent });
+                    } else if (top.type !== type) {
+                        out.push('</' + top.type + '>');
+                        listStack.pop();
+                        out.push('<' + type + '>');
+                        listStack.push({ type: type, indent: indent });
+                    }
+                    out.push('<li>' + aiRenderInline(content) + '</li>');
+                    continue;
+                }
+                if (listStack.length) { closeAllLists(); }
+                paraBuf.push(raw.trim());
+            }
+            flushPara(); closeAllLists();
+            if (inCode) out.push('<pre><code>' + aiEscapeHtml(codeBuf.join('\\n')) + '</code></pre>');
+            return out.join('');
+        }
         function aiAppend(role, text) {
             const box = document.getElementById('ai-messages');
             if (!box) return null;
             const el = document.createElement('div');
             el.className = 'ai-msg ' + role;
-            el.textContent = text;
+            if (role === 'agent') {
+                el.innerHTML = aiRenderMarkdown(text || '');
+            } else {
+                el.textContent = text;
+            }
             box.appendChild(el);
             box.scrollTop = box.scrollHeight;
             return el;
@@ -8083,7 +8203,7 @@ def dashboard():
                                 agentEl.classList.add('streaming');
                             }
                             fullReply += evt.text;
-                            agentEl.textContent = fullReply;
+                            agentEl.innerHTML = aiRenderMarkdown(fullReply);
                             aiScrollBottom();
                         } else if (evt.type === 'done') {
                             if (agentEl) agentEl.classList.remove('streaming');
