@@ -9737,25 +9737,29 @@ _AGENT_SYSTEM_PROMPT = """You are the AI research assistant for Stock Analysis P
 SCOPE: Answer only the current question. Don't carry over tickers, numbers, or news from earlier turns unless the user explicitly references them. For follow-ups, use prior turns only to identify the subject, then pull fresh data.
 
 TOOLS — call only what's needed:
-- Full buy/sell analysis ("should I buy X", "what do you think of X") → call all six tools.
+- Full buy/sell analysis ("should I buy X", "what do you think of X") → call all six per-ticker tools.
 - "News on X" / "what's happening with X" → get_company_news only.
 - "Price of X" / "CMP of X" → get_investment_verdict only (includes live price). Never invent prices.
 - "Compare X and Y" → get_investment_verdict for both + relevant tools.
 - "Find undervalued / momentum / dividend stocks" → scan_universe.
 - Educational or macro questions (no specific ticker) → answer directly, no tools.
-- Never fabricate numbers, prices, or news. If a tool fails, say so plainly.
+- Never fabricate numbers, prices, news, or data about commodities, currencies, or non-NSE assets. If a tool fails or no tool covers the topic, say so plainly.
+
+SILENCE RULES — strict:
+- Never narrate tool use. No "I'll call…", "Let me check…", "Running the tools…", "Based on the data…". Just produce the final answer.
+- No meta-commentary about your reasoning, models, or what you're about to do.
+- When a tool returns a signal (BUY/SELL/HOLD), state it explicitly in your opening line. Don't omit it.
+- If two indicators contradict (e.g. RSI overbought but DCF undervalued), name the contradiction in one sentence — don't pretend it isn't there.
 
 DATA: Yahoo Finance (prices/fundamentals), GNews (news), in-house DCF/technical/dividend/correlation models. 292+ NSE stocks.
 
 RESPONSE FORMAT:
-1. One direct opening line — no hedging openers ("Looks like", "It seems").
+1. One direct opening line — no hedging openers ("Looks like", "It seems"). For buy/sell questions, lead with the verdict signal.
 2. "Key numbers" — 3-5 bullets: value + plain-English gloss in parentheses. E.g. "RSI 72 (momentum is hot — may be due for a pause)".
 3. "What this means for you" — 2-3 practical sentences using only the numbers shown.
 4. Define technical terms first use (DCF, RSI, MACD, beta, margin of safety, etc.).
-5. Under 200 words unless the user asks for a deep dive.
-6. News-only: 2-4 bullet summary + one takeaway line. No "Key numbers" block.
-7. Price-only: 1-2 sentences. Don't pad.
-8. One brief risk reminder on buy/sell views. Don't repeat it every message."""
+5. Hard cap: 200 words. News-only: 2-4 bullets + one takeaway. Price-only: 1-2 sentences. Educational: 3-4 sentences. Do not pad.
+6. One brief risk reminder ONLY on buy/sell views. Never include it on price-only, news-only, or educational replies."""
 
 _AGENT_TOOLS = [
     {
@@ -10112,11 +10116,34 @@ def _tool_thinking_label(name, args):
     return template.replace(" for {ticker}", "").replace("{ticker}", "")
 
 
-def _groq_build_tools():
+def _groq_build_tools(exclude=None):
+    exclude = exclude or set()
     return [
         {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
         for t in _AGENT_TOOLS
+        if t["name"] not in exclude
     ]
+
+
+# Keywords that legitimately need the universe scanner. Anything else is a
+# ticker-specific question and shipping scan_universe to the model just wastes
+# context tokens and tempts wasteful scan calls.
+_SCAN_KEYWORDS = (
+    "scan", "screen", "find ", "list ", "show me ", "top ",
+    "best ", "stocks to ", "undervalued stocks", "high dividend",
+    "momentum stocks", "dividend stocks", "cheap stocks",
+    "which stocks", "what stocks", "give me stocks",
+)
+
+
+def _tools_for_message(message):
+    """Return the tool set tailored to the user's latest message. Drops
+    scan_universe for ticker-specific questions so the model isn't tempted to
+    issue a universe scan when answering 'should I buy TCS?'."""
+    msg = (message or "").lower()
+    if any(kw in msg for kw in _SCAN_KEYWORDS):
+        return _groq_build_tools()
+    return _groq_build_tools(exclude={"scan_universe"})
 
 
 def _groq_make_request(url, headers, payload, stream=False):
@@ -10199,6 +10226,49 @@ def _enabled_providers():
     return [p for p in _AGENT_PROVIDERS if (os.environ.get(p["api_key_env"]) or "").strip()]
 
 
+# ── Token usage metrics (in-memory, reset on process restart) ────────────────
+# Captured from the `usage` field that OpenAI-compatible providers emit when
+# stream_options.include_usage=true. Aggregates total + per-provider counters
+# so /api/agent/metrics can surface real numbers instead of estimates.
+
+_AGENT_METRICS_LOCK = Lock()
+_AGENT_METRICS = {
+    "requests": 0,
+    "cache_hits": 0,
+    "prompt_tokens": 0,
+    "completion_tokens": 0,
+    "total_tokens": 0,
+    "by_provider": {},
+}
+
+
+def _metrics_record_cache_hit():
+    with _AGENT_METRICS_LOCK:
+        _AGENT_METRICS["requests"] += 1
+        _AGENT_METRICS["cache_hits"] += 1
+
+
+def _metrics_record_usage(provider_name, usage):
+    if not isinstance(usage, dict):
+        return
+    pt = int(usage.get("prompt_tokens") or 0)
+    ct = int(usage.get("completion_tokens") or 0)
+    tt = int(usage.get("total_tokens") or (pt + ct))
+    with _AGENT_METRICS_LOCK:
+        _AGENT_METRICS["requests"] += 1
+        _AGENT_METRICS["prompt_tokens"] += pt
+        _AGENT_METRICS["completion_tokens"] += ct
+        _AGENT_METRICS["total_tokens"] += tt
+        bucket = _AGENT_METRICS["by_provider"].setdefault(
+            provider_name,
+            {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        )
+        bucket["requests"] += 1
+        bucket["prompt_tokens"] += pt
+        bucket["completion_tokens"] += ct
+        bucket["total_tokens"] += tt
+
+
 # ── Response cache (in-memory, TTL-based) ────────────────────────────────────
 # Keyed by normalized question text. Identical questions within TTL skip the
 # entire LLM round trip and re-stream the cached answer. Greatly reduces API
@@ -10275,7 +10345,12 @@ def _run_agent_provider_stream(provider, history):
     url = provider["url"]
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    tools = _groq_build_tools()
+    latest_user_msg = ""
+    for msg in reversed(history):
+        if msg.get("role") == "user":
+            latest_user_msg = msg.get("content") or ""
+            break
+    tools = _tools_for_message(latest_user_msg)
     messages = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
@@ -10288,8 +10363,9 @@ def _run_agent_provider_stream(provider, history):
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
-            "max_tokens": 4096,
+            "max_tokens": 1024,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         try:
             resp = _provider_attempt(url, headers, payload, stream=True)
@@ -10308,6 +10384,7 @@ def _run_agent_provider_stream(provider, history):
         accumulated_content = ""
         accumulated_tool_calls = {}  # index -> {id, name, arguments}
         finish_reason = None
+        turn_usage = None
 
         for raw_line in resp.iter_lines():
             if not raw_line:
@@ -10323,7 +10400,15 @@ def _run_agent_provider_stream(provider, history):
             except Exception:
                 continue
 
-            choice = (chunk.get("choices") or [{}])[0]
+            # Usage chunk: providers that honour stream_options.include_usage
+            # emit a final chunk with usage populated (and choices empty).
+            if chunk.get("usage"):
+                turn_usage = chunk["usage"]
+
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
             delta = choice.get("delta") or {}
             finish_reason = choice.get("finish_reason") or finish_reason
 
@@ -10344,6 +10429,8 @@ def _run_agent_provider_stream(provider, history):
                 fn = tc_delta.get("function") or {}
                 tc["name"] += fn.get("name") or ""
                 tc["arguments"] += fn.get("arguments") or ""
+
+        _metrics_record_usage(provider["name"], turn_usage)
 
         if finish_reason == "stop" or (accumulated_content and not accumulated_tool_calls):
             yield {"type": "done"}
@@ -10412,6 +10499,7 @@ def _run_agent_with_failover_stream(history):
     cache_key = _agent_cache_key(history)
     cached = _agent_cache_get(cache_key)
     if cached:
+        _metrics_record_cache_hit()
         for event in _stream_cached_response(cached):
             yield event
         return
@@ -10598,6 +10686,28 @@ def agent_query_route():
         return jsonify({"error": "Agent request failed. Please try again."}), 500
     finally:
         _AGENT_GLOBAL_SEMAPHORE.release()
+
+
+@app.route("/api/agent/metrics", methods=["GET"])
+def agent_metrics_route():
+    """Aggregate token usage since process start. Numbers come from the
+    provider's own `usage` field, so they reflect actual billed tokens rather
+    than estimates. Resets on every restart — fine for a single-process app."""
+    with _AGENT_METRICS_LOCK:
+        snapshot = {
+            "requests": _AGENT_METRICS["requests"],
+            "cache_hits": _AGENT_METRICS["cache_hits"],
+            "prompt_tokens": _AGENT_METRICS["prompt_tokens"],
+            "completion_tokens": _AGENT_METRICS["completion_tokens"],
+            "total_tokens": _AGENT_METRICS["total_tokens"],
+            "by_provider": {k: dict(v) for k, v in _AGENT_METRICS["by_provider"].items()},
+        }
+    billed = max(snapshot["requests"] - snapshot["cache_hits"], 0)
+    snapshot["avg_prompt_tokens"] = round(snapshot["prompt_tokens"] / billed, 1) if billed else 0
+    snapshot["avg_completion_tokens"] = round(snapshot["completion_tokens"] / billed, 1) if billed else 0
+    snapshot["avg_total_tokens"] = round(snapshot["total_tokens"] / billed, 1) if billed else 0
+    snapshot["cache_hit_rate"] = round(snapshot["cache_hits"] / snapshot["requests"], 3) if snapshot["requests"] else 0
+    return jsonify(snapshot)
 
 
 if __name__ == '__main__':
