@@ -10478,47 +10478,6 @@ def _groq_build_tools(exclude=None):
     ]
 
 
-# Keywords that strongly signal a universe scan. We default to including
-# scan_universe and only drop it when the message clearly references a single
-# ticker context — that way "what stock dropped the most today" or "biggest
-# losers" still gets the tool even though it doesn't say "stocks" plural.
-_SCAN_KEYWORDS = (
-    "scan", "screen", "find ", "list ", "show me ", "top ",
-    "best ", "worst ", "biggest ", "stocks to ", "undervalued",
-    "overvalued", "high dividend", "momentum stocks", "dividend stocks",
-    "cheap stocks", "which stock", "what stock", "give me stocks",
-    "movers", "gainers", "losers", "dropped the most",
-    "gained the most", "fell the most", "rose the most", "lost the most",
-    "high div", "high-div", "high yield", "high-yield", "dividend yield",
-    "div yield", "income stocks", "yield stocks", "dividend payer",
-    "dividend payers", "what do i buy", "what should i buy", "what to buy",
-    "names with", "good picks", "good buys",
-)
-
-
-def _looks_ticker_specific(message):
-    """Heuristic: does the message look like a single-ticker question? We
-    check whether any known ticker symbol or company name appears. If yes,
-    we can omit scan_universe to keep the toolset tight."""
-    msg = (message or "").lower()
-    if not msg:
-        return False
-    try:
-        ticker_set = set(STOCKS.get("Nifty 50", []) + STOCKS.get("Nifty Next 50", []))
-        # Cheap word scan; tickers are short upper-case symbols.
-        words = re.findall(r"[A-Za-z]{3,}", msg)
-        upper_words = {w.upper() for w in words}
-        if ticker_set & upper_words:
-            return True
-        # Company name hits (TICKER_TO_NAME has lowercased names mapped from sym).
-        for sym, name in TICKER_TO_NAME.items():
-            if name and len(name) >= 4 and name.lower() in msg:
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def _last_ticker_in_history(history):
     """Walk the conversation in reverse and return the most recent ticker
     symbol or company name mentioned, normalized to its symbol. Powers the
@@ -10551,18 +10510,6 @@ def _last_ticker_in_history(history):
             if name in lower:
                 return sym
     return None
-
-
-def _tools_for_message(message):
-    """Return the tool set tailored to the user's latest message. Includes
-    scan_universe whenever the question doesn't pin a single ticker, plus
-    whenever an explicit scan keyword shows up."""
-    msg = (message or "").lower()
-    if any(kw in msg for kw in _SCAN_KEYWORDS):
-        return _groq_build_tools()
-    if not _looks_ticker_specific(msg):
-        return _groq_build_tools()
-    return _groq_build_tools(exclude={"scan_universe"})
 
 
 def _groq_make_request(url, headers, payload, stream=False):
@@ -10817,12 +10764,7 @@ def _run_agent_provider_stream(provider, history):
     url = provider["url"]
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    latest_user_msg = ""
-    for msg in reversed(history):
-        if msg.get("role") == "user":
-            latest_user_msg = msg.get("content") or ""
-            break
-    tools = _tools_for_message(latest_user_msg)
+    tools = _groq_build_tools()
     messages = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
@@ -10937,33 +10879,21 @@ def _run_agent_provider_stream(provider, history):
             if not nudged:
                 nudged = True
                 hint_ticker = _last_ticker_in_history(history)
-                latest_lower = (latest_user_msg or "").lower()
-                looks_like_screen = any(kw in latest_lower for kw in _SCAN_KEYWORDS)
-                if looks_like_screen:
-                    nudge = (
-                        "Your last turn produced no answer. The user is asking for a "
-                        "stock screen / recommendation by an investing criterion (yield, "
-                        "value, momentum, sector, etc.). Call scan_universe with the "
-                        "closest filter_criteria, then synthesize a ranked answer. Do NOT "
-                        "refuse this as 'financial planning' — it is exactly what the "
-                        "screener is for."
-                    )
-                elif hint_ticker:
-                    nudge = (
-                        "Your last turn produced no answer. The user is likely asking "
-                        "a pronoun follow-up about a stock we already discussed — the "
-                        f"most recent ticker on the table is {hint_ticker}. Resolve the "
-                        "reference, call the right tool, and give a direct answer in a "
-                        "complete sentence. Never trail off."
-                    )
-                else:
-                    nudge = (
-                        "Your last turn produced no answer. The user's question is "
-                        "probably outside Stock Analysis Pro's scope (NSE equity "
-                        "research) — see the SCOPE rules in the system prompt. Decline "
-                        "in ONE complete sentence, name the topic as out of scope, and "
-                        "offer one concrete NSE-related redirect. Never trail off."
-                    )
+                ticker_hint = (
+                    f" The most recent ticker on the table is {hint_ticker}; "
+                    "use it to resolve any pronoun follow-up."
+                    if hint_ticker else ""
+                )
+                nudge = (
+                    "Your last turn produced no answer. Re-read the user's most "
+                    "recent question, infer the intent from full conversation "
+                    "context (not surface keywords), and either call the right "
+                    "tool (verdict / DCF / technicals / dividends / correlation / "
+                    "news / scan_universe / market_snapshot) or — only if the "
+                    "question is genuinely outside NSE equity research — decline "
+                    "in ONE complete sentence per the SCOPE rules. Never trail "
+                    "off mid-sentence." + ticker_hint
+                )
                 messages.append({"role": "system", "content": nudge})
                 continue
             yield {"type": "error", "text": (
