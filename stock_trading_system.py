@@ -1,7 +1,7 @@
 """
 Enhanced Large Cap Stocks Trading Dashboard - Flask Version (ALL NSE STOCKS)
 Features:
-- ALL NSE-listed stocks (500+ companies)
+- ALL NSE-listed stocks
 - Z-score with percentage deviation
 - HSIC non-linear dependency analysis vs Nifty 50
 - VISUAL Scatter Plots with Dependency Scores
@@ -65,7 +65,7 @@ YAHOO_TICKER_ALIASES = {
 }
 
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
-# Organized by sector for better UX, but includes 500+ stocks
+# Organized by sector for better UX
 
 STOCKS = {
     'IT Sector': ['TCS', 'INFY', 'HCLTECH', 'WIPRO', 'TECHM', 'LTIM', 'COFORGE', 'MPHASIS', 'PERSISTENT',
@@ -3682,7 +3682,7 @@ def landing():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Institutional-grade fundamental and technical analysis on 500+ NSE-listed securities. Fair value estimates, risk profiling, and actionable verdicts.">
+    <meta name="description" content="Institutional-grade fundamental and technical analysis on NSE-listed securities. Fair value estimates, risk profiling, and actionable verdicts.">
     <title>Stock Analysis Pro — Equity Research & Analysis Platform</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3916,7 +3916,7 @@ def landing():
                             </a>
                             <a class="mega-item" href="/app#scanner">
                                 <div class="mega-item-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
-                                <div class="mega-item-text"><h4>Universe Scanner</h4><p>Filter 500+ stocks by your criteria</p></div>
+                                <div class="mega-item-text"><h4>Universe Scanner</h4><p>Filter NSE stocks by your criteria</p></div>
                             </a>
                         </div>
                         <div class="mega-footer">
@@ -3964,7 +3964,7 @@ def landing():
             </a>
             <a class="mob-tool" href="/app#scanner">
                 <div class="mob-tool-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
-                <div><h4>Universe Scanner</h4><p>Filter 500+ stocks by your criteria</p></div>
+                <div><h4>Universe Scanner</h4><p>Filter NSE stocks by your criteria</p></div>
             </a>
         </div>
         <a class="mob-cta" href="/app">Access Platform &rarr;</a>
@@ -3974,7 +3974,7 @@ def landing():
     <section class="hero">
         <div class="hero-label">Equity Research &amp; Analysis Platform</div>
         <h1>Informed decisions for <em>every investment.</em></h1>
-        <p>Institutional-grade fundamental and technical analysis on 500+ NSE-listed securities. Fair value estimates, risk profiling, and actionable verdicts &mdash; distilled for clarity.</p>
+        <p>Institutional-grade fundamental and technical analysis on NSE-listed securities. Fair value estimates, risk profiling, and actionable verdicts &mdash; distilled for clarity.</p>
         <div class="hero-btns">
             <a class="btn-primary" href="/app">Start Research &nbsp;&rarr;</a>
             <a class="btn-secondary" href="#tools">Explore Capabilities</a>
@@ -3983,7 +3983,7 @@ def landing():
 
     <!-- STATS -->
     <section class="stats">
-        <div class="stat"><div class="stat-val">500+</div><div class="stat-label">Securities Covered</div></div>
+        <div class="stat"><div class="stat-val">NSE</div><div class="stat-label">Universe Coverage</div></div>
         <div class="stat"><div class="stat-val">4-in-1</div><div class="stat-label">Unified Score Model</div></div>
         <div class="stat"><div class="stat-val">Live</div><div class="stat-label">Market Data Feed</div></div>
         <div class="stat"><div class="stat-val">6</div><div class="stat-label">Research Modules</div></div>
@@ -4054,7 +4054,7 @@ def landing():
                 <a class="tool-card" href="/app#analysis">
                     <div class="tool-icon"><svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></div>
                     <h3>Technical Analysis</h3>
-                    <p>Comprehensive indicator suite including RSI, MACD, Bollinger Bands, and momentum oscillators &mdash; computed in real time across 500+ securities.</p>
+                    <p>Comprehensive indicator suite including RSI, MACD, Bollinger Bands, and momentum oscillators &mdash; computed in real time across the NSE universe.</p>
                     <span class="tool-arrow">Open tool &rarr;</span>
                 </a>
                 <a class="tool-card" href="/app#dcf">
@@ -4088,7 +4088,7 @@ def landing():
     <!-- CTA -->
     <section class="cta">
         <h2>Begin your research</h2>
-        <p>Access institutional-quality analysis on 500+ NSE-listed securities. No account required to get started.</p>
+        <p>Access institutional-quality analysis on NSE-listed securities. No account required to get started.</p>
         <a class="btn-primary" href="/app">Launch Platform &nbsp;&rarr;</a>
     </section>
 
@@ -4837,7 +4837,7 @@ def dashboard():
     <header>
         <div class="container">
             <h1>Smart analysis for<br>every NSE stock.</h1>
-            <p>500+ stocks. Buy, hold, or sell signals with fair value estimates, dividend analysis, and market risk — explained simply.</p>
+            <p>Smart analysis for every NSE stock. Buy, hold, or sell signals with fair value estimates, dividend analysis, and market risk — explained simply.</p>
         </div>
     </header>
     <main class="container">
@@ -5023,7 +5023,7 @@ def dashboard():
                     <div style="display:flex;justify-content:center;gap:28px;margin-top:28px;flex-wrap:wrap;">
                         <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">4-in-1</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Score Model</div></div>
                         <div style="width:1px;background:var(--border-color);"></div>
-                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">292</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">NSE Stocks</div></div>
+                        <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">NSE</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Universe Coverage</div></div>
                         <div style="width:1px;background:var(--border-color);"></div>
                         <div style="text-align:center;"><div style="font-family:'Space Grotesk',sans-serif;font-size:1.3em;font-weight:800;color:var(--text-primary);">Live</div><div style="font-size:0.75em;color:var(--text-muted);margin-top:2px;">Market Data</div></div>
                     </div>
@@ -5037,7 +5037,7 @@ def dashboard():
         <div id="scanner-tab" class="tab-content">
             <div class="card" style="max-width:860px;margin:0 auto 0;">
                 <h2 style="margin-bottom:4px;">&#127919; Build Your Top-20 Portfolio</h2>
-                <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:22px;line-height:1.5;">Answer 6 questions and we will run 292 NSE stocks through 3 progressive filters — returning your personalised top 20.</p>
+                <p style="color:var(--text-secondary);font-size:0.85em;margin-bottom:22px;line-height:1.5;">Answer 6 questions and we will run the NSE universe through 3 progressive filters — returning your personalised top 20.</p>
 
                 <!-- Q1 -->
                 <div class="qz-section">
@@ -5140,7 +5140,7 @@ def dashboard():
                         <div class="ai-chat-title"><span class="ai-status-dot"></span> Live Research Session</div>
                     </div>
                     <div class="ai-messages" id="ai-messages">
-                        <div class="ai-msg agent">Welcome to Artha. I can pull live data for any of the 292 NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
+                        <div class="ai-msg agent">Welcome to Artha. I can pull live data for the NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
                     </div>
                     <div class="ai-input-row">
                         <textarea id="ai-input" placeholder="e.g. Compare HDFC Bank and ICICI Bank on dividends and momentum" rows="1" aria-label="Message input"></textarea>
@@ -9868,14 +9868,19 @@ SCOPE — what I do NOT do (decline cleanly, in ONE complete sentence, then redi
 - Physics, engineering, chemistry, aerospace, biology, or any science problem unrelated to a specific NSE stock's fundamentals.
 - Coding help, writing essays, translation, weather, sports, trivia, general chit-chat.
 - Crypto, forex, commodities, real estate, US/global equities, mutual funds, IPOs not yet listed.
-- Personal financial planning, tax advice, account/brokerage support, regulatory filings.
+- Whole-portfolio planning, tax advice, account/brokerage support, regulatory filings ("how should I split my savings across asset classes", "is my 401k allocation right", "how do I file capital gains").
 - Predictions of exact future prices, macro forecasts, or "will the market crash tomorrow".
 
-How to decline: ONE complete sentence — name the topic as out of scope, anchor on what I DO cover, offer one concrete redirect. Example: "Arithmetic isn't what I'm built for — I'm a research engine for the 292 NSE stocks we track. Want me to pull a verdict or screen for a setup instead?" Do NOT attempt the off-topic answer even if you "know" it. Do NOT trail off mid-sentence with "I don't have access to…" — finish the thought every single time. Do not argue with the user about a wrong arithmetic answer ("no it's 16"); just restate scope politely.
+WHAT IS IN SCOPE (do NOT refuse these — call the right tool):
+- Stock-screening / recommendation questions for any investing tilt: "what high-yield stocks should I buy", "give me dividend names", "best undervalued large caps", "momentum stocks right now", "good value picks". These are exactly what scan_universe is for. Route them, do not call them "financial planning".
+- Buy / sell / hold views on a specific ticker, comparisons between tickers, screens by sector or criterion, NSE news, market correlation. All of this is the job.
+
+How to decline (only when the question is genuinely outside scope): ONE complete sentence — name the topic as out of scope, anchor on what I DO cover, offer one concrete redirect. Example: "Arithmetic isn't what I'm built for — I'm a research engine for NSE-listed stocks. Want me to pull a verdict or screen for a setup instead?" Do NOT attempt the off-topic answer even if you "know" it. Do NOT trail off mid-sentence with "I don't have access to…" — finish the thought every single time. Do not argue with the user about a wrong arithmetic answer ("no it's 16"); just restate scope politely. Before declining, sanity-check: if the question names an investing criterion (income, yield, value, growth, momentum, sector) and asks for stocks, it belongs to scan_universe — do not refuse it.
 
 CONTINUITY (critical):
 - Treat the conversation as one continuous discussion with a client. If the user says "their", "it", "this stock", "the demerger", "what about its dividend" — resolve the reference from the most recent user/assistant turns and call the appropriate tool. Never reply "I don't have context" or "you haven't specified a ticker" when the prior turn made it obvious.
 - For vague meta-replies ("but you can?", "really?", "why?", "ok and?"), pick the most recent topic and either dig one level deeper on it or ask one specific clarifying question — never repeat your last answer verbatim.
+- "Why?" / "why not?" / "what do you mean?" right after YOU declined the previous question = the user is challenging the refusal, not asking for more detail on an earlier stock. Re-read the question you just refused: if it actually fits a tool (verdict, scan_universe, news, dividends, correlation), retract in one short clause ("Fair point — that IS in scope.") and answer it properly. Only restate scope if the original question is genuinely out of bounds (crypto, arithmetic, weather, etc.). Never silently fall back to expanding on an earlier ticker's analysis — that's a context bug.
 - Never claim you "don't have access to" a tool that exists. The tools available this turn are the only tools you have; use them or explain plainly what data isn't on the platform (e.g. "we don't track intraday tick-by-tick movers; here's what I can pull").
 
 TOOL ROUTING:
@@ -9883,7 +9888,7 @@ TOOL ROUTING:
 - "News on X" / "what's happening with X" / "tell me about X's demerger / split / lawsuit / results" → get_company_news (and get_investment_verdict if the user is leaning toward a trade).
 - "Price of X" / "CMP" / "where is X trading" → get_investment_verdict (it carries live price).
 - "Compare X and Y" → verdict + DCF + technicals for both. Give a clear winner.
-- "Find / screen / show me undervalued / momentum / dividend / cheap stocks" → scan_universe.
+- "Find / screen / show me / what should I buy for / which names have …" with any investing tilt (undervalued, momentum, dividend / income / high yield, cheap, growth, sector-specific) → scan_universe. This includes phrasings that don't say "screen" out loud: "if I want high yield, what do I buy", "best dividend names", "give me income stocks", "good value picks". Pick the closest filter_criteria ('undervalued', 'momentum', 'bullish', 'bearish', 'sell', 'top_losers', 'top_gainers'); for dividend / yield asks, default to a small-N undervalued or momentum scan and surface yields from get_dividend_analysis on the top hits if needed. Never refuse these as "financial planning".
 - "Biggest drop today" / "top losers" / "top gainers" / "biggest movers" / "what stock dropped the most" → scan_universe with filter_criteria set to "top_losers" or "top_gainers".
 - "What if Nifty crashes" / portfolio sensitivity → get_market_correlation + get_market_snapshot. Never estimate Nifty level from memory.
 - Educational questions about *equity-investing concepts* ("what is DCF", "how does beta work", "what's a value trap") → answer directly in 3-4 sentences, no tools. Anything outside equity investing falls under SCOPE above.
@@ -9895,7 +9900,7 @@ SILENCE RULES — strict:
 - When a tool returns BUY/SELL/HOLD, lead with that signal verbatim in the opening line.
 - If two indicators disagree (RSI overbought but DCF cheap; high yield but falling EPS), name the contradiction in one sentence and tell the user which side you'd weight more heavily.
 
-DATA: Yahoo Finance (prices/fundamentals), GNews (news), in-house DCF/technical/dividend/correlation models. ~292 NSE stocks tracked.
+DATA: Yahoo Finance (prices/fundamentals), GNews (news), in-house DCF/technical/dividend/correlation models. NSE-listed stocks tracked.
 
 RESPONSE FORMAT:
 1. One decisive opening line. For trade questions, lead with the call (BUY/SELL/HOLD/AVOID) + one-clause why.
@@ -10484,6 +10489,10 @@ _SCAN_KEYWORDS = (
     "cheap stocks", "which stock", "what stock", "give me stocks",
     "movers", "gainers", "losers", "dropped the most",
     "gained the most", "fell the most", "rose the most", "lost the most",
+    "high div", "high-div", "high yield", "high-yield", "dividend yield",
+    "div yield", "income stocks", "yield stocks", "dividend payer",
+    "dividend payers", "what do i buy", "what should i buy", "what to buy",
+    "names with", "good picks", "good buys",
 )
 
 
@@ -10928,7 +10937,18 @@ def _run_agent_provider_stream(provider, history):
             if not nudged:
                 nudged = True
                 hint_ticker = _last_ticker_in_history(history)
-                if hint_ticker:
+                latest_lower = (latest_user_msg or "").lower()
+                looks_like_screen = any(kw in latest_lower for kw in _SCAN_KEYWORDS)
+                if looks_like_screen:
+                    nudge = (
+                        "Your last turn produced no answer. The user is asking for a "
+                        "stock screen / recommendation by an investing criterion (yield, "
+                        "value, momentum, sector, etc.). Call scan_universe with the "
+                        "closest filter_criteria, then synthesize a ranked answer. Do NOT "
+                        "refuse this as 'financial planning' — it is exactly what the "
+                        "screener is for."
+                    )
+                elif hint_ticker:
                     nudge = (
                         "Your last turn produced no answer. The user is likely asking "
                         "a pronoun follow-up about a stock we already discussed — the "
