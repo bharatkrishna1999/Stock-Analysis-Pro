@@ -9673,7 +9673,10 @@ def _agent_get_investment_verdict(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
-    result = analyzer.analyze(sym)
+    try:
+        result = analyzer.analyze(sym)
+    except Exception as e:
+        return {"error": f"Analysis failed for {sym}: {e}"}
     if not result:
         return {"error": f"No data for {sym}"}
     sig = result.get("signal", {}) or {}
@@ -9695,19 +9698,25 @@ def _agent_get_dcf_valuation(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
-    data = DCF_CACHE.get(sym)
-    if not data:
-        local_sector = TICKER_TO_SECTOR.get(sym, "").lower()
-        is_financial = local_sector in ("banking", "financial services")
-        data = analyzer.excess_return_valuation(sym) if is_financial else analyzer.dcf_valuation(sym)
-        if data and data.get("valuation_model") != "excess_return":
-            if Analyzer.is_financial_sector(data.get("sector", ""), data.get("industry", "")):
-                data = analyzer.excess_return_valuation(sym)
-        if data:
-            DCF_CACHE.set(sym, data)
+    try:
+        data = DCF_CACHE.get(sym)
+        if not data:
+            local_sector = TICKER_TO_SECTOR.get(sym, "").lower()
+            is_financial = local_sector in ("banking", "financial services")
+            data = analyzer.excess_return_valuation(sym) if is_financial else analyzer.dcf_valuation(sym)
+            if data and data.get("valuation_model") != "excess_return":
+                if Analyzer.is_financial_sector(data.get("sector", ""), data.get("industry", "")):
+                    data = analyzer.excess_return_valuation(sym)
+            if data:
+                DCF_CACHE.set(sym, data)
+    except Exception as e:
+        return {"error": f"DCF valuation failed for {sym}: {e}"}
     if not data:
         return {"error": f"DCF data unavailable for {sym}"}
-    intrinsic, model = _server_side_dcf(data)
+    try:
+        intrinsic, model = _server_side_dcf(data)
+    except Exception as e:
+        return {"error": f"DCF calculation failed for {sym}: {e}"}
     price = data.get("current_price") or 0
     margin = round((intrinsic - price) / price * 100, 1) if intrinsic and price else None
     return {
@@ -9726,7 +9735,10 @@ def _agent_get_technical_signals(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
-    result = analyzer.analyze(sym)
+    try:
+        result = analyzer.analyze(sym)
+    except Exception as e:
+        return {"error": f"Technical analysis failed for {sym}: {e}"}
     if not result:
         return {"error": f"No data for {sym}"}
     det = result.get("details", {}) or {}
@@ -9749,7 +9761,10 @@ def _agent_get_dividend_analysis(ticker):
     sym = (ticker or "").strip().upper()
     if sym not in ALL_VALID_TICKERS:
         return {"error": f"{sym} is not a recognized NSE ticker"}
-    results, _found = analyzer.fetch_dividend_data([sym], limit_results=False, exclude_downtrend=False)
+    try:
+        results, _found = analyzer.fetch_dividend_data([sym], limit_results=False, exclude_downtrend=False)
+    except Exception as e:
+        return {"error": f"Dividend data fetch failed for {sym}: {e}"}
     if not results:
         return {"ticker": sym, "pays_dividend": False, "message": "No dividend data found"}
     stock = results[0]
@@ -9940,7 +9955,7 @@ def _groq_backoff_delay(attempt, retry_after=None):
 def _run_agent_groq(history):
     import requests as _requests
     api_key = os.environ["GROQ_API_KEY"]
-    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+    model = os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip() or "meta-llama/llama-4-scout-17b-16e-instruct"
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -9970,7 +9985,7 @@ def _run_agent_groq(history):
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
-            "max_tokens": 1500,
+            "max_tokens": 4096,
         }
 
         resp = None
@@ -9995,6 +10010,11 @@ def _run_agent_groq(history):
         assistant_msg = choice["message"]
         finish_reason = choice.get("finish_reason")
 
+        if finish_reason == "length":
+            content = assistant_msg.get("content")
+            if content:
+                return content
+            return "I ran out of space generating the response. Please try asking a more focused question (e.g. just 'What is TCS's intrinsic value?' instead of a full buy/sell analysis)."
         if finish_reason != "tool_calls":
             return assistant_msg.get("content") or "No response generated."
 
@@ -10093,12 +10113,20 @@ def agent_query_route():
         import re
         sanitized = re.sub(r"key=[A-Za-z0-9_\-]+", "key=***", str(e))
         status = getattr(getattr(e, "response", None), "status_code", None)
-        print(f"Agent error: {sanitized}")
+        print(f"Agent error (status={status}): {sanitized}")
         if status == 429:
             return jsonify({
                 "error": "AI assistant is rate-limited right now. Please wait a minute and try again.",
                 "retryAfter": 30,
             }), 429
+        if status == 400:
+            return jsonify({
+                "error": "AI model configuration error — the configured model may be unavailable. Please set the GROQ_MODEL environment variable to a valid Groq model ID.",
+            }), 503
+        if status == 401 or status == 403:
+            return jsonify({
+                "error": "AI assistant is not authorised (invalid API key).",
+            }), 503
         return jsonify({"error": "Agent request failed. Please try again."}), 500
     finally:
         _AGENT_GLOBAL_SEMAPHORE.release()
