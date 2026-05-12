@@ -12,6 +12,7 @@ Features:
 
 from flask import Flask, jsonify, request, Response, stream_with_context, make_response
 from flask_compress import Compress
+import hashlib
 import json
 import os
 import pickle
@@ -4689,8 +4690,22 @@ def dashboard():
         .ai-msg { max-width:78%; padding:12px 16px; border-radius:14px; font-size:0.92em; line-height:1.6; word-break:break-word; white-space:pre-wrap; }
         .ai-msg.user { align-self:flex-end; background:rgba(201,168,76,0.18); color:var(--text-primary); border:1px solid rgba(201,168,76,0.28); border-bottom-right-radius:4px; }
         .ai-msg.agent { align-self:flex-start; background:var(--bg-card-hover,rgba(255,255,255,0.04)); color:var(--text-primary); border:1px solid var(--border-color); border-bottom-left-radius:4px; }
+        .ai-msg.agent.streaming::after { content:'▋'; display:inline-block; animation:ai-blink .7s step-end infinite; margin-left:2px; }
+        @keyframes ai-blink { 0%,100%{opacity:1} 50%{opacity:0} }
         .ai-msg.error { align-self:flex-start; background:rgba(239,68,68,0.1); color:var(--danger); border:1px solid rgba(239,68,68,0.25); border-bottom-left-radius:4px; }
         .ai-msg.thinking { align-self:flex-start; color:var(--text-muted); font-style:italic; background:transparent; border:none; padding:6px 4px; }
+        .ai-thinking-block { align-self:flex-start; max-width:78%; margin-bottom:2px; }
+        .ai-thinking-block details { border:1px solid var(--border-color); border-radius:10px; background:rgba(255,255,255,0.02); overflow:hidden; }
+        .ai-thinking-block summary { list-style:none; cursor:pointer; padding:8px 12px; font-size:0.8em; color:var(--text-muted); display:flex; align-items:center; gap:8px; user-select:none; }
+        .ai-thinking-block summary::-webkit-details-marker { display:none; }
+        .ai-thinking-block summary .think-spinner { width:12px; height:12px; border:2px solid var(--border-color); border-top-color:var(--accent-gold); border-radius:50%; animation:ai-spin .7s linear infinite; flex-shrink:0; }
+        .ai-thinking-block.done summary .think-spinner { display:none; }
+        .ai-thinking-block.done summary::before { content:'✓'; color:var(--accent-gold); font-size:0.9em; }
+        @keyframes ai-spin { to{transform:rotate(360deg)} }
+        .ai-thinking-block .think-steps { padding:6px 12px 10px; display:flex; flex-direction:column; gap:4px; }
+        .ai-thinking-step { font-size:0.78em; color:var(--text-muted); padding:3px 0; border-left:2px solid var(--border-color); padding-left:8px; }
+        .ai-thinking-step.active { color:var(--text-secondary); border-color:var(--accent-gold); }
+        @media (max-width:720px) { .ai-msg,.ai-thinking-block { max-width:90%; } }
         .ai-input-row { display:flex; gap:10px; padding:14px 16px; border-top:1px solid var(--border-color); background:rgba(255,255,255,0.02); }
         #ai-input { flex:1; background:var(--bg-dark); border:1px solid var(--border-color); border-radius:10px; padding:12px 14px; color:var(--text-primary); font-size:0.92em; font-family:'Inter',sans-serif; resize:none; height:46px; max-height:140px; line-height:1.45; transition:border-color .2s; }
         #ai-input:focus { outline:none; border-color:var(--accent-gold); }
@@ -7868,6 +7883,60 @@ def dashboard():
             box.scrollTop = box.scrollHeight;
             return el;
         }
+        function aiScrollBottom() {
+            const box = document.getElementById('ai-messages');
+            if (box) box.scrollTop = box.scrollHeight;
+        }
+        function aiCreateThinkingBlock() {
+            const box = document.getElementById('ai-messages');
+            if (!box) return null;
+            const wrap = document.createElement('div');
+            wrap.className = 'ai-thinking-block';
+            const det = document.createElement('details');
+            det.open = true;
+            const sum = document.createElement('summary');
+            const spinner = document.createElement('span');
+            spinner.className = 'think-spinner';
+            const label = document.createElement('span');
+            label.className = 'think-label';
+            label.textContent = 'Researching…';
+            sum.appendChild(spinner);
+            sum.appendChild(label);
+            det.appendChild(sum);
+            const steps = document.createElement('div');
+            steps.className = 'think-steps';
+            det.appendChild(steps);
+            wrap.appendChild(det);
+            box.appendChild(wrap);
+            aiScrollBottom();
+            return wrap;
+        }
+        function aiAddThinkingStep(block, text) {
+            if (!block) return;
+            const det = block.querySelector('details');
+            const steps = block.querySelector('.think-steps');
+            const label = block.querySelector('.think-label');
+            if (!steps) return;
+            // Mark previous step done
+            const prev = steps.querySelector('.active');
+            if (prev) prev.classList.remove('active');
+            const step = document.createElement('div');
+            step.className = 'ai-thinking-step active';
+            step.textContent = text;
+            steps.appendChild(step);
+            if (label) label.textContent = text;
+            aiScrollBottom();
+        }
+        function aiFinishThinkingBlock(block, stepCount) {
+            if (!block) return;
+            block.classList.add('done');
+            const prev = block.querySelector('.active');
+            if (prev) prev.classList.remove('active');
+            const label = block.querySelector('.think-label');
+            if (label) label.textContent = stepCount + ' data source' + (stepCount !== 1 ? 's' : '') + ' checked ▾';
+            const det = block.querySelector('details');
+            if (det) det.open = false;
+        }
         function aiUseSuggestion(text) {
             const inp = document.getElementById('ai-input');
             if (!inp) return;
@@ -7887,7 +7956,7 @@ def dashboard():
                 if (errEl && errEl.parentNode) {
                     errEl.dataset.cooldown = '1';
                     errEl.textContent = left > 0
-                        ? 'Rate-limited. Retrying available in ' + left + 's.'
+                        ? 'Rate-limited. Retrying in ' + left + 's.'
                         : 'Ready. Try again.';
                 }
                 if (left <= 0) {
@@ -7910,35 +7979,84 @@ def dashboard():
             inp.value = '';
             aiAppend('user', message);
             aiHistory.push({ role: 'user', content: message });
-            const thinking = aiAppend('thinking', 'Analysing live market data…');
             aiSending = true;
             const sendBtn = document.getElementById('ai-send-btn');
             if (sendBtn) sendBtn.disabled = true;
             inp.disabled = true;
+
+            const thinkBlock = aiCreateThinkingBlock();
+            let agentEl = null;
+            let fullReply = '';
+            let stepCount = 0;
+            let committed = false;
+
             try {
-                const res = await fetch('/api/agent/query', {
+                const res = await fetch('/api/agent/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ message: message, history: aiHistory.slice(0, -1) })
                 });
-                const data = await res.json();
-                if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
-                if (data.error) {
-                    const errEl = aiAppend('error', data.error);
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}));
+                    if (thinkBlock && thinkBlock.parentNode) thinkBlock.parentNode.removeChild(thinkBlock);
+                    const errEl = aiAppend('error', errData.error || 'Request failed. Please try again.');
                     aiHistory.pop();
-                    if (res.status === 429) {
-                        const ra = parseInt(data.retryAfter, 10)
-                            || parseInt(res.headers.get('Retry-After'), 10)
-                            || 30;
-                        aiStartCooldown(ra, errEl);
+                    if (res.status === 429) aiStartCooldown(errData.retryAfter || 30, errEl);
+                    return;
+                }
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buf = '';
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buf += decoder.decode(value, { stream: true });
+                    const lines = buf.split('\n');
+                    buf = lines.pop();
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        let evt;
+                        try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+                        if (evt.type === 'thinking') {
+                            stepCount++;
+                            aiAddThinkingStep(thinkBlock, evt.text);
+                        } else if (evt.type === 'token') {
+                            if (!agentEl) {
+                                aiFinishThinkingBlock(thinkBlock, stepCount);
+                                agentEl = aiAppend('agent', '');
+                                agentEl.classList.add('streaming');
+                            }
+                            fullReply += evt.text;
+                            agentEl.textContent = fullReply;
+                            aiScrollBottom();
+                        } else if (evt.type === 'done') {
+                            if (agentEl) agentEl.classList.remove('streaming');
+                            if (!committed && fullReply) {
+                                aiHistory.push({ role: 'assistant', content: fullReply });
+                                committed = true;
+                            }
+                            if (stepCount === 0 && thinkBlock && thinkBlock.parentNode) {
+                                thinkBlock.parentNode.removeChild(thinkBlock);
+                            }
+                        } else if (evt.type === 'error') {
+                            if (thinkBlock && thinkBlock.parentNode) thinkBlock.parentNode.removeChild(thinkBlock);
+                            if (agentEl && agentEl.parentNode) agentEl.parentNode.removeChild(agentEl);
+                            const errEl = aiAppend('error', evt.text || 'Request failed. Please try again.');
+                            aiHistory.pop();
+                            if (evt.retryAfter) aiStartCooldown(evt.retryAfter, errEl);
+                        }
                     }
-                } else {
-                    const reply = data.response || '(empty response)';
-                    aiAppend('agent', reply);
-                    aiHistory.push({ role: 'assistant', content: reply });
+                }
+                // Ensure cleanup if stream ended without explicit done event
+                if (agentEl) agentEl.classList.remove('streaming');
+                if (!committed && fullReply) {
+                    aiHistory.push({ role: 'assistant', content: fullReply });
+                }
+                if (stepCount === 0 && thinkBlock && thinkBlock.parentNode) {
+                    thinkBlock.parentNode.removeChild(thinkBlock);
                 }
             } catch(e) {
-                if (thinking && thinking.parentNode) thinking.parentNode.removeChild(thinking);
+                if (thinkBlock && thinkBlock.parentNode) thinkBlock.parentNode.removeChild(thinkBlock);
                 aiAppend('error', 'Network error. Please try again.');
                 aiHistory.pop();
             } finally {
@@ -9559,109 +9677,77 @@ def alerts_scan_now_route():
 
 # ── Groq AI Research Assistant ───────────────────────────────────────────────
 
-_AGENT_SYSTEM_PROMPT = """You are the AI research assistant for Stock Analysis Pro, an NSE equity research platform. Your audience is everyday investors, so explain professional-grade analysis in plain English.
+_AGENT_SYSTEM_PROMPT = """You are the AI research assistant for Stock Analysis Pro (NSE equity research). Explain professional-grade analysis in plain English for everyday investors.
 
-CONVERSATION SCOPE (very important)
-- Answer ONLY the user's most recent question. Treat every new question as independent.
-- Do NOT bring in companies, tickers, news, or numbers from earlier turns unless the user explicitly references them in the current question.
-- Never pad an answer with leftover context from a previous query. If the new question is about oil, do not mention IT services. If it's about Saudi Arabia, do not mention Infosys.
-- For follow-ups ("tell me more", "what about its dividend?"), use prior turns only to identify the subject — then pull fresh data with tools.
+SCOPE: Answer only the current question. Don't carry over tickers, numbers, or news from earlier turns unless the user explicitly references them. For follow-ups, use prior turns only to identify the subject, then pull fresh data.
 
-WHEN TO CALL TOOLS (be precise — don't over-fetch)
-- "Should I buy/sell X", "what do you think of X", full analysis of X → call get_investment_verdict, get_dcf_valuation, get_technical_signals, get_dividend_analysis, get_market_correlation, AND get_company_news.
-- "News on X", "what's happening with X", "any updates on X" → call ONLY get_company_news.
-- "Price of X", "CMP of X", "where is X trading" → call ONLY get_investment_verdict (it includes the live price). Do NOT invent prices.
-- "Compare X and Y" → call get_investment_verdict for both, plus the specific dimension(s) the user asked about.
-- "Find undervalued / high-dividend / momentum stocks" → call scan_universe.
-- General/educational questions ("what is RSI?", "how does DCF work?") → answer directly, no tools.
-- Macro/sector/commodity questions without a specific ticker (oil prices, Fed rates, geopolitics) → answer in plain English, no tools. If the user also asks for prices of specific stocks, call get_investment_verdict for each ticker.
-- Never fabricate numbers, prices, or news. If a tool returns no data or fails, say so plainly instead of guessing.
+TOOLS — call only what's needed:
+- Full buy/sell analysis ("should I buy X", "what do you think of X") → call all six tools.
+- "News on X" / "what's happening with X" → get_company_news only.
+- "Price of X" / "CMP of X" → get_investment_verdict only (includes live price). Never invent prices.
+- "Compare X and Y" → get_investment_verdict for both + relevant tools.
+- "Find undervalued / momentum / dividend stocks" → scan_universe.
+- Educational or macro questions (no specific ticker) → answer directly, no tools.
+- Never fabricate numbers, prices, or news. If a tool fails, say so plainly.
 
-DATA SOURCES (when asked)
-- Live market prices and fundamentals come from Yahoo Finance via yfinance.
-- News headlines come from GNews.
-- DCF valuations, technical signals, dividend sustainability, and Nifty correlation are computed in-house on top of that data.
-- Coverage: 500+ NSE-listed stocks.
-- Do NOT list internal function names. Describe sources in user-friendly terms.
+DATA: Yahoo Finance (prices/fundamentals), GNews (news), in-house DCF/technical/dividend/correlation models. 292+ NSE stocks.
 
-RESPONSE STYLE
-1. Open with a direct one-line takeaway. Be confident and plain — skip hedging openers like "Looks like" or "It seems". Examples: "TCS is fairly valued; momentum is cooling — a hold for now." or "ONGC is trading at ₹156.10."
-2. For data-driven answers, follow with a tight "Key numbers" section: 3-5 bullets, only the dimensions you actually pulled. Each bullet shows the value plus a short parenthetical translation in everyday terms (e.g. "RSI 72 (momentum is hot — stock has been rallying fast, may be due for a pause)", "Margin of safety -15% (price is ~15% above what the model thinks it's worth)").
-3. Close with "What this means for you" — 2-3 sentences of practical takeaway, grounded ONLY in the numbers you just showed. Do not introduce unrelated companies or topics here.
-4. The first time you use a technical term (DCF, RSI, MACD, beta, HSIC, payout ratio, intrinsic value, margin of safety), add a brief plain-English gloss in parentheses.
-5. Prefer "the stock has been moving up fast" over "bullish momentum divergence".
-6. For news-only questions, skip the "Key numbers" structure — just summarise the headlines in 2-4 short bullets, then a one-line takeaway.
-7. For pure-price questions, one or two sentences is enough. Don't pad.
-8. Stay tight: under ~220 words unless the user asks for a deep dive.
-9. One short risk reminder at the end is fine for buy/sell views — don't repeat it on every message.
-10. Be warm and clear. No filler, no boilerplate disclaimers, no hedging fluff."""
+RESPONSE FORMAT:
+1. One direct opening line — no hedging openers ("Looks like", "It seems").
+2. "Key numbers" — 3-5 bullets: value + plain-English gloss in parentheses. E.g. "RSI 72 (momentum is hot — may be due for a pause)".
+3. "What this means for you" — 2-3 practical sentences using only the numbers shown.
+4. Define technical terms first use (DCF, RSI, MACD, beta, margin of safety, etc.).
+5. Under 200 words unless the user asks for a deep dive.
+6. News-only: 2-4 bullet summary + one takeaway line. No "Key numbers" block.
+7. Price-only: 1-2 sentences. Don't pad.
+8. One brief risk reminder on buy/sell views. Don't repeat it every message."""
 
 _AGENT_TOOLS = [
     {
         "name": "get_investment_verdict",
-        "description": "Returns the unified 4-in-1 investment score and buy/sell/hold recommendation for a ticker.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"ticker": {"type": "string", "description": "NSE ticker e.g. TCS, RELIANCE, HDFCBANK"}},
-            "required": ["ticker"],
-        },
+        "description": "Buy/sell/hold verdict, confidence score, price target, and bullish/bearish factor count for a ticker.",
+        "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]},
     },
     {
         "name": "get_dcf_valuation",
-        "description": "Returns DCF intrinsic value, current price, and margin of safety for a ticker.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"ticker": {"type": "string"}},
-            "required": ["ticker"],
-        },
+        "description": "DCF intrinsic value, current price, and margin of safety for a ticker.",
+        "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]},
     },
     {
         "name": "get_technical_signals",
-        "description": "Returns RSI, MACD, Bollinger Band signals and momentum score for a ticker.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"ticker": {"type": "string"}},
-            "required": ["ticker"],
-        },
+        "description": "RSI, MACD, Bollinger Band position, z-score, and momentum signal for a ticker.",
+        "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]},
     },
     {
         "name": "get_dividend_analysis",
-        "description": "Returns dividend yield, payout ratio, and sustainability score for a ticker.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"ticker": {"type": "string"}},
-            "required": ["ticker"],
-        },
+        "description": "Dividend yield, payout ratio, trend, and sustainability score for a ticker.",
+        "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]},
     },
     {
         "name": "get_market_correlation",
-        "description": "Returns HSIC correlation vs Nifty 50 and systematic risk exposure for a ticker.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"ticker": {"type": "string"}},
-            "required": ["ticker"],
-        },
+        "description": "HSIC correlation vs Nifty 50, beta, and systematic risk exposure for a ticker.",
+        "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]},
     },
     {
         "name": "get_company_news",
-        "description": "Returns recent news headlines about a company (mergers, demergers, lawsuits, management changes, earnings, scandals, regulatory actions, etc.). Use this for any qualitative or event-driven context that would not appear in financial-ratio tools. Always call this alongside get_investment_verdict when the user asks 'should I buy X', 'what's happening with X', or anything that depends on current events.",
+        "description": "Recent news headlines for a company — mergers, earnings, lawsuits, regulatory actions, management changes. Call alongside get_investment_verdict for any buy/sell question.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "ticker": {"type": "string", "description": "NSE ticker e.g. VEDL, RELIANCE, TCS"},
-                "max_results": {"type": "integer", "description": "Number of headlines to return (default 5, max 10)"},
+                "ticker": {"type": "string"},
+                "max_results": {"type": "integer", "description": "1-10, default 5"},
             },
             "required": ["ticker"],
         },
     },
     {
         "name": "scan_universe",
-        "description": "Filters NSE universe by sector or simple criteria. Use when the user asks for stock ideas or screening.",
+        "description": "Filter NSE universe by sector or criteria (undervalued, high dividend, bullish momentum).",
         "input_schema": {
             "type": "object",
             "properties": {
-                "sector": {"type": "string", "description": "Optional sector filter"},
-                "filter_criteria": {"type": "string", "description": "e.g. undervalued, high dividend, bullish momentum"},
+                "sector": {"type": "string"},
+                "filter_criteria": {"type": "string"},
             },
             "required": [],
         },
@@ -9673,7 +9759,10 @@ def _agent_get_investment_verdict(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
-    result = analyzer.analyze(sym)
+    try:
+        result = analyzer.analyze(sym)
+    except Exception as e:
+        return {"error": f"Analysis failed for {sym}: {e}"}
     if not result:
         return {"error": f"No data for {sym}"}
     sig = result.get("signal", {}) or {}
@@ -9695,19 +9784,25 @@ def _agent_get_dcf_valuation(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
-    data = DCF_CACHE.get(sym)
-    if not data:
-        local_sector = TICKER_TO_SECTOR.get(sym, "").lower()
-        is_financial = local_sector in ("banking", "financial services")
-        data = analyzer.excess_return_valuation(sym) if is_financial else analyzer.dcf_valuation(sym)
-        if data and data.get("valuation_model") != "excess_return":
-            if Analyzer.is_financial_sector(data.get("sector", ""), data.get("industry", "")):
-                data = analyzer.excess_return_valuation(sym)
-        if data:
-            DCF_CACHE.set(sym, data)
+    try:
+        data = DCF_CACHE.get(sym)
+        if not data:
+            local_sector = TICKER_TO_SECTOR.get(sym, "").lower()
+            is_financial = local_sector in ("banking", "financial services")
+            data = analyzer.excess_return_valuation(sym) if is_financial else analyzer.dcf_valuation(sym)
+            if data and data.get("valuation_model") != "excess_return":
+                if Analyzer.is_financial_sector(data.get("sector", ""), data.get("industry", "")):
+                    data = analyzer.excess_return_valuation(sym)
+            if data:
+                DCF_CACHE.set(sym, data)
+    except Exception as e:
+        return {"error": f"DCF valuation failed for {sym}: {e}"}
     if not data:
         return {"error": f"DCF data unavailable for {sym}"}
-    intrinsic, model = _server_side_dcf(data)
+    try:
+        intrinsic, model = _server_side_dcf(data)
+    except Exception as e:
+        return {"error": f"DCF calculation failed for {sym}: {e}"}
     price = data.get("current_price") or 0
     margin = round((intrinsic - price) / price * 100, 1) if intrinsic and price else None
     return {
@@ -9726,7 +9821,10 @@ def _agent_get_technical_signals(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
-    result = analyzer.analyze(sym)
+    try:
+        result = analyzer.analyze(sym)
+    except Exception as e:
+        return {"error": f"Technical analysis failed for {sym}: {e}"}
     if not result:
         return {"error": f"No data for {sym}"}
     det = result.get("details", {}) or {}
@@ -9749,7 +9847,10 @@ def _agent_get_dividend_analysis(ticker):
     sym = (ticker or "").strip().upper()
     if sym not in ALL_VALID_TICKERS:
         return {"error": f"{sym} is not a recognized NSE ticker"}
-    results, _found = analyzer.fetch_dividend_data([sym], limit_results=False, exclude_downtrend=False)
+    try:
+        results, _found = analyzer.fetch_dividend_data([sym], limit_results=False, exclude_downtrend=False)
+    except Exception as e:
+        return {"error": f"Dividend data fetch failed for {sym}: {e}"}
     if not results:
         return {"ticker": sym, "pays_dividend": False, "message": "No dividend data found"}
     stock = results[0]
@@ -9937,76 +10038,307 @@ def _groq_backoff_delay(attempt, retry_after=None):
     return min(delay, _GROQ_RETRY_CAP_SEC)
 
 
-def _run_agent_groq(history):
-    import requests as _requests
-    api_key = os.environ["GROQ_API_KEY"]
-    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+_TOOL_THINKING_LABELS = {
+    "get_investment_verdict": "Fetching investment verdict for {ticker}",
+    "get_dcf_valuation": "Running DCF valuation for {ticker}",
+    "get_technical_signals": "Checking technical signals for {ticker}",
+    "get_dividend_analysis": "Analysing dividends for {ticker}",
+    "get_market_correlation": "Checking Nifty correlation for {ticker}",
+    "get_company_news": "Fetching latest news for {ticker}",
+    "scan_universe": "Scanning NSE universe...",
+}
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": t["name"],
-                "description": t["description"],
-                "parameters": t["input_schema"],
-            },
-        }
+
+def _tool_thinking_label(name, args):
+    ticker = (args.get("ticker") or "").upper()
+    template = _TOOL_THINKING_LABELS.get(name, f"Running {name}...")
+    if ticker:
+        return template.format(ticker=ticker)
+    return template.replace(" for {ticker}", "").replace("{ticker}", "")
+
+
+def _groq_build_tools():
+    return [
+        {"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}}
         for t in _AGENT_TOOLS
     ]
 
+
+def _groq_make_request(url, headers, payload, stream=False):
+    import requests as _requests
+    resp = None
+    for attempt in range(_GROQ_RETRY_MAX_ATTEMPTS):
+        resp = _requests.post(url, json=payload, headers=headers, stream=stream, timeout=60)
+        if resp.status_code not in _GROQ_RETRY_STATUSES:
+            break
+        retry_after = None
+        try:
+            ra = resp.headers.get("Retry-After") or (resp.json().get("error") or {}).get("retry_after")
+            retry_after = max(1, int(float(ra))) if ra else None
+        except Exception:
+            pass
+        if attempt == _GROQ_RETRY_MAX_ATTEMPTS - 1:
+            raise _GroqRateLimitError(retry_after or 30)
+        time.sleep(_groq_backoff_delay(attempt, retry_after))
+    resp.raise_for_status()
+    return resp
+
+
+def _provider_attempt(url, headers, payload, stream=False):
+    """Single-shot request — no retries. Used by the failover wrapper."""
+    import requests as _requests
+    resp = _requests.post(url, json=payload, headers=headers, stream=stream, timeout=60)
+    if resp.status_code == 429:
+        retry_after = None
+        try:
+            ra = resp.headers.get("Retry-After") or (resp.json().get("error") or {}).get("retry_after")
+            retry_after = max(1, int(float(ra))) if ra else None
+        except Exception:
+            pass
+        raise _GroqRateLimitError(retry_after or 30)
+    resp.raise_for_status()
+    return resp
+
+
+# ── Multi-provider config (OpenAI-compatible) ────────────────────────────────
+# All three expose an OpenAI-compatible /chat/completions endpoint with
+# streaming + function calling. The failover wrapper tries them in order.
+
+_AGENT_PROVIDERS = [
+    {
+        "name": "gemini",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "api_key_env": "GEMINI_API_KEY",
+        "model_env": "GEMINI_MODEL",
+        "model_default": "gemini-2.0-flash",
+    },
+    {
+        "name": "groq",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "api_key_env": "GROQ_API_KEY",
+        "model_env": "GROQ_MODEL",
+        "model_default": "meta-llama/llama-4-scout-17b-16e-instruct",
+    },
+    {
+        "name": "cerebras",
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "api_key_env": "CEREBRAS_API_KEY",
+        "model_env": "CEREBRAS_MODEL",
+        "model_default": "llama-3.3-70b",
+    },
+]
+
+
+class _ProviderUnavailableError(Exception):
+    """Raised when a provider can't be used (no key, rate-limited, network error).
+    The failover wrapper catches this and tries the next provider."""
+    def __init__(self, provider_name, reason, retry_after=None):
+        super().__init__(f"{provider_name}: {reason}")
+        self.provider_name = provider_name
+        self.reason = reason
+        self.retry_after = retry_after
+
+
+def _enabled_providers():
+    """Return the providers whose API key is set, in priority order."""
+    return [p for p in _AGENT_PROVIDERS if (os.environ.get(p["api_key_env"]) or "").strip()]
+
+
+# ── Response cache (in-memory, TTL-based) ────────────────────────────────────
+# Keyed by normalized question text. Identical questions within TTL skip the
+# entire LLM round trip and re-stream the cached answer. Greatly reduces API
+# call volume for popular queries (e.g. "Is TCS a buy?" asked by many users).
+
+_AGENT_RESPONSE_CACHE = {}  # key -> (timestamp, response_text)
+_AGENT_CACHE_LOCK = Lock()
+_AGENT_CACHE_TTL_SEC = float(os.environ.get("AGENT_CACHE_TTL_SEC", "300"))
+_AGENT_CACHE_MAX_ENTRIES = 256
+
+
+def _agent_cache_key(history):
+    """Cache key from the latest user message + the immediately preceding turn
+    (to disambiguate follow-ups like 'what about its dividend?')."""
+    if not history:
+        return None
+    last = history[-1]
+    if last.get("role") != "user":
+        return None
+    msg = (last.get("content") or "").strip().lower()
+    if len(msg) < 4:
+        return None
+    prev = ""
+    if len(history) >= 2:
+        prev = (history[-2].get("content") or "").strip().lower()[:200]
+    return hashlib.sha256(f"{prev}||{msg}".encode("utf-8")).hexdigest()
+
+
+def _agent_cache_get(key):
+    if not key:
+        return None
+    with _AGENT_CACHE_LOCK:
+        entry = _AGENT_RESPONSE_CACHE.get(key)
+        if not entry:
+            return None
+        ts, text = entry
+        if time.time() - ts > _AGENT_CACHE_TTL_SEC:
+            _AGENT_RESPONSE_CACHE.pop(key, None)
+            return None
+        return text
+
+
+def _agent_cache_set(key, text):
+    if not key or not text:
+        return
+    with _AGENT_CACHE_LOCK:
+        _AGENT_RESPONSE_CACHE[key] = (time.time(), text)
+        if len(_AGENT_RESPONSE_CACHE) > _AGENT_CACHE_MAX_ENTRIES:
+            cutoff = time.time() - _AGENT_CACHE_TTL_SEC
+            for k, (ts, _t) in list(_AGENT_RESPONSE_CACHE.items()):
+                if ts < cutoff:
+                    _AGENT_RESPONSE_CACHE.pop(k, None)
+
+
+def _stream_cached_response(text, chunk_size=24):
+    """Re-emit a cached response as SSE events so the UX matches a live stream."""
+    yield {"type": "thinking", "text": "Loaded recent answer from cache"}
+    for i in range(0, len(text), chunk_size):
+        yield {"type": "token", "text": text[i:i + chunk_size]}
+        time.sleep(0.01)
+    yield {"type": "done"}
+
+
+def _run_agent_provider_stream(provider, history):
+    """Generator yielding SSE events for ONE provider. Raises
+    _ProviderUnavailableError on the first request if the provider is unusable
+    (rate-limited, auth failure, network error) so the failover wrapper can
+    try the next one."""
+    api_key = (os.environ.get(provider["api_key_env"]) or "").strip()
+    if not api_key:
+        raise _ProviderUnavailableError(provider["name"], "no API key set")
+
+    model = (os.environ.get(provider["model_env"], "") or provider["model_default"]).strip() or provider["model_default"]
+    url = provider["url"]
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    tools = _groq_build_tools()
     messages = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    max_turns = 10
+    first_call = True
+    max_turns = 6
     for _ in range(max_turns):
         payload = {
             "model": model,
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
-            "max_tokens": 1500,
+            "max_tokens": 4096,
+            "stream": True,
         }
+        try:
+            resp = _provider_attempt(url, headers, payload, stream=True)
+        except _GroqRateLimitError as e:
+            if first_call:
+                raise _ProviderUnavailableError(provider["name"], "rate limited", e.retry_after)
+            yield {"type": "error", "text": f"Rate limited mid-conversation on {provider['name']}. Please retry."}
+            return
+        except Exception as e:
+            if first_call:
+                raise _ProviderUnavailableError(provider["name"], str(e))
+            yield {"type": "error", "text": f"Provider error mid-stream: {e}"}
+            return
+        first_call = False
 
-        resp = None
-        for attempt in range(_GROQ_RETRY_MAX_ATTEMPTS):
-            resp = _requests.post(url, json=payload, headers=headers, timeout=60)
-            if resp.status_code not in _GROQ_RETRY_STATUSES:
+        accumulated_content = ""
+        accumulated_tool_calls = {}  # index -> {id, name, arguments}
+        finish_reason = None
+
+        for raw_line in resp.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if not line.startswith("data: "):
+                continue
+            data_str = line[6:].strip()
+            if data_str == "[DONE]":
                 break
-            retry_after = None
             try:
-                ra = resp.headers.get("Retry-After") or (resp.json().get("error") or {}).get("retry_after")
-                retry_after = max(1, int(float(ra))) if ra else None
+                chunk = json.loads(data_str)
             except Exception:
-                pass
-            if attempt == _GROQ_RETRY_MAX_ATTEMPTS - 1:
-                raise _GroqRateLimitError(retry_after or 30)
-            time.sleep(_groq_backoff_delay(attempt, retry_after))
+                continue
 
-        resp.raise_for_status()
-        data = resp.json()
+            choice = (chunk.get("choices") or [{}])[0]
+            delta = choice.get("delta") or {}
+            finish_reason = choice.get("finish_reason") or finish_reason
 
-        choice = data["choices"][0]
-        assistant_msg = choice["message"]
-        finish_reason = choice.get("finish_reason")
+            # Stream text tokens as they arrive
+            content_chunk = delta.get("content") or ""
+            if content_chunk:
+                accumulated_content += content_chunk
+                yield {"type": "token", "text": content_chunk}
 
-        if finish_reason != "tool_calls":
-            return assistant_msg.get("content") or "No response generated."
+            # Accumulate tool call deltas
+            for tc_delta in (delta.get("tool_calls") or []):
+                idx = tc_delta.get("index", 0)
+                if idx not in accumulated_tool_calls:
+                    accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                tc = accumulated_tool_calls[idx]
+                if tc_delta.get("id"):
+                    tc["id"] = tc_delta["id"]
+                fn = tc_delta.get("function") or {}
+                tc["name"] += fn.get("name") or ""
+                tc["arguments"] += fn.get("arguments") or ""
 
-        messages.append(assistant_msg)
-        tool_calls = assistant_msg.get("tool_calls") or []
-        for tc in tool_calls:
-            fn = tc.get("function", {})
+        if finish_reason == "stop" or (accumulated_content and not accumulated_tool_calls):
+            yield {"type": "done"}
+            return
+
+        if finish_reason == "length":
+            if accumulated_content:
+                yield {"type": "done"}
+            else:
+                yield {"type": "error", "text": "Response exceeded token limit. Please ask a more focused question."}
+            return
+
+        if not accumulated_tool_calls:
+            # Unexpected finish — return whatever we have
+            if accumulated_content:
+                yield {"type": "done"}
+            else:
+                yield {"type": "error", "text": "No response generated. Please try again."}
+            return
+
+        # Build assistant message with tool calls and add to context
+        tool_calls_list = [
+            {
+                "id": accumulated_tool_calls[i]["id"],
+                "type": "function",
+                "function": {
+                    "name": accumulated_tool_calls[i]["name"],
+                    "arguments": accumulated_tool_calls[i]["arguments"],
+                },
+            }
+            for i in sorted(accumulated_tool_calls)
+        ]
+        messages.append({
+            "role": "assistant",
+            "content": accumulated_content or None,
+            "tool_calls": tool_calls_list,
+        })
+
+        # Dispatch each tool and emit a thinking event
+        for tc in tool_calls_list:
+            fn = tc["function"]
+            tool_name = fn.get("name", "")
             try:
                 args = json.loads(fn.get("arguments") or "{}")
             except Exception:
                 args = {}
-            result = _agent_dispatch_tool(fn.get("name", ""), args)
+
+            yield {"type": "thinking", "text": _tool_thinking_label(tool_name, args)}
+
+            result = _agent_dispatch_tool(tool_name, args)
             if not isinstance(result, dict):
                 result = {"result": result}
             messages.append({
@@ -10015,7 +10347,70 @@ def _run_agent_groq(history):
                 "content": json.dumps(result),
             })
 
-    return "Reached tool-call limit without final answer. Please rephrase or narrow the question."
+    yield {"type": "error", "text": "Could not complete the analysis. Please try again."}
+
+
+def _run_agent_with_failover_stream(history):
+    """Top-level streaming generator. Checks the response cache first; on miss,
+    walks through the provider list (Gemini → Groq → Cerebras), failing over
+    on rate-limit / auth / network errors. Caches the final response on success."""
+    cache_key = _agent_cache_key(history)
+    cached = _agent_cache_get(cache_key)
+    if cached:
+        for event in _stream_cached_response(cached):
+            yield event
+        return
+
+    providers = _enabled_providers()
+    if not providers:
+        yield {"type": "error", "text": "No AI provider configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}
+        return
+
+    last_failure = None
+    for provider in providers:
+        full_response_parts = []
+        try:
+            gen = _run_agent_provider_stream(provider, history)
+            for event in gen:
+                if event.get("type") == "token":
+                    full_response_parts.append(event["text"])
+                yield event
+                if event.get("type") in ("done", "error"):
+                    break
+            full_text = "".join(full_response_parts).strip()
+            if full_text:
+                _agent_cache_set(cache_key, full_text)
+            return
+        except _ProviderUnavailableError as e:
+            last_failure = e
+            print(f"Provider failover: {provider['name']} unavailable ({e.reason}); trying next.")
+            continue
+        except Exception as e:
+            last_failure = e
+            print(f"Provider failover: {provider['name']} crashed ({e}); trying next.")
+            continue
+
+    # All providers exhausted
+    retry_after = getattr(last_failure, "retry_after", None)
+    msg = "All AI providers are temporarily unavailable. Please try again in a moment."
+    err_event = {"type": "error", "text": msg}
+    if retry_after:
+        err_event["retryAfter"] = int(retry_after)
+    yield err_event
+
+
+def _run_agent_groq(history):
+    """Non-streaming JSON fallback — drains the streaming failover wrapper and
+    returns the full text. The frontend uses /api/agent/stream; this exists
+    purely for /api/agent/query consumers."""
+    parts = []
+    for event in _run_agent_with_failover_stream(history):
+        et = event.get("type")
+        if et == "token":
+            parts.append(event.get("text", ""))
+        elif et == "error":
+            return event.get("text") or "Agent request failed. Please try again."
+    return "".join(parts).strip() or "No response generated."
 
 
 _AGENT_IP_LAST_CALL = {}
@@ -10043,35 +10438,73 @@ def _agent_throttle_check(ip):
     return 0
 
 
-@app.route("/api/agent/query", methods=["POST"])
-def agent_query_route():
-    if not os.environ.get("GROQ_API_KEY"):
-        return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
-
-    data = request.get_json(silent=True) or {}
-    message = (data.get("message") or "").strip()
-    if not message:
-        return jsonify({"error": "message is required"}), 400
-
-    client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                 or request.remote_addr or "")
-    wait_secs = _agent_throttle_check(client_ip)
-    if wait_secs:
-        resp = jsonify({
-            "error": f"You're sending requests too quickly. Try again in {wait_secs}s.",
-            "retryAfter": wait_secs,
-        })
-        resp.headers["Retry-After"] = str(wait_secs)
-        return resp, 429
-
+def _agent_parse_history(data, max_turns=2, max_content=1500):
     raw_history = data.get("history") or []
     history = []
-    for turn in raw_history[-4:]:
+    for turn in raw_history[-max_turns:]:
         role = turn.get("role")
         content = turn.get("content")
         if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-            history.append({"role": role, "content": content[:2000]})
-    history.append({"role": "user", "content": message[:4000]})
+            history.append({"role": role, "content": content[:max_content]})
+    message = (data.get("message") or "").strip()
+    if message:
+        history.append({"role": "user", "content": message[:2000]})
+    return history, message
+
+
+@app.route("/api/agent/stream", methods=["POST"])
+def agent_stream_route():
+    if not _enabled_providers():
+        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
+
+    data = request.get_json(silent=True) or {}
+    history, message = _agent_parse_history(data)
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")
+    wait_secs = _agent_throttle_check(client_ip)
+    if wait_secs:
+        return jsonify({"error": f"Too many requests. Try again in {wait_secs}s.", "retryAfter": wait_secs}), 429
+
+    if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
+        return jsonify({"error": "AI assistant is busy. Please try again in a moment.", "retryAfter": 10}), 429
+
+    def generate():
+        try:
+            for event in _run_agent_with_failover_stream(history):
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as e:
+            import re as _re
+            sanitized = _re.sub(r"key=[A-Za-z0-9_\-]+", "key=***", str(e))
+            print(f"Agent stream fatal error: {sanitized}")
+            yield f"data: {json.dumps({'type': 'error', 'text': 'Agent request failed. Please try again.'})}\n\n"
+        finally:
+            _AGENT_GLOBAL_SEMAPHORE.release()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/agent/query", methods=["POST"])
+def agent_query_route():
+    if not _enabled_providers():
+        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
+
+    data = request.get_json(silent=True) or {}
+    history, message = _agent_parse_history(data)
+    if not message:
+        return jsonify({"error": "message is required"}), 400
+
+    client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")
+    wait_secs = _agent_throttle_check(client_ip)
+    if wait_secs:
+        resp = jsonify({"error": f"You're sending requests too quickly. Try again in {wait_secs}s.", "retryAfter": wait_secs})
+        resp.headers["Retry-After"] = str(wait_secs)
+        return resp, 429
 
     if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
         return jsonify({
@@ -10093,12 +10526,20 @@ def agent_query_route():
         import re
         sanitized = re.sub(r"key=[A-Za-z0-9_\-]+", "key=***", str(e))
         status = getattr(getattr(e, "response", None), "status_code", None)
-        print(f"Agent error: {sanitized}")
+        print(f"Agent error (status={status}): {sanitized}")
         if status == 429:
             return jsonify({
                 "error": "AI assistant is rate-limited right now. Please wait a minute and try again.",
                 "retryAfter": 30,
             }), 429
+        if status == 400:
+            return jsonify({
+                "error": "AI model configuration error — the configured model may be unavailable. Please set the GROQ_MODEL environment variable to a valid Groq model ID.",
+            }), 503
+        if status == 401 or status == 403:
+            return jsonify({
+                "error": "AI assistant is not authorised (invalid API key).",
+            }), 503
         return jsonify({"error": "Agent request failed. Please try again."}), 500
     finally:
         _AGENT_GLOBAL_SEMAPHORE.release()
