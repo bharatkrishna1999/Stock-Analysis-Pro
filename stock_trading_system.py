@@ -4818,7 +4818,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
-                <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; AI Assistant</button>
+                <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; Artha</button>
             </div>
             <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false">
                 <span></span><span></span><span></span>
@@ -4833,7 +4833,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dividend">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression">Market Connection</button>
         <button class="mobile-menu-item" data-tab="scanner">&#128269; Scanner</button>
-        <button class="mobile-menu-item" data-tab="ai">&#10024; AI Assistant</button>
+        <button class="mobile-menu-item" data-tab="ai">&#10024; Artha</button>
     </div>
     <header>
         <div class="container">
@@ -5127,8 +5127,8 @@ def dashboard():
         <div id="ai-tab" class="tab-content">
             <div class="ai-hero">
                 <div class="ai-pill">&#10024; Powered by Groq AI</div>
-                <h1>AI Research Assistant</h1>
-                <p>Ask anything about NSE stocks. The assistant automatically runs all analyses &mdash; verdict, DCF valuation, technicals, dividends, and market correlation &mdash; and explains everything in plain English.</p>
+                <h1>Artha</h1>
+                <p>Your in-house equity strategist for NSE stocks. Artha automatically runs every analysis &mdash; verdict, DCF valuation, technicals, dividends, and market correlation &mdash; and explains everything in plain English.</p>
             </div>
             <div class="ai-shell">
                 <div class="ai-suggest-row">
@@ -5142,7 +5142,7 @@ def dashboard():
                         <div class="ai-chat-title"><span class="ai-status-dot"></span> Live Research Session</div>
                     </div>
                     <div class="ai-messages" id="ai-messages">
-                        <div class="ai-msg agent">Welcome. I can pull live data for any of the 292 NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
+                        <div class="ai-msg agent">Welcome to Artha. I can pull live data for any of the 292 NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
                     </div>
                     <div class="ai-input-row">
                         <textarea id="ai-input" placeholder="e.g. Compare HDFC Bank and ICICI Bank on dividends and momentum" rows="1" aria-label="Message input"></textarea>
@@ -9853,7 +9853,11 @@ def alerts_scan_now_route():
 
 # ── Groq AI Research Assistant ───────────────────────────────────────────────
 
-_AGENT_SYSTEM_PROMPT = """You are the in-house equity strategist for Stock Analysis Pro — think of yourself as a senior portfolio manager and sell-side analyst rolled into one, the kind of operator a hedge fund hires to read the tape and pick spots on NSE. Speak with conviction and market sense, not the hedged register of a chatbot. You translate professional-grade analysis into plain English without dumbing it down.
+_AGENT_SYSTEM_PROMPT = """You are Artha, the in-house equity strategist for Stock Analysis Pro — think of yourself as a senior portfolio manager and sell-side analyst rolled into one, the kind of operator a hedge fund hires to read the tape and pick spots on NSE. Speak with conviction and market sense, not the hedged register of a chatbot. You translate professional-grade analysis into plain English without dumbing it down.
+
+IDENTITY:
+- Your name is Artha. When asked "what's your name", "who are you", or anything similar, answer: "I'm Artha — the equity strategist for Stock Analysis Pro." Do not call yourself "The Analyst", an AI, a chatbot, or a language model.
+- "Artha" is Sanskrit for wealth and meaning — that's the job. Don't over-explain the etymology unless the user asks.
 
 PERSONA:
 - Decisive. Have a view. Lead with the call (BUY / SELL / HOLD / AVOID / WAIT), then justify in numbers.
@@ -11101,7 +11105,7 @@ def _agent_parse_history(data, max_turns=10, max_content=1500):
 @app.route("/api/agent/stream", methods=["POST"])
 def agent_stream_route():
     if not _enabled_providers():
-        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
+        return jsonify({"error": "Artha is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
 
     data = request.get_json(silent=True) or {}
     history, message = _agent_parse_history(data)
@@ -11114,7 +11118,7 @@ def agent_stream_route():
         return jsonify({"error": f"Too many requests. Try again in {wait_secs}s.", "retryAfter": wait_secs}), 429
 
     if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
-        return jsonify({"error": "AI assistant is busy. Please try again in a moment.", "retryAfter": 10}), 429
+        return jsonify({"error": "Artha is busy. Please try again in a moment.", "retryAfter": 10}), 429
 
     def generate():
         try:
@@ -11138,7 +11142,7 @@ def agent_stream_route():
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
     if not _enabled_providers():
-        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
+        return jsonify({"error": "Artha is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
 
     data = request.get_json(silent=True) or {}
     history, message = _agent_parse_history(data)
@@ -11154,7 +11158,7 @@ def agent_query_route():
 
     if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
         return jsonify({
-            "error": "AI assistant is busy. Please try again in a moment.",
+            "error": "Artha is busy. Please try again in a moment.",
             "retryAfter": 10,
         }), 429
     try:
@@ -11163,7 +11167,7 @@ def agent_query_route():
     except _GroqRateLimitError as e:
         retry_after = int(getattr(e, "retry_after", 30) or 30)
         resp = jsonify({
-            "error": f"AI assistant is rate-limited upstream. Try again in {retry_after}s.",
+            "error": f"Artha is rate-limited upstream. Try again in {retry_after}s.",
             "retryAfter": retry_after,
         })
         resp.headers["Retry-After"] = str(retry_after)
@@ -11175,7 +11179,7 @@ def agent_query_route():
         print(f"Agent error (status={status}): {sanitized}")
         if status == 429:
             return jsonify({
-                "error": "AI assistant is rate-limited right now. Please wait a minute and try again.",
+                "error": "Artha is rate-limited right now. Please wait a minute and try again.",
                 "retryAfter": 30,
             }), 429
         if status == 400:
@@ -11184,7 +11188,7 @@ def agent_query_route():
             }), 503
         if status == 401 or status == 403:
             return jsonify({
-                "error": "AI assistant is not authorised (invalid API key).",
+                "error": "Artha is not authorised (invalid API key).",
             }), 503
         return jsonify({"error": "Agent request failed. Please try again."}), 500
     finally:
