@@ -9885,7 +9885,8 @@ CONTINUITY (critical):
 
 TOOL ROUTING:
 - Full buy/sell view on X ("should I buy X", "what do you think of X", "is X a good entry") → call get_investment_verdict, get_dcf_valuation, get_technical_signals, get_dividend_analysis, get_market_correlation, get_company_news. Synthesize, don't just list.
-- "News on X" / "what's happening with X" / "tell me about X's demerger / split / lawsuit / results" → get_company_news (and get_investment_verdict if the user is leaning toward a trade). If get_company_news returns an error OR article_count is 0, say so in ONE sentence ("No published news indexed for X right now." or "News feed is offline.") — never say "I was unable to find" and stop there. Then immediately pivot to get_investment_verdict + get_technical_signals for the ticker so the user gets an actionable view regardless. Note: the news tool indexes published media articles only, NOT company advertisements or marketing campaigns — if the user is looking for a promotional offer, name that limitation in the same sentence and pivot to the stock verdict.
+- "News on X" / "what's happening with X" / "tell me about X's demerger / split / lawsuit / results" → get_company_news first. If article_count is 0 or it errors, call search_web with a targeted query (e.g. '"Paytm" demerger 2025') to pull live results, then get_investment_verdict. Never say "I was unable to find" and stop.
+- Company promotions, offers, marketing campaigns, app features, cashback deals → search_web with a specific query (e.g. '"Paytm" gold flight booking offer') — do NOT use get_company_news for these, it only indexes published media. After surfacing what the promo is, always pivot to the investment angle with get_investment_verdict on the ticker.
 - "Price of X" / "CMP" / "where is X trading" → get_investment_verdict (it carries live price).
 - Market-moving events & company announcements (government policy change, RBI ruling, company promotion, marketing campaign, product launch, anything that names an NSE-listed company or a sector) → OPPORTUNITY PIVOT: identify the 1-2 most directly impacted NSE tickers or sector, then immediately call get_investment_verdict (and get_technical_signals if time-sensitive) on those tickers. Lead with the trade angle — "Here's how to play this:" — not with event narration. If no single ticker is obvious, call scan_universe for the affected sector. Never respond to a market-moving event with only general knowledge; always surface at least one actionable ticker or screen.
 - "Compare X and Y" → verdict + DCF + technicals for both. Give a clear winner.
@@ -9901,7 +9902,7 @@ SILENCE RULES — strict:
 - When a tool returns BUY/SELL/HOLD, lead with that signal verbatim in the opening line.
 - If two indicators disagree (RSI overbought but DCF cheap; high yield but falling EPS), name the contradiction in one sentence and tell the user which side you'd weight more heavily.
 
-DATA: Yahoo Finance (prices/fundamentals), GNews (news), in-house DCF/technical/dividend/correlation models. NSE-listed stocks tracked.
+DATA: Yahoo Finance (prices/fundamentals), GNews (financial news), DuckDuckGo web search (promotions, social mentions, broader web), in-house DCF/technical/dividend/correlation models. NSE-listed stocks tracked.
 
 RESPONSE FORMAT:
 1. One decisive opening line. For trade questions, lead with the call (BUY/SELL/HOLD/AVOID) + one-clause why.
@@ -9974,6 +9975,23 @@ _AGENT_TOOLS = [
                 "filter_criteria": {"type": "string"},
             },
             "required": [],
+        },
+    },
+    {
+        "name": "search_web",
+        "description": (
+            "Live DuckDuckGo web search. Use for: company promotions, cashback offers, "
+            "app features, marketing campaigns, social mentions, and anything not indexed "
+            "by financial news APIs. Also use as fallback when get_company_news returns "
+            "0 articles. Craft a specific query — e.g. '\"Paytm\" gold flight booking offer 2025'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "max_results": {"type": "integer", "description": "1-10, default 5"},
+            },
+            "required": ["query"],
         },
     },
 ]
@@ -10409,6 +10427,59 @@ def _agent_get_company_news(ticker, max_results=5):
     }
 
 
+def _agent_search_web(query, max_results=5):
+    import re, html as _html
+    if not query:
+        return {"error": "No query provided."}
+    try:
+        max_results = max(1, min(int(max_results or 5), 10))
+    except (TypeError, ValueError):
+        max_results = 5
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+    try:
+        resp = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query, "kl": "in-en"},
+            headers=headers,
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        return {"error": f"Web search failed: {e}"}
+
+    def _strip(text):
+        text = re.sub(r"<[^>]+>", "", text)
+        return _html.unescape(text).strip()
+
+    raw = resp.text
+    results = []
+    for block in re.split(r'class=["\']result__title["\']', raw)[1:]:
+        if len(results) >= max_results:
+            break
+        title_m = re.search(r'class=["\']result__a["\'][^>]*>(.*?)</a>', block, re.DOTALL)
+        url_m = re.search(r'class=["\']result__url["\'][^>]*>(.*?)</(?:span|a|div)', block, re.DOTALL)
+        snip_m = re.search(r'class=["\']result__snippet["\'][^>]*>(.*?)</(?:a|div)', block, re.DOTALL)
+        title = _strip(title_m.group(1)) if title_m else ""
+        url = _strip(url_m.group(1)) if url_m else ""
+        snippet = _strip(snip_m.group(1)) if snip_m else ""
+        if title:
+            results.append({
+                "title": title[:200],
+                "url": url[:300],
+                "snippet": snippet[:400],
+            })
+
+    return {
+        "query": query,
+        "result_count": len(results),
+        "results": results,
+        "note": "Live web results — covers promotions, social mentions, and content not in financial news APIs.",
+    }
+
+
 def _agent_dispatch_tool(name, inputs):
     inputs = inputs or {}
     if name == "get_investment_verdict":
@@ -10427,6 +10498,8 @@ def _agent_dispatch_tool(name, inputs):
         return _agent_get_company_news(inputs.get("ticker", ""), inputs.get("max_results", 5))
     if name == "scan_universe":
         return _agent_scan_universe(inputs.get("sector"), inputs.get("filter_criteria"))
+    if name == "search_web":
+        return _agent_search_web(inputs.get("query", ""), inputs.get("max_results", 5))
     return {"error": f"Unknown tool: {name}"}
 
 
