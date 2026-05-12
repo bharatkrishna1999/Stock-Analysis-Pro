@@ -3897,7 +3897,7 @@ def landing():
                 <div class="nav-link-item"><a href="#trust">Why Trust Us</a></div>
                 <div class="nav-link-item"><a class="nav-cta" href="/app">Access Platform</a></div>
             </div>
-            <button class="hamburger" id="hamburger" aria-label="Menu">
+            <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
@@ -3940,10 +3940,30 @@ def landing():
     </div>
 
     <script>
-    const ham = document.getElementById('hamburger');
-    const mob = document.getElementById('mob-panel');
-    ham.addEventListener('click', () => { ham.classList.toggle('open'); mob.classList.toggle('open'); document.body.style.overflow = mob.classList.contains('open') ? 'hidden' : ''; });
-    function closeMob() { ham.classList.remove('open'); mob.classList.remove('open'); document.body.style.overflow = ''; }
+    (function() {
+        var ham = document.getElementById('hamburger');
+        var mob = document.getElementById('mob-panel');
+        if (!ham || !mob) return;
+        function open() {
+            ham.classList.add('open'); mob.classList.add('open');
+            document.body.style.overflow = 'hidden';
+            ham.setAttribute('aria-expanded', 'true');
+        }
+        function close() {
+            ham.classList.remove('open'); mob.classList.remove('open');
+            document.body.style.overflow = '';
+            ham.setAttribute('aria-expanded', 'false');
+        }
+        ham.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (mob.classList.contains('open')) close(); else open();
+        });
+        // Close when any link inside the panel is tapped
+        mob.addEventListener('click', function(e) {
+            if (e.target.closest('a')) close();
+        });
+        window.closeMob = close;
+    })();
     </script>
 
     <!-- HERO -->
@@ -4734,21 +4754,53 @@ def dashboard():
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
                 <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; AI Assistant</button>
             </div>
-            <button class="hamburger" id="hamburger" onclick="toggleMobileMenu()">
+            <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
     </nav>
-    <div class="mobile-overlay" id="mobile-overlay" onclick="closeMobileMenu()"></div>
+    <div class="mobile-overlay" id="mobile-overlay"></div>
     <div class="mobile-menu" id="mobile-menu">
-        <button class="mobile-menu-item active" data-tab="verdict" onclick="switchTab('verdict', event); closeMobileMenu()">Investment Verdict</button>
-        <button class="mobile-menu-item" data-tab="analysis" onclick="switchTab('analysis', event); closeMobileMenu()">Technical Analysis</button>
-        <button class="mobile-menu-item" data-tab="dcf" onclick="switchTab('dcf', event); closeMobileMenu()">DCF Valuation</button>
-        <button class="mobile-menu-item" data-tab="dividend" onclick="switchTab('dividend', event); closeMobileMenu()">Dividend Analyzer</button>
-        <button class="mobile-menu-item" data-tab="regression" onclick="switchTab('regression', event); closeMobileMenu()">Market Connection</button>
-        <button class="mobile-menu-item" data-tab="scanner" onclick="switchTab('scanner', event); closeMobileMenu()">&#128269; Scanner</button>
-        <button class="mobile-menu-item" data-tab="ai" onclick="switchTab('ai', event); closeMobileMenu()">&#10024; AI Assistant</button>
+        <button class="mobile-menu-item active" data-tab="verdict">Investment Verdict</button>
+        <button class="mobile-menu-item" data-tab="analysis">Technical Analysis</button>
+        <button class="mobile-menu-item" data-tab="dcf">DCF Valuation</button>
+        <button class="mobile-menu-item" data-tab="dividend">Dividend Analyzer</button>
+        <button class="mobile-menu-item" data-tab="regression">Market Connection</button>
+        <button class="mobile-menu-item" data-tab="scanner">&#128269; Scanner</button>
+        <button class="mobile-menu-item" data-tab="ai">&#10024; AI Assistant</button>
     </div>
+    <script>
+    (function() {
+        var ham = document.getElementById('hamburger');
+        var menu = document.getElementById('mobile-menu');
+        var overlay = document.getElementById('mobile-overlay');
+        if (!ham || !menu || !overlay) return;
+        function openMenu() {
+            ham.classList.add('open'); menu.classList.add('open'); overlay.classList.add('open');
+            ham.setAttribute('aria-expanded', 'true');
+        }
+        function closeMenu() {
+            ham.classList.remove('open'); menu.classList.remove('open'); overlay.classList.remove('open');
+            ham.setAttribute('aria-expanded', 'false');
+        }
+        function toggleMenu() {
+            if (menu.classList.contains('open')) closeMenu(); else openMenu();
+        }
+        ham.addEventListener('click', function(e) { e.preventDefault(); toggleMenu(); });
+        overlay.addEventListener('click', closeMenu);
+        menu.addEventListener('click', function(e) {
+            var item = e.target.closest('.mobile-menu-item');
+            if (!item) return;
+            var tab = item.getAttribute('data-tab');
+            if (tab && typeof window.switchTab === 'function') {
+                try { window.switchTab(tab, e); } catch (err) {}
+            }
+            closeMenu();
+        });
+        window.toggleMobileMenu = toggleMenu;
+        window.closeMobileMenu = closeMenu;
+    })();
+    </script>
     <header>
         <div class="container">
             <h1>Smart analysis for<br>every NSE stock.</h1>
@@ -5676,16 +5728,9 @@ def dashboard():
             document.getElementById(tab + '-tab').classList.add('active');
             ensureTabLoaded(tab);
         }
-        function toggleMobileMenu() {
-            document.getElementById('hamburger').classList.toggle('open');
-            document.getElementById('mobile-menu').classList.toggle('open');
-            document.getElementById('mobile-overlay').classList.toggle('open');
-        }
-        function closeMobileMenu() {
-            document.getElementById('hamburger').classList.remove('open');
-            document.getElementById('mobile-menu').classList.remove('open');
-            document.getElementById('mobile-overlay').classList.remove('open');
-        }
+        // toggleMobileMenu / closeMobileMenu are wired up by the inline script
+        // immediately following the mobile-menu markup so the hamburger keeps
+        // working even if this larger script block fails to load.
         function setupAutocomplete(inputId, suggestionId, callbackName) {
             const input = document.getElementById(inputId);
             if(!input) return;
