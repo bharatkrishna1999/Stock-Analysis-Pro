@@ -4734,7 +4734,6 @@ def dashboard():
 
         /* ===== AI Assistant Tab ===== */
         .ai-hero { text-align:center; padding:48px 20px 18px; max-width:680px; margin:0 auto; }
-        .ai-pill { display:inline-flex; align-items:center; gap:7px; background:rgba(201,168,76,0.13); border:1px solid rgba(201,168,76,0.3); border-radius:20px; padding:5px 16px; font-size:0.76em; font-weight:700; color:var(--accent-cyan); letter-spacing:0.6px; text-transform:uppercase; margin-bottom:22px; }
         .ai-hero h1 { font-family:'Space Grotesk',sans-serif; font-size:2.6em; font-weight:800; color:var(--text-primary); line-height:1.15; margin-bottom:16px; letter-spacing:-0.5px; }
         .ai-hero p { color:var(--text-secondary); font-size:1em; line-height:1.75; max-width:560px; margin:0 auto; }
         .ai-shell { max-width:880px; margin:0 auto; padding:0 20px 60px; }
@@ -5126,7 +5125,6 @@ def dashboard():
         </div>
         <div id="ai-tab" class="tab-content">
             <div class="ai-hero">
-                <div class="ai-pill">&#10024; Powered by Groq AI</div>
                 <h1>Artha</h1>
                 <p>Your in-house equity strategist for NSE stocks. Artha automatically runs every analysis &mdash; verdict, DCF valuation, technicals, dividends, and market correlation &mdash; and explains everything in plain English.</p>
             </div>
