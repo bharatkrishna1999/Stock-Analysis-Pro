@@ -8,5 +8,24 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.0
+      # AI provider keys — failover chain (Gemini → Groq → Cerebras).
+      # At least one must be set. Setting all three gives maximum headroom
+      # and effectively eliminates rate-limiting under normal traffic.
       - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false
+      # Optional model overrides (defaults baked into stock_trading_system.py)
+      - key: GEMINI_MODEL
+        sync: false
+      - key: GROQ_MODEL
+        sync: false
+      - key: CEREBRAS_MODEL
+        sync: false
+      # Optional cache TTL for repeated identical questions (default 300 s)
+      - key: AGENT_CACHE_TTL_SEC
+        sync: false
+      - key: GNEWS_API_KEY
         sync: false

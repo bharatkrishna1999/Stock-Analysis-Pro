@@ -12,6 +12,7 @@ Features:
 
 from flask import Flask, jsonify, request, Response, stream_with_context, make_response
 from flask_compress import Compress
+import hashlib
 import json
 import os
 import pickle
@@ -10083,12 +10084,140 @@ def _groq_make_request(url, headers, payload, stream=False):
     return resp
 
 
-def _run_agent_groq_stream(history):
-    """Generator that yields SSE event dicts: thinking, token, done, error."""
+def _provider_attempt(url, headers, payload, stream=False):
+    """Single-shot request — no retries. Used by the failover wrapper."""
     import requests as _requests
-    api_key = os.environ["GROQ_API_KEY"]
-    model = os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip() or "meta-llama/llama-4-scout-17b-16e-instruct"
-    url = "https://api.groq.com/openai/v1/chat/completions"
+    resp = _requests.post(url, json=payload, headers=headers, stream=stream, timeout=60)
+    if resp.status_code == 429:
+        retry_after = None
+        try:
+            ra = resp.headers.get("Retry-After") or (resp.json().get("error") or {}).get("retry_after")
+            retry_after = max(1, int(float(ra))) if ra else None
+        except Exception:
+            pass
+        raise _GroqRateLimitError(retry_after or 30)
+    resp.raise_for_status()
+    return resp
+
+
+# ── Multi-provider config (OpenAI-compatible) ────────────────────────────────
+# All three expose an OpenAI-compatible /chat/completions endpoint with
+# streaming + function calling. The failover wrapper tries them in order.
+
+_AGENT_PROVIDERS = [
+    {
+        "name": "gemini",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "api_key_env": "GEMINI_API_KEY",
+        "model_env": "GEMINI_MODEL",
+        "model_default": "gemini-2.0-flash",
+    },
+    {
+        "name": "groq",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "api_key_env": "GROQ_API_KEY",
+        "model_env": "GROQ_MODEL",
+        "model_default": "meta-llama/llama-4-scout-17b-16e-instruct",
+    },
+    {
+        "name": "cerebras",
+        "url": "https://api.cerebras.ai/v1/chat/completions",
+        "api_key_env": "CEREBRAS_API_KEY",
+        "model_env": "CEREBRAS_MODEL",
+        "model_default": "llama-3.3-70b",
+    },
+]
+
+
+class _ProviderUnavailableError(Exception):
+    """Raised when a provider can't be used (no key, rate-limited, network error).
+    The failover wrapper catches this and tries the next provider."""
+    def __init__(self, provider_name, reason, retry_after=None):
+        super().__init__(f"{provider_name}: {reason}")
+        self.provider_name = provider_name
+        self.reason = reason
+        self.retry_after = retry_after
+
+
+def _enabled_providers():
+    """Return the providers whose API key is set, in priority order."""
+    return [p for p in _AGENT_PROVIDERS if (os.environ.get(p["api_key_env"]) or "").strip()]
+
+
+# ── Response cache (in-memory, TTL-based) ────────────────────────────────────
+# Keyed by normalized question text. Identical questions within TTL skip the
+# entire LLM round trip and re-stream the cached answer. Greatly reduces API
+# call volume for popular queries (e.g. "Is TCS a buy?" asked by many users).
+
+_AGENT_RESPONSE_CACHE = {}  # key -> (timestamp, response_text)
+_AGENT_CACHE_LOCK = Lock()
+_AGENT_CACHE_TTL_SEC = float(os.environ.get("AGENT_CACHE_TTL_SEC", "300"))
+_AGENT_CACHE_MAX_ENTRIES = 256
+
+
+def _agent_cache_key(history):
+    """Cache key from the latest user message + the immediately preceding turn
+    (to disambiguate follow-ups like 'what about its dividend?')."""
+    if not history:
+        return None
+    last = history[-1]
+    if last.get("role") != "user":
+        return None
+    msg = (last.get("content") or "").strip().lower()
+    if len(msg) < 4:
+        return None
+    prev = ""
+    if len(history) >= 2:
+        prev = (history[-2].get("content") or "").strip().lower()[:200]
+    return hashlib.sha256(f"{prev}||{msg}".encode("utf-8")).hexdigest()
+
+
+def _agent_cache_get(key):
+    if not key:
+        return None
+    with _AGENT_CACHE_LOCK:
+        entry = _AGENT_RESPONSE_CACHE.get(key)
+        if not entry:
+            return None
+        ts, text = entry
+        if time.time() - ts > _AGENT_CACHE_TTL_SEC:
+            _AGENT_RESPONSE_CACHE.pop(key, None)
+            return None
+        return text
+
+
+def _agent_cache_set(key, text):
+    if not key or not text:
+        return
+    with _AGENT_CACHE_LOCK:
+        _AGENT_RESPONSE_CACHE[key] = (time.time(), text)
+        if len(_AGENT_RESPONSE_CACHE) > _AGENT_CACHE_MAX_ENTRIES:
+            cutoff = time.time() - _AGENT_CACHE_TTL_SEC
+            for k, (ts, _t) in list(_AGENT_RESPONSE_CACHE.items()):
+                if ts < cutoff:
+                    _AGENT_RESPONSE_CACHE.pop(k, None)
+
+
+def _stream_cached_response(text, chunk_size=24):
+    """Re-emit a cached response as SSE events so the UX matches a live stream."""
+    yield {"type": "thinking", "text": "Loaded recent answer from cache"}
+    for i in range(0, len(text), chunk_size):
+        yield {"type": "token", "text": text[i:i + chunk_size]}
+        time.sleep(0.01)
+    yield {"type": "done"}
+
+
+def _run_agent_provider_stream(provider, history):
+    """Generator yielding SSE events for ONE provider. Raises
+    _ProviderUnavailableError on the first request if the provider is unusable
+    (rate-limited, auth failure, network error) so the failover wrapper can
+    try the next one."""
+    api_key = (os.environ.get(provider["api_key_env"]) or "").strip()
+    if not api_key:
+        raise _ProviderUnavailableError(provider["name"], "no API key set")
+
+    model = (os.environ.get(provider["model_env"], "") or provider["model_default"]).strip() or provider["model_default"]
+    url = provider["url"]
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     tools = _groq_build_tools()
@@ -10096,10 +10225,9 @@ def _run_agent_groq_stream(history):
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
+    first_call = True
     max_turns = 6
     for _ in range(max_turns):
-        # Use non-streaming for tool-call rounds; streaming for the final answer round.
-        # Since we can't know in advance, we always stream and detect mid-flight.
         payload = {
             "model": model,
             "messages": messages,
@@ -10108,7 +10236,19 @@ def _run_agent_groq_stream(history):
             "max_tokens": 4096,
             "stream": True,
         }
-        resp = _groq_make_request(url, headers, payload, stream=True)
+        try:
+            resp = _provider_attempt(url, headers, payload, stream=True)
+        except _GroqRateLimitError as e:
+            if first_call:
+                raise _ProviderUnavailableError(provider["name"], "rate limited", e.retry_after)
+            yield {"type": "error", "text": f"Rate limited mid-conversation on {provider['name']}. Please retry."}
+            return
+        except Exception as e:
+            if first_call:
+                raise _ProviderUnavailableError(provider["name"], str(e))
+            yield {"type": "error", "text": f"Provider error mid-stream: {e}"}
+            return
+        first_call = False
 
         accumulated_content = ""
         accumulated_tool_calls = {}  # index -> {id, name, arguments}
@@ -10210,43 +10350,67 @@ def _run_agent_groq_stream(history):
     yield {"type": "error", "text": "Could not complete the analysis. Please try again."}
 
 
+def _run_agent_with_failover_stream(history):
+    """Top-level streaming generator. Checks the response cache first; on miss,
+    walks through the provider list (Gemini → Groq → Cerebras), failing over
+    on rate-limit / auth / network errors. Caches the final response on success."""
+    cache_key = _agent_cache_key(history)
+    cached = _agent_cache_get(cache_key)
+    if cached:
+        for event in _stream_cached_response(cached):
+            yield event
+        return
+
+    providers = _enabled_providers()
+    if not providers:
+        yield {"type": "error", "text": "No AI provider configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}
+        return
+
+    last_failure = None
+    for provider in providers:
+        full_response_parts = []
+        try:
+            gen = _run_agent_provider_stream(provider, history)
+            for event in gen:
+                if event.get("type") == "token":
+                    full_response_parts.append(event["text"])
+                yield event
+                if event.get("type") in ("done", "error"):
+                    break
+            full_text = "".join(full_response_parts).strip()
+            if full_text:
+                _agent_cache_set(cache_key, full_text)
+            return
+        except _ProviderUnavailableError as e:
+            last_failure = e
+            print(f"Provider failover: {provider['name']} unavailable ({e.reason}); trying next.")
+            continue
+        except Exception as e:
+            last_failure = e
+            print(f"Provider failover: {provider['name']} crashed ({e}); trying next.")
+            continue
+
+    # All providers exhausted
+    retry_after = getattr(last_failure, "retry_after", None)
+    msg = "All AI providers are temporarily unavailable. Please try again in a moment."
+    err_event = {"type": "error", "text": msg}
+    if retry_after:
+        err_event["retryAfter"] = int(retry_after)
+    yield err_event
+
+
 def _run_agent_groq(history):
-    """Non-streaming fallback — collects full reply before returning."""
-    api_key = os.environ["GROQ_API_KEY"]
-    model = os.environ.get("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct").strip() or "meta-llama/llama-4-scout-17b-16e-instruct"
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    tools = _groq_build_tools()
-    messages = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-
-    for _ in range(6):
-        payload = {"model": model, "messages": messages, "tools": tools, "tool_choice": "auto", "max_tokens": 4096}
-        resp = _groq_make_request(url, headers, payload, stream=False)
-        data = resp.json()
-        choice = data["choices"][0]
-        assistant_msg = choice["message"]
-        finish_reason = choice.get("finish_reason")
-
-        if finish_reason == "length":
-            return assistant_msg.get("content") or "Response exceeded token limit. Please ask a more focused question."
-        if finish_reason != "tool_calls":
-            return assistant_msg.get("content") or "No response generated."
-
-        messages.append(assistant_msg)
-        for tc in (assistant_msg.get("tool_calls") or []):
-            fn = tc.get("function", {})
-            try:
-                args = json.loads(fn.get("arguments") or "{}")
-            except Exception:
-                args = {}
-            result = _agent_dispatch_tool(fn.get("name", ""), args)
-            if not isinstance(result, dict):
-                result = {"result": result}
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": json.dumps(result)})
-
-    return "Reached tool-call limit. Please rephrase or narrow the question."
+    """Non-streaming JSON fallback — drains the streaming failover wrapper and
+    returns the full text. The frontend uses /api/agent/stream; this exists
+    purely for /api/agent/query consumers."""
+    parts = []
+    for event in _run_agent_with_failover_stream(history):
+        et = event.get("type")
+        if et == "token":
+            parts.append(event.get("text", ""))
+        elif et == "error":
+            return event.get("text") or "Agent request failed. Please try again."
+    return "".join(parts).strip() or "No response generated."
 
 
 _AGENT_IP_LAST_CALL = {}
@@ -10290,8 +10454,8 @@ def _agent_parse_history(data, max_turns=2, max_content=1500):
 
 @app.route("/api/agent/stream", methods=["POST"])
 def agent_stream_route():
-    if not os.environ.get("GROQ_API_KEY"):
-        return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
+    if not _enabled_providers():
+        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
 
     data = request.get_json(silent=True) or {}
     history, message = _agent_parse_history(data)
@@ -10308,23 +10472,13 @@ def agent_stream_route():
 
     def generate():
         try:
-            for event in _run_agent_groq_stream(history):
+            for event in _run_agent_with_failover_stream(history):
                 yield f"data: {json.dumps(event)}\n\n"
-        except _GroqRateLimitError as e:
-            retry_after = int(getattr(e, "retry_after", 30) or 30)
-            yield f"data: {json.dumps({'type': 'error', 'text': f'Rate-limited. Try again in {retry_after}s.', 'retryAfter': retry_after})}\n\n"
         except Exception as e:
             import re as _re
             sanitized = _re.sub(r"key=[A-Za-z0-9_\-]+", "key=***", str(e))
-            status = getattr(getattr(e, "response", None), "status_code", None)
-            print(f"Agent stream error (status={status}): {sanitized}")
-            if status == 400:
-                msg = "AI model configuration error — check GROQ_MODEL env var."
-            elif status in (401, 403):
-                msg = "AI assistant is not authorised (invalid API key)."
-            else:
-                msg = "Agent request failed. Please try again."
-            yield f"data: {json.dumps({'type': 'error', 'text': msg})}\n\n"
+            print(f"Agent stream fatal error: {sanitized}")
+            yield f"data: {json.dumps({'type': 'error', 'text': 'Agent request failed. Please try again.'})}\n\n"
         finally:
             _AGENT_GLOBAL_SEMAPHORE.release()
 
@@ -10337,8 +10491,8 @@ def agent_stream_route():
 
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
-    if not os.environ.get("GROQ_API_KEY"):
-        return jsonify({"error": "AI assistant is not configured (missing API key)."}), 503
+    if not _enabled_providers():
+        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
 
     data = request.get_json(silent=True) or {}
     history, message = _agent_parse_history(data)
