@@ -3927,7 +3927,7 @@ def landing():
                 <div class="nav-link-item"><a href="#trust">Why Trust Us</a></div>
                 <div class="nav-link-item"><a class="nav-cta" href="/app">Access Platform</a></div>
             </div>
-            <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false" onclick="if(window.toggleMobPanel)window.toggleMobPanel();return false;">
+            <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
@@ -4796,12 +4796,12 @@ def dashboard():
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
                 <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; AI Assistant</button>
             </div>
-            <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false" onclick="if(window.toggleMobileMenu)window.toggleMobileMenu();return false;">
+            <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false">
                 <span></span><span></span><span></span>
             </button>
         </div>
     </nav>
-    <div class="mobile-overlay" id="mobile-overlay" onclick="if(window.closeMobileMenu)window.closeMobileMenu();"></div>
+    <div class="mobile-overlay" id="mobile-overlay"></div>
     <div class="mobile-menu" id="mobile-menu">
         <button class="mobile-menu-item active" data-tab="verdict">Investment Verdict</button>
         <button class="mobile-menu-item" data-tab="analysis">Technical Analysis</button>
@@ -5738,8 +5738,8 @@ def dashboard():
             document.getElementById(tab + '-tab').classList.add('active');
             ensureTabLoaded(tab);
         }
-        // toggleMobileMenu / closeMobileMenu are wired up by the inline script
-        // immediately following the mobile-menu markup so the hamburger keeps
+        // toggleMobileMenu / closeMobileMenu are wired up by the head-loaded
+        // script using document-level click delegation, so the hamburger keeps
         // working even if this larger script block fails to load.
         function setupAutocomplete(inputId, suggestionId, callbackName) {
             const input = document.getElementById(inputId);
@@ -8066,7 +8066,7 @@ def dashboard():
                     const { done, value } = await reader.read();
                     if (done) break;
                     buf += decoder.decode(value, { stream: true });
-                    const lines = buf.split('\n');
+                    const lines = buf.split('\\n');
                     buf = lines.pop();
                     for (const line of lines) {
                         if (!line.startsWith('data: ')) continue;
