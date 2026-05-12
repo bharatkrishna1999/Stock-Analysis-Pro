@@ -4734,7 +4734,6 @@ def dashboard():
 
         /* ===== AI Assistant Tab ===== */
         .ai-hero { text-align:center; padding:48px 20px 18px; max-width:680px; margin:0 auto; }
-        .ai-pill { display:inline-flex; align-items:center; gap:7px; background:rgba(201,168,76,0.13); border:1px solid rgba(201,168,76,0.3); border-radius:20px; padding:5px 16px; font-size:0.76em; font-weight:700; color:var(--accent-cyan); letter-spacing:0.6px; text-transform:uppercase; margin-bottom:22px; }
         .ai-hero h1 { font-family:'Space Grotesk',sans-serif; font-size:2.6em; font-weight:800; color:var(--text-primary); line-height:1.15; margin-bottom:16px; letter-spacing:-0.5px; }
         .ai-hero p { color:var(--text-secondary); font-size:1em; line-height:1.75; max-width:560px; margin:0 auto; }
         .ai-shell { max-width:880px; margin:0 auto; padding:0 20px 60px; }
@@ -4750,10 +4749,33 @@ def dashboard():
         .ai-messages::-webkit-scrollbar { width:6px; }
         .ai-messages::-webkit-scrollbar-track { background:transparent; }
         .ai-messages::-webkit-scrollbar-thumb { background:var(--border-color); border-radius:3px; }
-        .ai-msg { max-width:78%; padding:12px 16px; border-radius:14px; font-size:0.92em; line-height:1.6; word-break:break-word; white-space:pre-wrap; }
-        .ai-msg.user { align-self:flex-end; background:rgba(201,168,76,0.18); color:var(--text-primary); border:1px solid rgba(201,168,76,0.28); border-bottom-right-radius:4px; }
-        .ai-msg.agent { align-self:flex-start; background:var(--bg-card-hover,rgba(255,255,255,0.04)); color:var(--text-primary); border:1px solid var(--border-color); border-bottom-left-radius:4px; }
-        .ai-msg.agent.streaming::after { content:'▋'; display:inline-block; animation:ai-blink .7s step-end infinite; margin-left:2px; }
+        .ai-msg { max-width:80%; padding:13px 17px; border-radius:16px; font-size:0.92em; line-height:1.6; word-break:break-word; }
+        .ai-msg.user { align-self:flex-end; background:linear-gradient(135deg, rgba(201,168,76,0.22), rgba(201,168,76,0.14)); color:var(--text-primary); border:1px solid rgba(201,168,76,0.32); border-bottom-right-radius:5px; white-space:pre-wrap; box-shadow:0 2px 8px rgba(201,168,76,0.08); }
+        .ai-msg.agent { align-self:flex-start; background:var(--bg-card-hover,rgba(255,255,255,0.04)); color:var(--text-primary); border:1px solid var(--border-color); border-bottom-left-radius:5px; box-shadow:0 2px 8px rgba(0,0,0,0.12); }
+        .ai-msg.agent.streaming::after { content:'▋'; display:inline-block; animation:ai-blink .7s step-end infinite; margin-left:2px; color:var(--accent-gold); }
+        .ai-msg.agent > *:first-child { margin-top:0; }
+        .ai-msg.agent > *:last-child { margin-bottom:0; }
+        .ai-msg.agent p { margin:0 0 10px; }
+        .ai-msg.agent h1, .ai-msg.agent h2, .ai-msg.agent h3, .ai-msg.agent h4 { font-family:'Space Grotesk',sans-serif; font-weight:700; color:var(--text-primary); margin:16px 0 8px; line-height:1.25; letter-spacing:-0.01em; }
+        .ai-msg.agent h1 { font-size:1.18em; padding-bottom:6px; border-bottom:1px solid var(--border-color); }
+        .ai-msg.agent h2 { font-size:1.08em; color:var(--accent-gold); }
+        .ai-msg.agent h3 { font-size:1.0em; color:var(--accent-gold); }
+        .ai-msg.agent h4 { font-size:0.94em; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.04em; }
+        .ai-msg.agent ul, .ai-msg.agent ol { margin:6px 0 12px; padding-left:22px; }
+        .ai-msg.agent li { margin:4px 0; padding-left:2px; }
+        .ai-msg.agent li::marker { color:var(--accent-gold); }
+        .ai-msg.agent ul ul, .ai-msg.agent ol ol, .ai-msg.agent ul ol, .ai-msg.agent ol ul { margin:4px 0; }
+        .ai-msg.agent strong { color:var(--text-primary); font-weight:700; }
+        .ai-msg.agent em { color:var(--text-secondary); font-style:italic; }
+        .ai-msg.agent code { background:rgba(255,255,255,0.06); border:1px solid var(--border-color); padding:1px 6px; border-radius:5px; font-size:0.86em; font-family:'JetBrains Mono','SF Mono',Menlo,monospace; color:var(--accent-gold); }
+        .ai-msg.agent pre { background:rgba(0,0,0,0.28); border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; overflow-x:auto; margin:8px 0; }
+        .ai-msg.agent pre code { background:transparent; border:none; padding:0; color:var(--text-primary); font-size:0.84em; line-height:1.5; }
+        .ai-msg.agent hr { border:none; border-top:1px solid var(--border-color); margin:12px 0; }
+        .ai-msg.agent blockquote { border-left:3px solid var(--accent-gold); margin:8px 0; padding:2px 12px; color:var(--text-secondary); background:rgba(201,168,76,0.06); border-radius:0 6px 6px 0; }
+        .ai-msg.agent a { color:var(--accent-gold); text-decoration:underline; text-underline-offset:2px; }
+        .ai-msg.agent table { border-collapse:collapse; margin:8px 0; font-size:0.88em; width:100%; }
+        .ai-msg.agent th, .ai-msg.agent td { border:1px solid var(--border-color); padding:6px 10px; text-align:left; }
+        .ai-msg.agent th { background:rgba(255,255,255,0.04); font-weight:700; }
         @keyframes ai-blink { 0%,100%{opacity:1} 50%{opacity:0} }
         .ai-msg.error { align-self:flex-start; background:rgba(239,68,68,0.1); color:var(--danger); border:1px solid rgba(239,68,68,0.25); border-bottom-left-radius:4px; }
         .ai-msg.thinking { align-self:flex-start; color:var(--text-muted); font-style:italic; background:transparent; border:none; padding:6px 4px; }
@@ -4795,7 +4817,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
-                <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; AI Assistant</button>
+                <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; Artha</button>
             </div>
             <button class="hamburger" id="hamburger" type="button" aria-label="Menu" aria-expanded="false">
                 <span></span><span></span><span></span>
@@ -4810,7 +4832,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dividend">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression">Market Connection</button>
         <button class="mobile-menu-item" data-tab="scanner">&#128269; Scanner</button>
-        <button class="mobile-menu-item" data-tab="ai">&#10024; AI Assistant</button>
+        <button class="mobile-menu-item" data-tab="ai">&#10024; Artha</button>
     </div>
     <header>
         <div class="container">
@@ -5103,9 +5125,8 @@ def dashboard():
         </div>
         <div id="ai-tab" class="tab-content">
             <div class="ai-hero">
-                <div class="ai-pill">&#10024; Powered by Groq AI</div>
-                <h1>AI Research Assistant</h1>
-                <p>Ask anything about NSE stocks. The assistant automatically runs all analyses &mdash; verdict, DCF valuation, technicals, dividends, and market correlation &mdash; and explains everything in plain English.</p>
+                <h1>Artha</h1>
+                <p>Your in-house equity strategist for NSE stocks. Artha automatically runs every analysis &mdash; verdict, DCF valuation, technicals, dividends, and market correlation &mdash; and explains everything in plain English.</p>
             </div>
             <div class="ai-shell">
                 <div class="ai-suggest-row">
@@ -5119,7 +5140,7 @@ def dashboard():
                         <div class="ai-chat-title"><span class="ai-status-dot"></span> Live Research Session</div>
                     </div>
                     <div class="ai-messages" id="ai-messages">
-                        <div class="ai-msg agent">Welcome. I can pull live data for any of the 292 NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
+                        <div class="ai-msg agent">Welcome to Artha. I can pull live data for any of the 292 NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
                     </div>
                     <div class="ai-input-row">
                         <textarea id="ai-input" placeholder="e.g. Compare HDFC Bank and ICICI Bank on dividends and momentum" rows="1" aria-label="Message input"></textarea>
@@ -7929,12 +7950,109 @@ def dashboard():
         let aiCooldownUntil = 0;
         let aiCooldownTimer = null;
 
+        function aiEscapeHtml(s) {
+            return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+        }
+        function aiRenderInline(s) {
+            let t = aiEscapeHtml(s);
+            // inline code first so its content isn't touched by bold/italic
+            t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // bold **text**
+            t = t.replace(/\\*\\*([^*\\n]+?)\\*\\*/g, '<strong>$1</strong>');
+            // italic *text* (must not be inside ** which is already replaced)
+            t = t.replace(/(^|[^*\\w])\\*([^*\\n]+?)\\*(?!\\*)/g, '$1<em>$2</em>');
+            // links [text](url) — only http(s)
+            t = t.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+            return t;
+        }
+        function aiRenderMarkdown(text) {
+            if (!text) return '';
+            const lines = String(text).replace(/\\r\\n/g,'\\n').split('\\n');
+            const out = [];
+            const listStack = []; // [{type, indent}]
+            let inCode = false;
+            let codeBuf = [];
+            let paraBuf = [];
+            const flushPara = () => {
+                if (paraBuf.length) {
+                    out.push('<p>' + aiRenderInline(paraBuf.join(' ')) + '</p>');
+                    paraBuf = [];
+                }
+            };
+            const closeListsTo = (indent) => {
+                while (listStack.length && listStack[listStack.length-1].indent >= indent) {
+                    out.push('</' + listStack.pop().type + '>');
+                }
+            };
+            const closeAllLists = () => closeListsTo(-1);
+            for (let i = 0; i < lines.length; i++) {
+                const raw = lines[i];
+                if (inCode) {
+                    if (/^\\s*```/.test(raw)) {
+                        out.push('<pre><code>' + aiEscapeHtml(codeBuf.join('\\n')) + '</code></pre>');
+                        codeBuf = []; inCode = false;
+                    } else {
+                        codeBuf.push(raw);
+                    }
+                    continue;
+                }
+                if (/^\\s*```/.test(raw)) { flushPara(); closeAllLists(); inCode = true; continue; }
+                if (raw.trim() === '') { flushPara(); closeAllLists(); continue; }
+                const h = raw.match(/^\\s*(#{1,6})\\s+(.+?)\\s*#*\\s*$/);
+                if (h) {
+                    flushPara(); closeAllLists();
+                    const lvl = Math.min(h[1].length, 4);
+                    out.push('<h' + lvl + '>' + aiRenderInline(h[2]) + '</h' + lvl + '>');
+                    continue;
+                }
+                if (/^\\s*(-{3,}|\\*{3,}|_{3,})\\s*$/.test(raw)) {
+                    flushPara(); closeAllLists(); out.push('<hr>'); continue;
+                }
+                const bq = raw.match(/^\\s*>\\s?(.*)$/);
+                if (bq) {
+                    flushPara(); closeAllLists();
+                    out.push('<blockquote>' + aiRenderInline(bq[1]) + '</blockquote>');
+                    continue;
+                }
+                const indent = (raw.match(/^(\\s*)/)[1] || '').length;
+                const trimmed = raw.slice(indent);
+                const ul = trimmed.match(/^[-*+]\\s+(.+)$/);
+                const ol = trimmed.match(/^\\d+\\.\\s+(.+)$/);
+                if (ul || ol) {
+                    flushPara();
+                    const type = ul ? 'ul' : 'ol';
+                    const content = ul ? ul[1] : ol[1];
+                    closeListsTo(indent + 1);
+                    const top = listStack[listStack.length-1];
+                    if (!top || top.indent < indent) {
+                        out.push('<' + type + '>');
+                        listStack.push({ type: type, indent: indent });
+                    } else if (top.type !== type) {
+                        out.push('</' + top.type + '>');
+                        listStack.pop();
+                        out.push('<' + type + '>');
+                        listStack.push({ type: type, indent: indent });
+                    }
+                    out.push('<li>' + aiRenderInline(content) + '</li>');
+                    continue;
+                }
+                if (listStack.length) { closeAllLists(); }
+                paraBuf.push(raw.trim());
+            }
+            flushPara(); closeAllLists();
+            if (inCode) out.push('<pre><code>' + aiEscapeHtml(codeBuf.join('\\n')) + '</code></pre>');
+            return out.join('');
+        }
         function aiAppend(role, text) {
             const box = document.getElementById('ai-messages');
             if (!box) return null;
             const el = document.createElement('div');
             el.className = 'ai-msg ' + role;
-            el.textContent = text;
+            if (role === 'agent') {
+                el.innerHTML = aiRenderMarkdown(text || '');
+            } else {
+                el.textContent = text;
+            }
             box.appendChild(el);
             box.scrollTop = box.scrollHeight;
             return el;
@@ -8083,7 +8201,7 @@ def dashboard():
                                 agentEl.classList.add('streaming');
                             }
                             fullReply += evt.text;
-                            agentEl.textContent = fullReply;
+                            agentEl.innerHTML = aiRenderMarkdown(fullReply);
                             aiScrollBottom();
                         } else if (evt.type === 'done') {
                             if (agentEl) agentEl.classList.remove('streaming');
@@ -9733,7 +9851,11 @@ def alerts_scan_now_route():
 
 # ── Groq AI Research Assistant ───────────────────────────────────────────────
 
-_AGENT_SYSTEM_PROMPT = """You are the in-house equity strategist for Stock Analysis Pro — think of yourself as a senior portfolio manager and sell-side analyst rolled into one, the kind of operator a hedge fund hires to read the tape and pick spots on NSE. Speak with conviction and market sense, not the hedged register of a chatbot. You translate professional-grade analysis into plain English without dumbing it down.
+_AGENT_SYSTEM_PROMPT = """You are Artha, the in-house equity strategist for Stock Analysis Pro — think of yourself as a senior portfolio manager and sell-side analyst rolled into one, the kind of operator a hedge fund hires to read the tape and pick spots on NSE. Speak with conviction and market sense, not the hedged register of a chatbot. You translate professional-grade analysis into plain English without dumbing it down.
+
+IDENTITY:
+- Your name is Artha. When asked "what's your name", "who are you", or anything similar, answer: "I'm Artha — the equity strategist for Stock Analysis Pro." Do not call yourself "The Analyst", an AI, a chatbot, or a language model.
+- "Artha" is Sanskrit for wealth and meaning — that's the job. Don't over-explain the etymology unless the user asks.
 
 PERSONA:
 - Decisive. Have a view. Lead with the call (BUY / SELL / HOLD / AVOID / WAIT), then justify in numbers.
@@ -10981,7 +11103,7 @@ def _agent_parse_history(data, max_turns=10, max_content=1500):
 @app.route("/api/agent/stream", methods=["POST"])
 def agent_stream_route():
     if not _enabled_providers():
-        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
+        return jsonify({"error": "Artha is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
 
     data = request.get_json(silent=True) or {}
     history, message = _agent_parse_history(data)
@@ -10994,7 +11116,7 @@ def agent_stream_route():
         return jsonify({"error": f"Too many requests. Try again in {wait_secs}s.", "retryAfter": wait_secs}), 429
 
     if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
-        return jsonify({"error": "AI assistant is busy. Please try again in a moment.", "retryAfter": 10}), 429
+        return jsonify({"error": "Artha is busy. Please try again in a moment.", "retryAfter": 10}), 429
 
     def generate():
         try:
@@ -11018,7 +11140,7 @@ def agent_stream_route():
 @app.route("/api/agent/query", methods=["POST"])
 def agent_query_route():
     if not _enabled_providers():
-        return jsonify({"error": "AI assistant is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
+        return jsonify({"error": "Artha is not configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}), 503
 
     data = request.get_json(silent=True) or {}
     history, message = _agent_parse_history(data)
@@ -11034,7 +11156,7 @@ def agent_query_route():
 
     if not _AGENT_GLOBAL_SEMAPHORE.acquire(timeout=20):
         return jsonify({
-            "error": "AI assistant is busy. Please try again in a moment.",
+            "error": "Artha is busy. Please try again in a moment.",
             "retryAfter": 10,
         }), 429
     try:
@@ -11043,7 +11165,7 @@ def agent_query_route():
     except _GroqRateLimitError as e:
         retry_after = int(getattr(e, "retry_after", 30) or 30)
         resp = jsonify({
-            "error": f"AI assistant is rate-limited upstream. Try again in {retry_after}s.",
+            "error": f"Artha is rate-limited upstream. Try again in {retry_after}s.",
             "retryAfter": retry_after,
         })
         resp.headers["Retry-After"] = str(retry_after)
@@ -11055,7 +11177,7 @@ def agent_query_route():
         print(f"Agent error (status={status}): {sanitized}")
         if status == 429:
             return jsonify({
-                "error": "AI assistant is rate-limited right now. Please wait a minute and try again.",
+                "error": "Artha is rate-limited right now. Please wait a minute and try again.",
                 "retryAfter": 30,
             }), 429
         if status == 400:
@@ -11064,7 +11186,7 @@ def agent_query_route():
             }), 503
         if status == 401 or status == 403:
             return jsonify({
-                "error": "AI assistant is not authorised (invalid API key).",
+                "error": "Artha is not authorised (invalid API key).",
             }), 503
         return jsonify({"error": "Agent request failed. Please try again."}), 500
     finally:
