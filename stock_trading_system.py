@@ -9733,36 +9733,56 @@ def alerts_scan_now_route():
 
 # ── Groq AI Research Assistant ───────────────────────────────────────────────
 
-_AGENT_SYSTEM_PROMPT = """You are the AI research assistant for Stock Analysis Pro (NSE equity research). Explain professional-grade analysis in plain English for everyday investors.
+_AGENT_SYSTEM_PROMPT = """You are the in-house equity strategist for Stock Analysis Pro — think of yourself as a senior portfolio manager and sell-side analyst rolled into one, the kind of operator a hedge fund hires to read the tape and pick spots on NSE. Speak with conviction and market sense, not the hedged register of a chatbot. You translate professional-grade analysis into plain English without dumbing it down.
 
-SCOPE: Answer only the current question. Don't carry over tickers, numbers, or news from earlier turns unless the user explicitly references them. For follow-ups, use prior turns only to identify the subject, then pull fresh data.
+PERSONA:
+- Decisive. Have a view. Lead with the call (BUY / SELL / HOLD / AVOID / WAIT), then justify in numbers.
+- Pattern-matcher. When something looks like a classic setup (deep value, value trap, momentum extension, breakout retest, dividend trap), name it.
+- Risk-aware, not risk-paralyzed. Surface the real downside in one crisp line; don't lard every answer with disclaimers.
+- Plain talker. No "Looks like…", "It seems…", "It depends…". No corporate filler.
 
-TOOLS — call only what's needed:
-- Full buy/sell analysis ("should I buy X", "what do you think of X") → call all six per-ticker tools.
-- "News on X" / "what's happening with X" → get_company_news only.
-- "Price of X" / "CMP of X" → get_investment_verdict only (includes live price). Never invent prices.
-- "Compare X and Y" → get_investment_verdict for both + relevant tools.
-- "Find undervalued / momentum / dividend stocks" → scan_universe.
-- Portfolio-impact / "what if Nifty crashes" / market-sensitivity questions → get_market_correlation + get_market_snapshot. Never estimate the Nifty level from memory.
-- Educational or macro questions (no specific ticker) → answer directly, no tools.
-- Never fabricate numbers, prices, news, or data about commodities, currencies, or non-NSE assets. If a tool fails or no tool covers the topic, say so plainly.
+SCOPE — what I do NOT do (decline cleanly, in ONE complete sentence, then redirect):
+- General arithmetic / math homework ("what's 5+5", "solve this integral"). I am not a calculator.
+- Physics, engineering, chemistry, aerospace, biology, or any science problem unrelated to a specific NSE stock's fundamentals.
+- Coding help, writing essays, translation, weather, sports, trivia, general chit-chat.
+- Crypto, forex, commodities, real estate, US/global equities, mutual funds, IPOs not yet listed.
+- Personal financial planning, tax advice, account/brokerage support, regulatory filings.
+- Predictions of exact future prices, macro forecasts, or "will the market crash tomorrow".
+
+How to decline: ONE complete sentence — name the topic as out of scope, anchor on what I DO cover, offer one concrete redirect. Example: "Arithmetic isn't what I'm built for — I'm a research engine for the 292 NSE stocks we track. Want me to pull a verdict or screen for a setup instead?" Do NOT attempt the off-topic answer even if you "know" it. Do NOT trail off mid-sentence with "I don't have access to…" — finish the thought every single time. Do not argue with the user about a wrong arithmetic answer ("no it's 16"); just restate scope politely.
+
+CONTINUITY (critical):
+- Treat the conversation as one continuous discussion with a client. If the user says "their", "it", "this stock", "the demerger", "what about its dividend" — resolve the reference from the most recent user/assistant turns and call the appropriate tool. Never reply "I don't have context" or "you haven't specified a ticker" when the prior turn made it obvious.
+- For vague meta-replies ("but you can?", "really?", "why?", "ok and?"), pick the most recent topic and either dig one level deeper on it or ask one specific clarifying question — never repeat your last answer verbatim.
+- Never claim you "don't have access to" a tool that exists. The tools available this turn are the only tools you have; use them or explain plainly what data isn't on the platform (e.g. "we don't track intraday tick-by-tick movers; here's what I can pull").
+
+TOOL ROUTING:
+- Full buy/sell view on X ("should I buy X", "what do you think of X", "is X a good entry") → call get_investment_verdict, get_dcf_valuation, get_technical_signals, get_dividend_analysis, get_market_correlation, get_company_news. Synthesize, don't just list.
+- "News on X" / "what's happening with X" / "tell me about X's demerger / split / lawsuit / results" → get_company_news (and get_investment_verdict if the user is leaning toward a trade).
+- "Price of X" / "CMP" / "where is X trading" → get_investment_verdict (it carries live price).
+- "Compare X and Y" → verdict + DCF + technicals for both. Give a clear winner.
+- "Find / screen / show me undervalued / momentum / dividend / cheap stocks" → scan_universe.
+- "Biggest drop today" / "top losers" / "top gainers" / "biggest movers" / "what stock dropped the most" → scan_universe with filter_criteria set to "top_losers" or "top_gainers".
+- "What if Nifty crashes" / portfolio sensitivity → get_market_correlation + get_market_snapshot. Never estimate Nifty level from memory.
+- Educational questions about *equity-investing concepts* ("what is DCF", "how does beta work", "what's a value trap") → answer directly in 3-4 sentences, no tools. Anything outside equity investing falls under SCOPE above.
+- Never fabricate prices, news, numbers, or commentary on commodities, currencies, or non-NSE assets. If a tool fails, say so in one line and offer what you CAN pull.
 
 SILENCE RULES — strict:
-- Never narrate tool use. No "I'll call…", "Let me check…", "Running the tools…", "Based on the data…". Just produce the final answer.
+- No tool narration ("I'll call…", "Let me check…", "Running the tools…", "Based on the data…"). Output the final answer only.
 - No meta-commentary about your reasoning, models, or what you're about to do.
-- When a tool returns a signal (BUY/SELL/HOLD), state it explicitly in your opening line. Don't omit it.
-- If two indicators contradict (e.g. RSI overbought but DCF undervalued), name the contradiction in one sentence — don't pretend it isn't there.
+- When a tool returns BUY/SELL/HOLD, lead with that signal verbatim in the opening line.
+- If two indicators disagree (RSI overbought but DCF cheap; high yield but falling EPS), name the contradiction in one sentence and tell the user which side you'd weight more heavily.
 
-DATA: Yahoo Finance (prices/fundamentals), GNews (news), in-house DCF/technical/dividend/correlation models. 292+ NSE stocks.
+DATA: Yahoo Finance (prices/fundamentals), GNews (news), in-house DCF/technical/dividend/correlation models. ~292 NSE stocks tracked.
 
 RESPONSE FORMAT:
-1. One direct opening line — no hedging openers ("Looks like", "It seems"). For buy/sell questions, lead with the verdict signal.
-2. "Key numbers" — 3-5 bullets: value + plain-English gloss in parentheses. E.g. "RSI 72 (momentum is hot — may be due for a pause)".
-3. "What this means for you" — 2-3 practical sentences using only the numbers shown.
-4. Define technical terms first use (DCF, RSI, MACD, beta, margin of safety, etc.).
-5. Hard cap: 200 words. News-only: 2-4 bullets + one takeaway. Price-only: 1-2 sentences. Educational: 3-4 sentences. Do not pad.
-6. One brief risk reminder ONLY on buy/sell views. Never include it on price-only, news-only, or educational replies.
-7. When explaining HSIC: lead with the plain_english analogy from the tool. Beta gets a one-liner crash example. Never quote raw HSIC numbers without the analogy."""
+1. One decisive opening line. For trade questions, lead with the call (BUY/SELL/HOLD/AVOID) + one-clause why.
+2. "Key numbers" — 3-5 bullets: value + plain-English gloss in parentheses. E.g. "RSI 72 (momentum is hot — overdue for a pause)".
+3. "What this means for you" — 2-3 practical sentences. Concrete entry/exit zones or position-sizing hints when relevant, using only the numbers shown.
+4. Define technical terms on first use (DCF, RSI, MACD, beta, margin of safety, HSIC).
+5. Hard cap: 220 words. News-only: 2-4 bullets + one takeaway. Price-only: 1-2 sentences. Educational: 3-4 sentences. Movers/screen: ranked list of up to 5 names with one-line rationale each.
+6. One sharp risk line ONLY on buy/sell views. Skip on price/news/educational.
+7. HSIC explanation: lead with the plain_english analogy from the tool. Beta gets a one-liner crash example. Never quote raw HSIC without the analogy."""
 
 _AGENT_TOOLS = [
     {
@@ -9809,7 +9829,16 @@ _AGENT_TOOLS = [
     },
     {
         "name": "scan_universe",
-        "description": "Filter NSE universe by sector or criteria (undervalued, high dividend, bullish momentum).",
+        "description": (
+            "Filter the NSE universe by sector and/or criteria. "
+            "Use filter_criteria='top_losers' for 'biggest drop today' / 'worst performers' / "
+            "'what stock fell the most' style questions, and filter_criteria='top_gainers' for "
+            "'biggest gainers today' / 'best performers'. These two modes fetch live day-over-day "
+            "price change and return ranked tickers with current price and day_change_pct. "
+            "Other supported criteria: 'undervalued', 'momentum', 'bullish', 'bearish', 'sell' "
+            "(filter cached BUY/SELL signals). Sector is optional (e.g. 'Banking', 'IT', "
+            "'Pharma'); default is Nifty 50 + Next 50."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -10038,8 +10067,116 @@ def _agent_get_market_snapshot():
     return result
 
 
+_TOP_MOVERS_CACHE = {"data": None, "ts": 0.0, "key": None}
+_TOP_MOVERS_LOCK = Lock()
+_TOP_MOVERS_TTL_SEC = 180.0
+
+
+def _agent_fetch_top_movers(direction, sector=None, limit=5):
+    """Batch-fetch 2-day closes for a sector slice via yfinance and rank by
+    day-over-day pct change. Used by scan_universe when the user asks for
+    top gainers/losers/movers. Cached for 3 minutes so repeated 'biggest
+    drop today' chats don't hammer Yahoo."""
+    if sector:
+        candidates = []
+        sector_lower = sector.lower()
+        for sec_name, tickers in STOCKS.items():
+            if sector_lower in sec_name.lower():
+                candidates.extend(tickers)
+        if not candidates:
+            candidates = list(STOCKS.get("Nifty 50", [])) + list(STOCKS.get("Nifty Next 50", []))
+    else:
+        candidates = list(STOCKS.get("Nifty 50", [])) + list(STOCKS.get("Nifty Next 50", []))
+
+    seen, unique = set(), []
+    for t in candidates:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    unique = unique[:80]
+
+    cache_key = (direction, sector or "", tuple(unique))
+    with _TOP_MOVERS_LOCK:
+        cached = _TOP_MOVERS_CACHE
+        if (cached["data"] is not None and cached["key"] == cache_key
+                and time.time() - cached["ts"] < _TOP_MOVERS_TTL_SEC):
+            return cached["data"]
+
+    yahoo_syms = [f"{s}.NS" for s in unique]
+    movers = []
+    try:
+        df = yf.download(
+            tickers=" ".join(yahoo_syms),
+            period="5d",
+            interval="1d",
+            progress=False,
+            group_by="ticker",
+            threads=True,
+            auto_adjust=False,
+        )
+    except Exception as e:
+        return {"error": f"Could not fetch live mover data: {e}"}
+
+    for sym, ysym in zip(unique, yahoo_syms):
+        try:
+            if isinstance(df.columns, pd.MultiIndex):
+                if ysym not in df.columns.get_level_values(0):
+                    continue
+                close = df[ysym]["Close"].dropna()
+            else:
+                close = df["Close"].dropna()
+            if len(close) < 2:
+                continue
+            curr = float(close.iloc[-1])
+            prev = float(close.iloc[-2])
+            if prev <= 0:
+                continue
+            pct = (curr - prev) / prev * 100.0
+            movers.append({
+                "ticker": sym,
+                "name": TICKER_TO_NAME.get(sym, sym),
+                "current_price": round(curr, 2),
+                "prev_close": round(prev, 2),
+                "day_change_pct": round(pct, 2),
+            })
+        except Exception:
+            continue
+
+    if not movers:
+        return {"error": "No price data available for the requested universe right now."}
+
+    reverse = (direction == "top_gainers")
+    movers.sort(key=lambda m: m["day_change_pct"], reverse=reverse)
+    top = movers[: max(1, min(int(limit or 5), 10))]
+
+    result = {
+        "direction": direction,
+        "sector_filter": sector or "Nifty 50 + Next 50",
+        "universe_size": len(movers),
+        "matches": top,
+        "note": "Day change is last close vs prior close; intraday tick-by-tick is not tracked.",
+    }
+    with _TOP_MOVERS_LOCK:
+        _TOP_MOVERS_CACHE["data"] = result
+        _TOP_MOVERS_CACHE["ts"] = time.time()
+        _TOP_MOVERS_CACHE["key"] = cache_key
+    return result
+
+
 def _agent_scan_universe(sector=None, filter_criteria=None):
-    criteria = (filter_criteria or "").lower()
+    criteria = (filter_criteria or "").lower().strip()
+
+    # Day-mover requests get a dedicated batched price fetch — the cached
+    # signal-based scanner can't answer "what dropped the most today".
+    mover_aliases_loss = ("top_losers", "top_loser", "losers", "biggest_drop",
+                         "biggest_loser", "worst_performers", "fell_most", "dropped_most")
+    mover_aliases_gain = ("top_gainers", "top_gainer", "gainers", "biggest_gain",
+                         "biggest_gainer", "best_performers", "rose_most", "gained_most")
+    if any(alias in criteria for alias in mover_aliases_loss):
+        return _agent_fetch_top_movers("top_losers", sector=sector)
+    if any(alias in criteria for alias in mover_aliases_gain):
+        return _agent_fetch_top_movers("top_gainers", sector=sector)
+
     candidates = []
     if sector:
         sector_lower = sector.lower()
@@ -10089,7 +10226,9 @@ def _agent_scan_universe(sector=None, filter_criteria=None):
         "sector_filter": sector or "broad",
         "criteria": filter_criteria or "all",
         "matches": matches,
-        "note": "Results from cached analyses only; run a fresh analysis for full universe coverage.",
+        "note": ("Results from cached analyses. For 'biggest drop today' / 'top gainers' / "
+                 "'top losers' questions, call this tool with filter_criteria='top_losers' "
+                 "or 'top_gainers' to get live day-change rankings instead."),
     }
 
 
@@ -10212,23 +10351,85 @@ def _groq_build_tools(exclude=None):
     ]
 
 
-# Keywords that legitimately need the universe scanner. Anything else is a
-# ticker-specific question and shipping scan_universe to the model just wastes
-# context tokens and tempts wasteful scan calls.
+# Keywords that strongly signal a universe scan. We default to including
+# scan_universe and only drop it when the message clearly references a single
+# ticker context — that way "what stock dropped the most today" or "biggest
+# losers" still gets the tool even though it doesn't say "stocks" plural.
 _SCAN_KEYWORDS = (
     "scan", "screen", "find ", "list ", "show me ", "top ",
-    "best ", "stocks to ", "undervalued stocks", "high dividend",
-    "momentum stocks", "dividend stocks", "cheap stocks",
-    "which stocks", "what stocks", "give me stocks",
+    "best ", "worst ", "biggest ", "stocks to ", "undervalued",
+    "overvalued", "high dividend", "momentum stocks", "dividend stocks",
+    "cheap stocks", "which stock", "what stock", "give me stocks",
+    "movers", "gainers", "losers", "dropped the most",
+    "gained the most", "fell the most", "rose the most", "lost the most",
 )
 
 
+def _looks_ticker_specific(message):
+    """Heuristic: does the message look like a single-ticker question? We
+    check whether any known ticker symbol or company name appears. If yes,
+    we can omit scan_universe to keep the toolset tight."""
+    msg = (message or "").lower()
+    if not msg:
+        return False
+    try:
+        ticker_set = set(STOCKS.get("Nifty 50", []) + STOCKS.get("Nifty Next 50", []))
+        # Cheap word scan; tickers are short upper-case symbols.
+        words = re.findall(r"[A-Za-z]{3,}", msg)
+        upper_words = {w.upper() for w in words}
+        if ticker_set & upper_words:
+            return True
+        # Company name hits (TICKER_TO_NAME has lowercased names mapped from sym).
+        for sym, name in TICKER_TO_NAME.items():
+            if name and len(name) >= 4 and name.lower() in msg:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _last_ticker_in_history(history):
+    """Walk the conversation in reverse and return the most recent ticker
+    symbol or company name mentioned, normalized to its symbol. Powers the
+    nudge that recovers pronoun follow-ups when the model stalls."""
+    try:
+        ticker_set = set(STOCKS.get("Nifty 50", []) + STOCKS.get("Nifty Next 50", []))
+        for sec_tickers in STOCKS.values():
+            ticker_set.update(sec_tickers)
+    except Exception:
+        ticker_set = set()
+    name_map = {}
+    try:
+        for sym, name in TICKER_TO_NAME.items():
+            if name and len(name) >= 4:
+                name_map[name.lower()] = sym
+    except Exception:
+        pass
+
+    for msg in reversed(history or []):
+        content = (msg.get("content") or "")
+        if not content:
+            continue
+        lower = content.lower()
+        words = re.findall(r"[A-Za-z]{3,}", content)
+        for w in words:
+            up = w.upper()
+            if up in ticker_set:
+                return up
+        for name, sym in name_map.items():
+            if name in lower:
+                return sym
+    return None
+
+
 def _tools_for_message(message):
-    """Return the tool set tailored to the user's latest message. Drops
-    scan_universe for ticker-specific questions so the model isn't tempted to
-    issue a universe scan when answering 'should I buy TCS?'."""
+    """Return the tool set tailored to the user's latest message. Includes
+    scan_universe whenever the question doesn't pin a single ticker, plus
+    whenever an explicit scan keyword shows up."""
     msg = (message or "").lower()
     if any(kw in msg for kw in _SCAN_KEYWORDS):
+        return _groq_build_tools()
+    if not _looks_ticker_specific(msg):
         return _groq_build_tools()
     return _groq_build_tools(exclude={"scan_universe"})
 
@@ -10496,6 +10697,7 @@ def _run_agent_provider_stream(provider, history):
         messages.append({"role": msg["role"], "content": msg["content"]})
 
     first_call = True
+    nudged = False
     max_turns = 6
     for _ in range(max_turns):
         payload = {
@@ -10594,11 +10796,38 @@ def _run_agent_provider_stream(provider, history):
             return
 
         if not accumulated_tool_calls:
-            # Unexpected finish — return whatever we have
+            # No tool calls AND no usable text. Most commonly this happens
+            # when the model is confused by a pronoun follow-up. Inject one
+            # nudge with the last ticker we can detect from the conversation
+            # and loop once more before giving up.
             if accumulated_content:
                 yield {"type": "done"}
-            else:
-                yield {"type": "error", "text": "No response generated. Please try again."}
+                return
+            if not nudged:
+                nudged = True
+                hint_ticker = _last_ticker_in_history(history)
+                if hint_ticker:
+                    nudge = (
+                        "Your last turn produced no answer. The user is likely asking "
+                        "a pronoun follow-up about a stock we already discussed — the "
+                        f"most recent ticker on the table is {hint_ticker}. Resolve the "
+                        "reference, call the right tool, and give a direct answer in a "
+                        "complete sentence. Never trail off."
+                    )
+                else:
+                    nudge = (
+                        "Your last turn produced no answer. The user's question is "
+                        "probably outside Stock Analysis Pro's scope (NSE equity "
+                        "research) — see the SCOPE rules in the system prompt. Decline "
+                        "in ONE complete sentence, name the topic as out of scope, and "
+                        "offer one concrete NSE-related redirect. Never trail off."
+                    )
+                messages.append({"role": "system", "content": nudge})
+                continue
+            yield {"type": "error", "text": (
+                "That question is outside what I cover (NSE equity research). Ask me "
+                "about a stock — e.g. 'Is TCS a buy right now?' or 'Top losers today.'"
+            )}
             return
 
         # Build assistant message with tool calls and add to context
@@ -10731,7 +10960,11 @@ def _agent_throttle_check(ip):
     return 0
 
 
-def _agent_parse_history(data, max_turns=2, max_content=1500):
+def _agent_parse_history(data, max_turns=10, max_content=1500):
+    """Keep up to `max_turns` of prior user/assistant messages so pronoun
+    follow-ups ('what about their split?', 'is it cheap?') retain the
+    ticker/topic context. The previous value of 2 dropped the original
+    question after a single round-trip and broke multi-turn chat."""
     raw_history = data.get("history") or []
     history = []
     for turn in raw_history[-max_turns:]:
