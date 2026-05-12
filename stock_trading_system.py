@@ -17,6 +17,7 @@ import json
 import os
 import pickle
 import random
+import re
 import time
 import yfinance as yf
 import pandas as pd
@@ -9742,6 +9743,7 @@ TOOLS — call only what's needed:
 - "Price of X" / "CMP of X" → get_investment_verdict only (includes live price). Never invent prices.
 - "Compare X and Y" → get_investment_verdict for both + relevant tools.
 - "Find undervalued / momentum / dividend stocks" → scan_universe.
+- Portfolio-impact / "what if Nifty crashes" / market-sensitivity questions → get_market_correlation + get_market_snapshot. Never estimate the Nifty level from memory.
 - Educational or macro questions (no specific ticker) → answer directly, no tools.
 - Never fabricate numbers, prices, news, or data about commodities, currencies, or non-NSE assets. If a tool fails or no tool covers the topic, say so plainly.
 
@@ -9759,7 +9761,8 @@ RESPONSE FORMAT:
 3. "What this means for you" — 2-3 practical sentences using only the numbers shown.
 4. Define technical terms first use (DCF, RSI, MACD, beta, margin of safety, etc.).
 5. Hard cap: 200 words. News-only: 2-4 bullets + one takeaway. Price-only: 1-2 sentences. Educational: 3-4 sentences. Do not pad.
-6. One brief risk reminder ONLY on buy/sell views. Never include it on price-only, news-only, or educational replies."""
+6. One brief risk reminder ONLY on buy/sell views. Never include it on price-only, news-only, or educational replies.
+7. When explaining HSIC: lead with the plain_english analogy from the tool. Beta gets a one-liner crash example. Never quote raw HSIC numbers without the analogy."""
 
 _AGENT_TOOLS = [
     {
@@ -9784,8 +9787,13 @@ _AGENT_TOOLS = [
     },
     {
         "name": "get_market_correlation",
-        "description": "HSIC correlation vs Nifty 50, beta, and systematic risk exposure for a ticker.",
+        "description": "HSIC correlation vs Nifty 50, beta, and systematic risk exposure for a ticker. Returned dict includes a 'plain_english' analogy and a 'crash_scenario' worked example — paraphrase those fields verbatim instead of quoting raw HSIC/beta numbers.",
         "input_schema": {"type": "object", "properties": {"ticker": {"type": "string"}}, "required": ["ticker"]},
+    },
+    {
+        "name": "get_market_snapshot",
+        "description": "Live Nifty 50 and Sensex index levels with intraday day-change %. Call this before any portfolio-impact or 'what if Nifty drops/crashes' question — never estimate the Nifty level from memory.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "get_company_news",
@@ -9925,18 +9933,40 @@ def _agent_get_dividend_analysis(ticker):
     }
 
 
+def _market_correlation_plain_english(hsic):
+    if not isinstance(hsic, (int, float)):
+        return None
+    if hsic >= 0.85:
+        return "Moves like Nifty's shadow — when the market sneezes, this stock catches a cold"
+    if hsic >= 0.65:
+        return "Follows the crowd — usually drifts with the market but has some independent moves"
+    if hsic >= 0.40:
+        return "Half its own boss — listens to Nifty about half the time, ignores it the rest"
+    return "Marches to its own drum — Nifty's mood barely shows up in this stock's chart"
+
+
+def _market_correlation_crash_scenario(beta):
+    if not isinstance(beta, (int, float)):
+        return None
+    return f"If Nifty 50 falls 2% in a day, expect this stock to move about {round(beta * 2, 2):+.1f}%."
+
+
 def _agent_get_market_correlation(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
     cached = REGRESSION_CACHE.get(sym)
     if cached:
+        hsic = cached.get("hsic_score")
+        beta = cached.get("beta")
         return {
             "ticker": sym,
-            "hsic_score": cached.get("hsic_score"),
+            "hsic_score": hsic,
             "correlation_label": cached.get("label"),
             "systematic_risk": cached.get("systematic_risk"),
-            "beta": cached.get("beta"),
+            "beta": round(beta, 2) if isinstance(beta, (int, float)) else beta,
+            "plain_english": _market_correlation_plain_english(hsic),
+            "crash_scenario": _market_correlation_crash_scenario(beta),
         }
     fut = _submit_regression_job(sym)
     try:
@@ -9945,13 +9975,67 @@ def _agent_get_market_correlation(ticker):
         res = None
     if not res:
         return {"ticker": sym, "status": "computing", "message": "Correlation analysis still running; retry shortly."}
+    hsic = res.get("hsic_score")
+    beta = res.get("beta")
     return {
         "ticker": sym,
-        "hsic_score": res.get("hsic_score"),
+        "hsic_score": hsic,
         "correlation_label": res.get("label"),
         "systematic_risk": res.get("systematic_risk"),
-        "beta": res.get("beta"),
+        "beta": round(beta, 2) if isinstance(beta, (int, float)) else beta,
+        "plain_english": _market_correlation_plain_english(hsic),
+        "crash_scenario": _market_correlation_crash_scenario(beta),
     }
+
+
+_MARKET_SNAPSHOT_CACHE = {"data": None, "ts": 0.0}
+_MARKET_SNAPSHOT_LOCK = Lock()
+_MARKET_SNAPSHOT_TTL_SEC = 60.0
+
+
+def _agent_get_market_snapshot():
+    with _MARKET_SNAPSHOT_LOCK:
+        cached = _MARKET_SNAPSHOT_CACHE["data"]
+        ts = _MARKET_SNAPSHOT_CACHE["ts"]
+        if cached and (time.time() - ts) < _MARKET_SNAPSHOT_TTL_SEC:
+            return cached
+
+    def _fetch_index(symbol):
+        try:
+            data = yf.download(symbol, period="5d", interval="1d",
+                               progress=False, threads=False, timeout=8)
+            if data is None or data.empty:
+                return None, None
+            close = data.get("Close")
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            close = close.dropna()
+            if len(close) < 2:
+                return None, None
+            last = float(close.iloc[-1])
+            prev = float(close.iloc[-2])
+            change = ((last - prev) / prev) * 100 if prev else None
+            return round(last, 2), (round(change, 2) if change is not None else None)
+        except Exception:
+            return None, None
+
+    nifty_level, nifty_change = _fetch_index("^NSEI")
+    sensex_level, sensex_change = _fetch_index("^BSESN")
+
+    if nifty_level is None and sensex_level is None:
+        return {"error": "Index snapshot unavailable from Yahoo right now. Try again shortly."}
+
+    result = {
+        "nifty_50_level": nifty_level,
+        "nifty_day_change_pct": nifty_change,
+        "sensex_level": sensex_level,
+        "sensex_day_change_pct": sensex_change,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+    with _MARKET_SNAPSHOT_LOCK:
+        _MARKET_SNAPSHOT_CACHE["data"] = result
+        _MARKET_SNAPSHOT_CACHE["ts"] = time.time()
+    return result
 
 
 def _agent_scan_universe(sector=None, filter_criteria=None):
@@ -10070,6 +10154,8 @@ def _agent_dispatch_tool(name, inputs):
         return _agent_get_dividend_analysis(inputs.get("ticker", ""))
     if name == "get_market_correlation":
         return _agent_get_market_correlation(inputs.get("ticker", ""))
+    if name == "get_market_snapshot":
+        return _agent_get_market_snapshot()
     if name == "get_company_news":
         return _agent_get_company_news(inputs.get("ticker", ""), inputs.get("max_results", 5))
     if name == "scan_universe":
@@ -10103,6 +10189,7 @@ _TOOL_THINKING_LABELS = {
     "get_technical_signals": "Checking technical signals for {ticker}",
     "get_dividend_analysis": "Analysing dividends for {ticker}",
     "get_market_correlation": "Checking Nifty correlation for {ticker}",
+    "get_market_snapshot": "Fetching live Nifty/Sensex levels...",
     "get_company_news": "Fetching latest news for {ticker}",
     "scan_universe": "Scanning NSE universe...",
 }
@@ -10332,6 +10419,59 @@ def _stream_cached_response(text, chunk_size=24):
     yield {"type": "done"}
 
 
+# Sentences whose first words match this pattern are tool-call narration the
+# user should never see ("I'll call get_investment_verdict", "Let me check the
+# data", "To get the current price..."). The system prompt forbids this, but
+# the model treats word-problem math as a scratchpad and ignores the rule, so
+# we strip these sentences out server-side as a hard backstop.
+_NARRATION_PREFIX_RE = re.compile(
+    r"^(I'll |I will |Let me |To get |To find |To check |To assess |"
+    r"First, I'll |Now I'll |I'm going to |I need to (call|use|check) )"
+)
+
+
+class _NarrationFilter:
+    """Token-stream filter. Buffers content until a sentence boundary (. or \\n),
+    then drops the sentence if it starts with a narration prefix. Otherwise
+    emits it. Call flush() at end of stream to drain the tail."""
+
+    def __init__(self):
+        self._buf = ""
+
+    def feed(self, chunk):
+        if not chunk:
+            return ""
+        self._buf += chunk
+        out_parts = []
+        while True:
+            dot = self._buf.find(".")
+            nl = self._buf.find("\n")
+            if dot < 0 and nl < 0:
+                break
+            if dot < 0:
+                idx = nl
+            elif nl < 0:
+                idx = dot
+            else:
+                idx = min(dot, nl)
+            sentence = self._buf[:idx + 1]
+            self._buf = self._buf[idx + 1:]
+            if _NARRATION_PREFIX_RE.match(sentence.lstrip()):
+                # Drop the sentence and any trailing whitespace/newline that
+                # would otherwise leave an awkward gap before the next one.
+                self._buf = self._buf.lstrip()
+                continue
+            out_parts.append(sentence)
+        return "".join(out_parts)
+
+    def flush(self):
+        tail = self._buf
+        self._buf = ""
+        if tail and _NARRATION_PREFIX_RE.match(tail.lstrip()):
+            return ""
+        return tail
+
+
 def _run_agent_provider_stream(provider, history):
     """Generator yielding SSE events for ONE provider. Raises
     _ProviderUnavailableError on the first request if the provider is unusable
@@ -10385,6 +10525,7 @@ def _run_agent_provider_stream(provider, history):
         accumulated_tool_calls = {}  # index -> {id, name, arguments}
         finish_reason = None
         turn_usage = None
+        narration_filter = _NarrationFilter()
 
         for raw_line in resp.iter_lines():
             if not raw_line:
@@ -10412,11 +10553,16 @@ def _run_agent_provider_stream(provider, history):
             delta = choice.get("delta") or {}
             finish_reason = choice.get("finish_reason") or finish_reason
 
-            # Stream text tokens as they arrive
+            # Stream text tokens as they arrive, but route them through the
+            # narration filter so tool-call monologue ("I'll call X", "Let me
+            # check Y") never reaches the user even if the model ignores the
+            # silence rule in the system prompt.
             content_chunk = delta.get("content") or ""
             if content_chunk:
                 accumulated_content += content_chunk
-                yield {"type": "token", "text": content_chunk}
+                cleaned = narration_filter.feed(content_chunk)
+                if cleaned:
+                    yield {"type": "token", "text": cleaned}
 
             # Accumulate tool call deltas
             for tc_delta in (delta.get("tool_calls") or []):
@@ -10429,6 +10575,10 @@ def _run_agent_provider_stream(provider, history):
                 fn = tc_delta.get("function") or {}
                 tc["name"] += fn.get("name") or ""
                 tc["arguments"] += fn.get("arguments") or ""
+
+        tail = narration_filter.flush()
+        if tail:
+            yield {"type": "token", "text": tail}
 
         _metrics_record_usage(provider["name"], turn_usage)
 
