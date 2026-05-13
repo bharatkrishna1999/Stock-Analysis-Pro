@@ -3996,14 +3996,16 @@ def landing():
         }
 
         /* ----- REVEAL ON SCROLL ----- */
-        .reveal { opacity: 0; transform: translateY(20px); transition: opacity 0.8s cubic-bezier(0.65,0,0.35,1), transform 0.8s cubic-bezier(0.65,0,0.35,1); }
-        .reveal.in { opacity: 1; transform: translateY(0); }
+        /* Scoped to html.js so JS-disabled clients always see content. */
+        html.js .reveal { opacity: 0; transform: translateY(20px); transition: opacity 0.8s cubic-bezier(0.65,0,0.35,1), transform 0.8s cubic-bezier(0.65,0,0.35,1); }
+        html.js .reveal.in { opacity: 1; transform: translateY(0); }
         @media (prefers-reduced-motion: reduce) {
-            .reveal { opacity: 1; transform: none; transition: none; }
+            html.js .reveal { opacity: 1; transform: none; transition: none; }
             .marquee-track { animation: none; }
             .hero-meta .dot { animation: none; }
         }
     </style>
+    <script>document.documentElement.classList.add('js');</script>
 </head>
 <body>
     <!-- NAV -->
@@ -9931,18 +9933,14 @@ def alerts_page():
     status = alert_monitor.status()
     watchlist_str = ', '.join(status['watchlist'])
     running_badge = (
-        '<span style="background:#10b98122;color:#10b981;border-radius:4px;'
-        'padding:2px 10px;font-size:12px;font-weight:600;">ACTIVE</span>'
+        '<span class="pill pill-active"><span class="dot"></span>Active</span>'
         if status['running'] else
-        '<span style="background:#ef444422;color:#ef4444;border-radius:4px;'
-        'padding:2px 10px;font-size:12px;font-weight:600;">STOPPED</span>'
+        '<span class="pill pill-stopped"><span class="dot"></span>Stopped</span>'
     )
     smtp_badge = (
-        '<span style="background:#10b98122;color:#10b981;border-radius:4px;'
-        'padding:2px 10px;font-size:12px;font-weight:600;">Configured</span>'
+        '<span class="pill pill-ok"><span class="dot"></span>Configured</span>'
         if status['smtp_configured'] else
-        '<span style="background:#f59e0b22;color:#f59e0b;border-radius:4px;'
-        'padding:2px 10px;font-size:12px;font-weight:600;">Not configured</span>'
+        '<span class="pill pill-warn"><span class="dot"></span>Not Configured</span>'
     )
 
     html = f"""<!DOCTYPE html>
@@ -9950,144 +9948,278 @@ def alerts_page():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
-  <title>Stock Alerts — Stock Analysis Pro</title>
+  <title>Live Alerts — Stock Analysis Pro</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500;1,600&family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@500;600&display=swap" rel="stylesheet">
   <style>
-    *{{box-sizing:border-box;margin:0;padding:0}}
-    body{{background:#0a0c12;color:#f1f5f9;
-          font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-          min-height:100vh;padding:32px 16px}}
-    .container{{max-width:780px;margin:0 auto}}
-    h1{{font-size:26px;font-weight:800;color:#f1f5f9;margin-bottom:4px}}
-    .subtitle{{color:#64748b;font-size:14px;margin-bottom:32px}}
-    .card{{background:#0f172a;border:1px solid #1e293b;border-radius:12px;
-           padding:24px;margin-bottom:20px}}
-    .card-title{{font-size:13px;font-weight:600;color:#f59e0b;text-transform:uppercase;
-                 letter-spacing:2px;margin-bottom:16px}}
-    .status-row{{display:flex;align-items:center;gap:12px;margin-bottom:10px}}
-    .status-label{{color:#64748b;font-size:13px;min-width:140px}}
-    label{{display:block;color:#94a3b8;font-size:13px;margin-bottom:6px;margin-top:14px}}
-    input,select{{width:100%;background:#1e293b;border:1px solid #334155;border-radius:6px;
-                  color:#f1f5f9;padding:10px 12px;font-size:14px;outline:none}}
-    input:focus,select:focus{{border-color:#f59e0b}}
-    .btn{{display:inline-block;padding:10px 22px;border-radius:6px;font-size:13px;
-          font-weight:600;cursor:pointer;border:none;transition:opacity .15s}}
-    .btn-primary{{background:#f59e0b;color:#0a0c12}}
-    .btn-green{{background:#10b981;color:#fff}}
-    .btn-red{{background:#ef4444;color:#fff}}
-    .btn-ghost{{background:#1e293b;color:#94a3b8;border:1px solid #334155}}
-    .btn:hover{{opacity:.85}}
-    .btn-row{{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}}
-    #msg{{margin-top:14px;padding:10px 14px;border-radius:6px;font-size:13px;display:none}}
-    .msg-ok{{background:#10b98122;color:#10b981;border:1px solid #10b98144}}
-    .msg-err{{background:#ef444422;color:#ef4444;border:1px solid #ef444444}}
-    .scan-result{{margin-top:14px}}
-    .sr-row{{display:flex;justify-content:space-between;align-items:center;
-             padding:10px 0;border-bottom:1px solid #1e293b;font-size:13px}}
-    .sr-sym{{font-weight:700;color:#f1f5f9}}
-    .sr-sig-buy{{color:#10b981}} .sr-sig-other{{color:#f59e0b}}
-    .note{{font-size:11px;color:#475569;margin-top:10px;line-height:1.6}}
-    a.back{{color:#f59e0b;font-size:13px;text-decoration:none;display:inline-block;
-            margin-bottom:20px}}
-    a.back:hover{{text-decoration:underline}}
+    *{{margin:0;padding:0;box-sizing:border-box}}
+    :root{{
+      --bg:#0a0c12; --bg-soft:#0f1219; --bg-card:#11151e;
+      --gold:#C9A84C; --gold-light:rgba(201,168,76,0.12); --gold-border:rgba(201,168,76,0.28);
+      --paper:#EFE9DC; --text:#EAE3D3; --text-sec:#A39C8B; --text-muted:#6B6557;
+      --border:#1a1d26; --hairline:rgba(201,168,76,0.18);
+      --success:#2ECC8C; --warning:#F59E0B; --danger:#EF4444;
+    }}
+    html{{scroll-behavior:smooth}}
+    body{{background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;line-height:1.65;
+          min-height:100vh;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}}
+    a{{color:inherit;text-decoration:none}}
+    ::selection{{background:var(--gold);color:var(--bg)}}
+
+    /* NAV */
+    nav{{position:sticky;top:0;z-index:100;background:rgba(10,12,18,0.82);
+        backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+        border-bottom:1px solid var(--border)}}
+    .nav-inner{{max-width:1240px;margin:0 auto;display:flex;align-items:center;
+                justify-content:space-between;height:76px;padding:0 40px}}
+    .brand{{display:flex;align-items:center;gap:14px;
+            font-family:'Cormorant Garamond',serif;font-size:1.32em;font-weight:600;
+            letter-spacing:0.5px;color:var(--paper)}}
+    .brand-mark{{width:34px;height:34px;border:1px solid var(--gold);display:flex;
+                 align-items:center;justify-content:center;position:relative;flex-shrink:0}}
+    .brand-mark::before{{content:'';position:absolute;inset:3px;border:1px solid var(--gold);opacity:0.5}}
+    .brand-mark svg{{width:14px;height:14px;position:relative;z-index:1}}
+    .brand .b-sep{{color:var(--gold);margin:0 2px}}
+    .brand .b-pro{{font-style:italic;color:var(--gold)}}
+    .nav-back{{font-size:0.72em;font-weight:600;letter-spacing:2.2px;text-transform:uppercase;
+               color:var(--text-sec);padding:10px 18px;transition:color 0.25s;
+               display:inline-flex;align-items:center;gap:8px}}
+    .nav-back:hover{{color:var(--gold)}}
+
+    /* HERO */
+    .hero{{padding:90px 40px 60px;text-align:center;max-width:920px;margin:0 auto;position:relative}}
+    .hero::before{{content:'';position:absolute;top:-100px;left:50%;transform:translateX(-50%);
+                  width:700px;height:600px;
+                  background:radial-gradient(circle,rgba(201,168,76,0.08) 0%,rgba(201,168,76,0) 60%);
+                  pointer-events:none;z-index:0}}
+    .hero-inner{{position:relative;z-index:1}}
+    .eyebrow{{display:inline-flex;align-items:center;gap:12px;font-size:0.7em;font-weight:600;
+              letter-spacing:3.5px;text-transform:uppercase;color:var(--gold);margin-bottom:32px}}
+    .eyebrow::before,.eyebrow::after{{content:'';width:28px;height:1px;background:var(--gold);opacity:0.5}}
+    h1{{font-family:'Cormorant Garamond',serif;font-size:clamp(2.4rem,5.5vw,4rem);
+        font-weight:500;line-height:1.08;letter-spacing:-0.3px;color:var(--paper);margin-bottom:24px}}
+    h1 em{{font-style:italic;color:var(--gold);font-weight:500}}
+    .hero p{{color:var(--text-sec);font-size:1.05em;max-width:560px;margin:0 auto;
+            line-height:1.8;font-weight:300}}
+
+    /* CONTAINER */
+    .container{{max-width:820px;margin:0 auto;padding:20px 40px 100px}}
+
+    /* CARD */
+    .card{{background:var(--bg-soft);border:1px solid var(--border);padding:40px 36px;
+           margin-bottom:24px;position:relative}}
+    .card::before{{content:'';position:absolute;top:-1px;left:32px;right:32px;height:1px;background:var(--gold)}}
+    .card-title{{font-family:'Inter',sans-serif;font-size:0.7em;font-weight:600;
+                 letter-spacing:3px;text-transform:uppercase;color:var(--gold);margin-bottom:28px;
+                 display:flex;align-items:center;gap:14px}}
+    .card-title::after{{content:'';flex:1;height:1px;background:var(--hairline)}}
+
+    /* STATUS ROWS */
+    .status-row{{display:grid;grid-template-columns:170px 1fr;gap:18px;
+                 padding:14px 0;border-bottom:1px solid rgba(201,168,76,0.07);align-items:center}}
+    .status-row:last-of-type{{border-bottom:none}}
+    .status-label{{color:var(--text-muted);font-size:0.7em;font-weight:600;
+                   letter-spacing:2px;text-transform:uppercase}}
+    .status-value{{color:var(--paper);font-family:'Cormorant Garamond',serif;
+                   font-size:1.15em;font-weight:500;letter-spacing:0.3px}}
+
+    /* STATUS PILLS */
+    .pill{{display:inline-flex;align-items:center;gap:8px;padding:6px 14px;
+           font-size:0.66em;font-weight:600;letter-spacing:2px;text-transform:uppercase;
+           font-family:'Inter',sans-serif}}
+    .pill .dot{{width:6px;height:6px;border-radius:50%;display:inline-block}}
+    .pill-active{{background:rgba(46,204,140,0.10);color:var(--success);border:1px solid rgba(46,204,140,0.35)}}
+    .pill-active .dot{{background:var(--success);box-shadow:0 0 10px var(--success)}}
+    .pill-stopped{{background:var(--bg);color:var(--text-muted);border:1px solid var(--border)}}
+    .pill-stopped .dot{{background:var(--text-muted)}}
+    .pill-ok{{background:var(--gold-light);color:var(--gold);border:1px solid var(--gold-border)}}
+    .pill-ok .dot{{background:var(--gold);box-shadow:0 0 10px var(--gold)}}
+    .pill-warn{{background:rgba(245,158,11,0.10);color:var(--warning);border:1px solid rgba(245,158,11,0.35)}}
+    .pill-warn .dot{{background:var(--warning)}}
+
+    /* FORMS */
+    label{{display:block;color:var(--text-muted);font-size:0.66em;font-weight:600;
+           letter-spacing:2px;text-transform:uppercase;margin-bottom:10px;margin-top:24px}}
+    label:first-of-type{{margin-top:4px}}
+    input,select{{width:100%;background:var(--bg);border:1px solid var(--border);
+                  color:var(--paper);padding:14px 16px;font-size:0.95em;outline:none;
+                  font-family:'Inter',sans-serif;transition:border-color 0.2s}}
+    input:focus,select:focus{{border-color:var(--gold)}}
+    input::placeholder{{color:var(--text-muted);opacity:0.7}}
+
+    /* NOTE */
+    .note{{background:var(--bg);border-left:2px solid var(--gold);padding:18px 22px;
+           font-size:0.85em;color:var(--text-sec);line-height:1.75;font-weight:300;margin-bottom:8px}}
+    .note strong{{color:var(--paper);font-weight:500}}
+    .note a{{color:var(--gold);border-bottom:1px solid var(--gold-border)}}
+    .note a:hover{{border-bottom-color:var(--gold)}}
+    .note code{{background:var(--bg-soft);padding:2px 7px;font-size:0.82em;
+                color:var(--gold);font-family:'Space Grotesk',monospace;border:1px solid var(--border)}}
+
+    /* BUTTONS */
+    .btn{{display:inline-flex;align-items:center;gap:10px;padding:14px 30px;
+          font-family:'Inter',sans-serif;font-size:0.7em;font-weight:700;letter-spacing:2.2px;
+          text-transform:uppercase;cursor:pointer;border:1px solid transparent;transition:all 0.3s;
+          background:none;color:inherit}}
+    .btn-primary{{background:var(--gold);color:var(--bg);border-color:var(--gold)}}
+    .btn-primary:hover{{background:var(--paper);border-color:var(--paper);transform:translateY(-2px);box-shadow:0 12px 32px rgba(201,168,76,0.25)}}
+    .btn-ghost{{background:transparent;color:var(--paper);border-color:rgba(234,227,211,0.25)}}
+    .btn-ghost:hover{{border-color:var(--gold);color:var(--gold)}}
+    .btn-success{{background:transparent;color:var(--success);border-color:rgba(46,204,140,0.4)}}
+    .btn-success:hover{{background:rgba(46,204,140,0.08);border-color:var(--success)}}
+    .btn-danger{{background:transparent;color:var(--danger);border-color:rgba(239,68,68,0.4)}}
+    .btn-danger:hover{{background:rgba(239,68,68,0.08);border-color:var(--danger)}}
+    .btn-row{{display:flex;gap:12px;flex-wrap:wrap;margin-top:32px}}
+
+    /* MESSAGES */
+    [id$="_msg"]{{margin-top:20px;padding:14px 18px;font-size:0.82em;letter-spacing:0.3px;
+                  display:none;border-left:2px solid;font-weight:500}}
+    .msg-ok{{background:rgba(46,204,140,0.08);color:var(--success);border-color:var(--success)}}
+    .msg-err{{background:rgba(239,68,68,0.08);color:var(--danger);border-color:var(--danger)}}
+
+    /* SCAN RESULTS */
+    .scan-result{{margin-top:24px}}
+    .scan-header{{font-size:0.66em;color:var(--gold);letter-spacing:2.5px;text-transform:uppercase;
+                  font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:12px}}
+    .scan-header::after{{content:'';flex:1;height:1px;background:var(--hairline)}}
+    .sr-row{{display:grid;grid-template-columns:1.1fr 0.9fr 0.8fr 0.8fr 0.7fr 1fr;gap:14px;
+            padding:14px 0;border-bottom:1px solid var(--border);font-size:0.85em;align-items:center}}
+    .sr-sym{{font-family:'Cormorant Garamond',serif;font-size:1.2em;font-weight:600;color:var(--paper);letter-spacing:0.5px}}
+    .sr-sig-buy{{color:var(--success);font-weight:600;font-size:0.72em;letter-spacing:1.5px;text-transform:uppercase}}
+    .sr-sig-other{{color:var(--warning);font-weight:600;font-size:0.72em;letter-spacing:1.5px;text-transform:uppercase}}
+    .sr-metric{{color:var(--text-sec);font-size:0.82em;font-weight:400}}
+    .sr-metric .lbl{{color:var(--text-muted);font-size:0.7em;letter-spacing:1.2px;text-transform:uppercase;margin-right:4px}}
+    .sr-trigger{{font-size:0.66em;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;text-align:right}}
+    .sr-trigger.on{{color:var(--success)}}
+    .sr-trigger.off{{color:var(--text-muted)}}
+    .scan-empty{{color:var(--text-muted);font-size:0.88em;font-style:italic;margin-top:16px;font-weight:300}}
+
+    @media (max-width:768px){{
+      .nav-inner{{height:64px;padding:0 22px}}
+      .brand{{font-size:1.1em}}
+      .nav-back{{font-size:0.62em;letter-spacing:1.6px;padding:8px 12px}}
+      .hero{{padding:60px 22px 40px}}
+      .container{{padding:10px 22px 60px}}
+      .card{{padding:28px 22px}}
+      .status-row{{grid-template-columns:1fr;gap:8px;padding:16px 0}}
+      .sr-row{{grid-template-columns:1fr;gap:6px;padding:14px 0}}
+    }}
   </style>
 </head>
 <body>
-<div class="container">
-  <a class="back" href="/app">&larr; Back to Dashboard</a>
-  <h1>Stock Alerts</h1>
-  <p class="subtitle">Get emailed the moment a stock in your watchlist turns undervalued.</p>
+  <nav>
+    <div class="nav-inner">
+      <a class="brand" href="/">
+        <div class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#C9A84C" stroke-width="2"><polyline points="4 16 8 11 13 14 20 7"/><polyline points="16 7 20 7 20 11"/></svg>
+        </div>
+        Stock&nbsp;Analysis<span class="b-sep">&middot;</span><span class="b-pro">Pro</span>
+      </a>
+      <a class="nav-back" href="/app">&larr; Back to Platform</a>
+    </div>
+  </nav>
 
-  <!-- Status -->
-  <div class="card">
-    <div class="card-title">Monitor Status</div>
-    <div class="status-row">
-      <span class="status-label">Monitor</span>{running_badge}
+  <section class="hero">
+    <div class="hero-inner">
+      <div class="eyebrow">Live Alerts</div>
+      <h1>Notified when <em>opportunity</em> arrives.</h1>
+      <p>Receive email alerts the moment a stock on your watchlist turns undervalued by our screening engine. Configure once, monitor continuously.</p>
     </div>
-    <div class="status-row">
-      <span class="status-label">SMTP / Email</span>{smtp_badge}
+  </section>
+
+  <div class="container">
+    <!-- Status -->
+    <div class="card">
+      <div class="card-title">Monitor Status</div>
+      <div class="status-row">
+        <span class="status-label">Monitor</span>
+        <span>{running_badge}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">SMTP / Email</span>
+        <span>{smtp_badge}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Recipient</span>
+        <span class="status-value">{status['recipient_email'] or '—'}</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Check interval</span>
+        <span class="status-value">Every {status['check_interval_min']} minutes</span>
+      </div>
+      <div class="status-row">
+        <span class="status-label">Alert cooldown</span>
+        <span class="status-value">{status['cooldown_hours']} hours between repeats</span>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-success" onclick="monitorAction('start')">Start Monitor</button>
+        <button class="btn btn-danger"  onclick="monitorAction('stop')">Stop Monitor</button>
+      </div>
     </div>
-    <div class="status-row">
-      <span class="status-label">Recipient</span>
-      <span style="color:#94a3b8;font-size:13px;">{status['recipient_email'] or '—'}</span>
+
+    <!-- Config -->
+    <div class="card">
+      <div class="card-title">Email &amp; SMTP Configuration</div>
+      <div class="note">
+        For Gmail, use <strong>smtp.gmail.com</strong> on port <strong>465</strong> with an
+        <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App Password</a>
+        (requires 2FA). Credentials are stored in memory only and reset on server restart &mdash;
+        set them as environment variables for persistence
+        (<code>ALERT_EMAIL</code>, <code>SMTP_HOST</code>, <code>SMTP_PORT</code>,
+        <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>).
+      </div>
+
+      <label>Recipient Email</label>
+      <input id="cfg_recipient" type="email" placeholder="you@example.com"
+             value="{status['recipient_email']}">
+
+      <label>SMTP Host</label>
+      <input id="cfg_smtp_host" type="text" placeholder="smtp.gmail.com"
+             value="{alert_monitor.config['smtp_host']}">
+
+      <label>SMTP Port</label>
+      <input id="cfg_smtp_port" type="number" placeholder="465"
+             value="{alert_monitor.config['smtp_port']}">
+
+      <label>SMTP Username (sender email)</label>
+      <input id="cfg_smtp_user" type="email" placeholder="sender@gmail.com"
+             value="{alert_monitor.config['smtp_user']}">
+
+      <label>SMTP Password / App Password</label>
+      <input id="cfg_smtp_pass" type="password" placeholder="••••••••••">
+
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+      </div>
+      <div id="cfg_msg"></div>
     </div>
-    <div class="status-row">
-      <span class="status-label">Check interval</span>
-      <span style="color:#94a3b8;font-size:13px;">every {status['check_interval_min']} min</span>
-    </div>
-    <div class="status-row">
-      <span class="status-label">Alert cooldown</span>
-      <span style="color:#94a3b8;font-size:13px;">{status['cooldown_hours']} hrs between repeat alerts</span>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-green" onclick="monitorAction('start')">Start Monitor</button>
-      <button class="btn btn-red"   onclick="monitorAction('stop')">Stop Monitor</button>
+
+    <!-- Watchlist -->
+    <div class="card">
+      <div class="card-title">Watchlist &amp; Scan Settings</div>
+
+      <label>Watchlist (comma-separated NSE symbols)</label>
+      <input id="cfg_watchlist" type="text"
+             placeholder="RELIANCE, TCS, INFY, HDFC, ICICIBANK"
+             value="{watchlist_str}">
+
+      <label>Check Interval (minutes)</label>
+      <input id="cfg_interval" type="number" min="1" max="60"
+             value="{status['check_interval_min']}">
+
+      <label>Alert Cooldown (hours) &mdash; min time before re-alerting the same stock</label>
+      <input id="cfg_cooldown" type="number" min="1" max="72"
+             value="{status['cooldown_hours']}">
+
+      <div class="btn-row">
+        <button class="btn btn-primary" onclick="saveWatchlist()">Save Watchlist</button>
+        <button class="btn btn-ghost"   onclick="scanNow()">Scan Now</button>
+      </div>
+      <div id="wl_msg"></div>
+      <div id="scan_results" class="scan-result"></div>
     </div>
   </div>
-
-  <!-- Config -->
-  <div class="card">
-    <div class="card-title">Email &amp; SMTP Configuration</div>
-    <p class="note" style="margin-bottom:0;">
-      For Gmail, use <strong>smtp.gmail.com</strong> port <strong>465</strong> with an
-      <a href="https://myaccount.google.com/apppasswords" target="_blank"
-         style="color:#f59e0b;">App Password</a>
-      (requires 2FA). Credentials are stored in memory only and reset on server restart —
-      set them as environment variables for persistence
-      (<code>ALERT_EMAIL</code>, <code>SMTP_HOST</code>, <code>SMTP_PORT</code>,
-      <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>).
-    </p>
-
-    <label>Recipient Email</label>
-    <input id="cfg_recipient" type="email" placeholder="you@example.com"
-           value="{status['recipient_email']}">
-
-    <label>SMTP Host</label>
-    <input id="cfg_smtp_host" type="text" placeholder="smtp.gmail.com"
-           value="{alert_monitor.config['smtp_host']}">
-
-    <label>SMTP Port</label>
-    <input id="cfg_smtp_port" type="number" placeholder="465"
-           value="{alert_monitor.config['smtp_port']}">
-
-    <label>SMTP Username (sender email)</label>
-    <input id="cfg_smtp_user" type="email" placeholder="sender@gmail.com"
-           value="{alert_monitor.config['smtp_user']}">
-
-    <label>SMTP Password / App Password</label>
-    <input id="cfg_smtp_pass" type="password" placeholder="••••••••">
-
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
-    </div>
-    <div id="cfg_msg"></div>
-  </div>
-
-  <!-- Watchlist -->
-  <div class="card">
-    <div class="card-title">Watchlist &amp; Scan Settings</div>
-
-    <label>Watchlist (comma-separated NSE symbols)</label>
-    <input id="cfg_watchlist" type="text"
-           placeholder="RELIANCE, TCS, INFY, HDFC, ICICIBANK"
-           value="{watchlist_str}">
-
-    <label>Check Interval (minutes)</label>
-    <input id="cfg_interval" type="number" min="1" max="60"
-           value="{status['check_interval_min']}">
-
-    <label>Alert Cooldown (hours) — min time before re-alerting the same stock</label>
-    <input id="cfg_cooldown" type="number" min="1" max="72"
-           value="{status['cooldown_hours']}">
-
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="saveWatchlist()">Save Watchlist</button>
-      <button class="btn btn-ghost"   onclick="scanNow()">Scan Now (test)</button>
-    </div>
-    <div id="wl_msg"></div>
-    <div id="scan_results" class="scan-result"></div>
-  </div>
-
-</div>
 
 <script>
 async function post(url, body) {{
@@ -10139,31 +10271,29 @@ async function saveWatchlist() {{
 
 async function scanNow() {{
   document.getElementById('scan_results').innerHTML =
-    '<p style="color:#64748b;font-size:13px;margin-top:10px;">Scanning... (may take 1-2 min)</p>';
+    '<p class="scan-empty">Scanning&hellip; (may take 1&ndash;2 minutes)</p>';
   const r = await fetch('/alerts/scan-now', {{method:'POST'}});
   const data = await r.json();
   if (!data.results || !data.results.length) {{
     document.getElementById('scan_results').innerHTML =
-      '<p style="color:#64748b;font-size:13px;margin-top:10px;">Watchlist is empty — add symbols above first.</p>';
+      '<p class="scan-empty">Watchlist is empty &mdash; add symbols above first.</p>';
     return;
   }}
-  let html = '<div style="margin-top:14px;">';
-  html += '<div style="font-size:11px;color:#64748b;margin-bottom:8px;">SCAN RESULTS (latest)</div>';
+  let html = '<div class="scan-header">Scan Results &middot; Latest</div>';
   for (const s of data.results) {{
     const sigCls = s.signal === 'BUY' ? 'sr-sig-buy' : 'sr-sig-other';
     const triggered = s._triggered
-      ? '<span style="color:#10b981;font-weight:600;">UNDERVALUED</span>'
-      : '<span style="color:#475569;">OK</span>';
+      ? '<span class="sr-trigger on">Undervalued</span>'
+      : '<span class="sr-trigger off">In Range</span>';
     html += `<div class="sr-row">
       <span class="sr-sym">${{s.symbol}}</span>
       <span class="${{sigCls}}">${{s.signal || '—'}}</span>
-      <span style="color:#94a3b8;">RSI ${{s.rsi?.toFixed(1) ?? '—'}}</span>
-      <span style="color:#94a3b8;">Z ${{s.zscore?.toFixed(2) ?? '—'}}</span>
-      <span style="color:#94a3b8;">Score ${{s._score}}</span>
+      <span class="sr-metric"><span class="lbl">RSI</span>${{s.rsi?.toFixed(1) ?? '—'}}</span>
+      <span class="sr-metric"><span class="lbl">Z</span>${{s.zscore?.toFixed(2) ?? '—'}}</span>
+      <span class="sr-metric"><span class="lbl">Score</span>${{s._score}}</span>
       ${{triggered}}
     </div>`;
   }}
-  html += '</div>';
   document.getElementById('scan_results').innerHTML = html;
 }};
 </script>
