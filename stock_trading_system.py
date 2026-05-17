@@ -5112,6 +5112,12 @@ def dashboard():
         .ai-chat-title { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:0.95em; color:var(--text-primary); display:flex; align-items:center; gap:10px; }
         .ai-status-dot { width:8px; height:8px; border-radius:50%; background:var(--accent-green); display:inline-block; box-shadow:0 0 0 4px rgba(46,204,113,0.18); }
         .ai-rate-tag { font-size:0.76em; color:var(--text-muted); }
+        .ai-model-picker { display:flex; align-items:center; gap:8px; font-size:0.8em; color:var(--text-muted); }
+        .ai-model-picker label { font-family:'Space Grotesk',sans-serif; font-weight:600; letter-spacing:0.02em; text-transform:uppercase; font-size:0.72em; color:var(--text-muted); }
+        .ai-model-picker select { background:var(--bg-card); color:var(--text-primary); border:1px solid var(--border-color); border-radius:10px; padding:6px 28px 6px 12px; font-size:0.85em; font-family:inherit; cursor:pointer; transition:border-color .2s,box-shadow .2s; appearance:none; -webkit-appearance:none; background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%23999' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><polyline points='1,1 6,7 11,1'/></svg>"); background-repeat:no-repeat; background-position:right 10px center; background-size:10px 6px; }
+        .ai-model-picker select:hover { border-color:var(--accent-gold); }
+        .ai-model-picker select:focus { outline:none; border-color:var(--accent-gold); box-shadow:0 0 0 3px rgba(212,175,55,0.18); }
+        .ai-model-picker select:disabled { opacity:0.55; cursor:not-allowed; }
         .ai-messages { flex:1; overflow-y:auto; padding:20px 22px; display:flex; flex-direction:column; gap:14px; min-height:0; }
         .ai-messages::-webkit-scrollbar { width:6px; }
         .ai-messages::-webkit-scrollbar-track { background:transparent; }
@@ -5505,6 +5511,12 @@ def dashboard():
                 <div class="ai-chat-card">
                     <div class="ai-chat-header">
                         <div class="ai-chat-title"><span class="ai-status-dot"></span> Live Research Session</div>
+                        <div class="ai-model-picker">
+                            <label for="ai-model-select">Model</label>
+                            <select id="ai-model-select" aria-label="Select AI model" disabled>
+                                <option value="auto">Auto (fastest available)</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="ai-messages" id="ai-messages">
                         <div class="ai-msg agent">Welcome to Artha. I can pull live data for the NSE stocks tracked here &mdash; verdicts, intrinsic value, momentum, dividends, market correlation, or screen ideas. Ask away.</div>
@@ -8532,10 +8544,12 @@ def dashboard():
             let committed = false;
 
             try {
+                const modelSel = document.getElementById('ai-model-select');
+                const chosenProvider = (modelSel && modelSel.value) ? modelSel.value : 'auto';
                 const res = await fetch('/api/agent/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: message, history: aiHistory.slice(0, -1) })
+                    body: JSON.stringify({ message: message, history: aiHistory.slice(0, -1), provider: chosenProvider })
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(() => ({}));
@@ -8608,11 +8622,42 @@ def dashboard():
                 if (!onCooldown) inp.focus();
             }
         }
+        async function aiLoadProviders() {
+            const sel = document.getElementById('ai-model-select');
+            if (!sel) return;
+            try {
+                const res = await fetch('/api/agent/providers');
+                if (!res.ok) return;
+                const data = await res.json();
+                const providers = Array.isArray(data.providers) ? data.providers : [];
+                if (!providers.length) return;
+                sel.innerHTML = '';
+                const auto = document.createElement('option');
+                auto.value = 'auto';
+                auto.textContent = 'Auto (fastest available)';
+                sel.appendChild(auto);
+                for (const p of providers) {
+                    const opt = document.createElement('option');
+                    opt.value = p.name;
+                    opt.textContent = p.label || p.name;
+                    sel.appendChild(opt);
+                }
+                const saved = localStorage.getItem('artha-model');
+                if (saved && Array.from(sel.options).some(o => o.value === saved)) {
+                    sel.value = saved;
+                }
+                sel.disabled = false;
+                sel.addEventListener('change', function() {
+                    try { localStorage.setItem('artha-model', sel.value); } catch (e) {}
+                });
+            } catch (e) { /* leave dropdown disabled on failure */ }
+        }
         document.addEventListener('DOMContentLoaded', function() {
             const inp = document.getElementById('ai-input');
             if (inp) inp.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSendQuery(); }
             });
+            aiLoadProviders();
         });
     </script>
 </body>
@@ -11124,6 +11169,7 @@ def _provider_attempt(url, headers, payload, stream=False):
 _AGENT_PROVIDERS = [
     {
         "name": "gemini",
+        "label": "Gemini 2.0 Flash",
         "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         "api_key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
@@ -11131,6 +11177,7 @@ _AGENT_PROVIDERS = [
     },
     {
         "name": "groq",
+        "label": "Llama 4 Scout (Groq)",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "api_key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
@@ -11138,6 +11185,7 @@ _AGENT_PROVIDERS = [
     },
     {
         "name": "cerebras",
+        "label": "Llama 3.3 70B (Cerebras)",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "api_key_env": "CEREBRAS_API_KEY",
         "model_env": "CEREBRAS_MODEL",
@@ -11215,9 +11263,11 @@ _AGENT_CACHE_TTL_SEC = float(os.environ.get("AGENT_CACHE_TTL_SEC", "300"))
 _AGENT_CACHE_MAX_ENTRIES = 256
 
 
-def _agent_cache_key(history):
+def _agent_cache_key(history, preferred_provider=None):
     """Cache key from the latest user message + the immediately preceding turn
-    (to disambiguate follow-ups like 'what about its dividend?')."""
+    (to disambiguate follow-ups like 'what about its dividend?'). The user's
+    chosen provider is folded in so switching models doesn't return the prior
+    model's cached answer."""
     if not history:
         return None
     last = history[-1]
@@ -11229,7 +11279,8 @@ def _agent_cache_key(history):
     prev = ""
     if len(history) >= 2:
         prev = (history[-2].get("content") or "").strip().lower()[:200]
-    return hashlib.sha256(f"{prev}||{msg}".encode("utf-8")).hexdigest()
+    pref = (preferred_provider or "auto").strip().lower()
+    return hashlib.sha256(f"{pref}||{prev}||{msg}".encode("utf-8")).hexdigest()
 
 
 def _agent_cache_get(key):
@@ -11512,11 +11563,13 @@ def _run_agent_provider_stream(provider, history):
     yield {"type": "error", "text": "Could not complete the analysis. Please try again."}
 
 
-def _run_agent_with_failover_stream(history):
+def _run_agent_with_failover_stream(history, preferred_provider=None):
     """Top-level streaming generator. Checks the response cache first; on miss,
     walks through the provider list (Gemini → Groq → Cerebras), failing over
-    on rate-limit / auth / network errors. Caches the final response on success."""
-    cache_key = _agent_cache_key(history)
+    on rate-limit / auth / network errors. If `preferred_provider` is set and
+    enabled, it's tried first; the remaining providers still act as fallbacks
+    so a transient rate-limit on the user's pick doesn't kill the request."""
+    cache_key = _agent_cache_key(history, preferred_provider)
     cached = _agent_cache_get(cache_key)
     if cached:
         _metrics_record_cache_hit()
@@ -11528,6 +11581,12 @@ def _run_agent_with_failover_stream(history):
     if not providers:
         yield {"type": "error", "text": "No AI provider configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}
         return
+
+    pref = (preferred_provider or "").strip().lower()
+    if pref and pref != "auto":
+        chosen = [p for p in providers if p["name"] == pref]
+        rest = [p for p in providers if p["name"] != pref]
+        providers = chosen + rest
 
     last_failure = None
     for provider in providers:
@@ -11628,6 +11687,7 @@ def agent_stream_route():
     history, message = _agent_parse_history(data)
     if not message:
         return jsonify({"error": "message is required"}), 400
+    preferred_provider = (data.get("provider") or "").strip().lower() or None
 
     client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")
     wait_secs = _agent_throttle_check(client_ip)
@@ -11639,7 +11699,7 @@ def agent_stream_route():
 
     def generate():
         try:
-            for event in _run_agent_with_failover_stream(history):
+            for event in _run_agent_with_failover_stream(history, preferred_provider=preferred_provider):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             import re as _re
@@ -11710,6 +11770,19 @@ def agent_query_route():
         return jsonify({"error": "Agent request failed. Please try again."}), 500
     finally:
         _AGENT_GLOBAL_SEMAPHORE.release()
+
+
+@app.route("/api/agent/providers", methods=["GET"])
+def agent_providers_route():
+    """Expose the AI providers whose API key is set so the frontend can render
+    a model picker with only the options that will actually work."""
+    enabled = _enabled_providers()
+    return jsonify({
+        "providers": [
+            {"name": p["name"], "label": p.get("label", p["name"])}
+            for p in enabled
+        ],
+    })
 
 
 @app.route("/api/agent/metrics", methods=["GET"])
