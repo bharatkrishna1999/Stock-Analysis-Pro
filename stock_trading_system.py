@@ -3604,29 +3604,49 @@ class Analyzer:
         try:
             ticker_obj = None
             info = {}
+            fast = None
+            # Same quoteSummary fragility as dcf_valuation: fall back to fast_info
+            # (chart endpoint) for price/shares so a blocked `.info` doesn't sink
+            # the valuation. Book value and ROE already have statement fallbacks.
             for candidate in yahoo_ticker_candidates(symbol):
                 try:
                     t = yf.Ticker(candidate)
-                    i = t.info
-                    if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                    i = {}
+                    try:
+                        i = t.info or {}
+                    except Exception:
+                        i = {}
+                    price = i.get('regularMarketPrice') or i.get('currentPrice')
+                    fi = None
+                    if not price:
+                        try:
+                            fi = t.fast_info
+                        except Exception:
+                            fi = None
+                        price = self._fast_info_get(fi, 'lastPrice', 'last_price')
+                    if price:
                         ticker_obj = t
                         info = i
+                        fast = fi
                         break
                 except Exception:
                     continue
 
-            if not ticker_obj or not info:
+            if not ticker_obj:
                 return None
 
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            current_price = (info.get('currentPrice') or
+                             info.get('regularMarketPrice') or
+                             self._fast_info_get(fast, 'lastPrice', 'last_price'))
             if not current_price:
                 return None
 
             shares = (info.get('sharesOutstanding') or
                       info.get('impliedSharesOutstanding') or
-                      info.get('floatShares'))
+                      info.get('floatShares') or
+                      self._fast_info_get(fast, 'shares'))
             if not shares or shares <= 0:
-                mktcap = info.get('marketCap')
+                mktcap = info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap')
                 if mktcap and current_price and current_price > 0:
                     shares = mktcap / current_price
             if not shares or shares <= 0:
@@ -3813,7 +3833,7 @@ class Analyzer:
                 'beta': round(float(beta), 2),
                 'suggested_growth_rate': round(float(suggested_growth), 4),
                 'bv_growth': round(float(bv_growth), 4) if bv_growth is not None else None,
-                'market_cap': info.get('marketCap'),
+                'market_cap': info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap'),
                 'sector': info.get('sector') or '',
                 'industry': info.get('industry') or '',
                 'pe_ratio': info.get('trailingPE'),
