@@ -139,7 +139,7 @@ MARKET_PROFILES = {
     "CHF": {
         "benchmark": "^SSMI", "benchmark_name": "SMI (Swiss Market Index)",
         "benchmark_fallbacks": ["^SSMI"],
-        "risk_free_rate": 0.012, "equity_risk_premium": 0.05,
+        "risk_free_rate": 0.007, "equity_risk_premium": 0.05,
         "default_wacc": 7, "terminal_growth": 2,
         "fy_start_month": 1, "locale": "de-CH",
         "big_number_scale": (1e9, "B"),   # billions
@@ -3432,10 +3432,14 @@ class Analyzer:
                                     year = dt.year if hasattr(dt, 'year') else str(dt)[:4]
                                     fcf_history.append({'year': int(year), 'fcf': int(round(float(val)))})
 
-                            # Most recent FCF (first element, newest)
-                            latest_vals = [v for v in fcf_row.values if pd.notna(v)]
-                            if latest_vals:
-                                current_fcf = float(latest_vals[0])
+                            # Normalize over up to 3 recent years to avoid
+                            # peak-year anchor distortion in terminal value.
+                            recent_pos = [v for v in fcf_row.values[:3]
+                                          if pd.notna(v) and v > 0]
+                            recent_any = [v for v in fcf_row.values[:3] if pd.notna(v)]
+                            avg_pool = recent_pos if recent_pos else recent_any
+                            if avg_pool:
+                                current_fcf = float(sum(avg_pool) / len(avg_pool))
 
                             # CAGR from positive historical FCF values
                             pos_vals = [v for v in fcf_vals_chrono if pd.notna(v) and v > 0]
@@ -3660,7 +3664,13 @@ class Analyzer:
                                   info.get('revenueGrowth') or 0.10)
                 suggested_growth = min(max(float(analyst_growth), 0.03), 0.40)
 
-            prof = market_profile(symbol)
+            # Cost of capital is anchored in the currency where cash flows are
+            # earned. When a company reports in a different currency than it
+            # trades in (e.g. ABB: USD financials, CHF listing), use the
+            # reporting-currency WACC/CAPM parameters so the discount rate
+            # matches the cash flows before the spot-rate conversion.
+            fin_prof = MARKET_PROFILES.get(fin_ccy) if fin_ccy != trading_ccy else None
+            prof = fin_prof if fin_prof else market_profile(symbol)
             return {
                 'symbol': symbol,
                 'name': info.get('longName') or info.get('shortName') or symbol,
@@ -3877,9 +3887,11 @@ class Analyzer:
                 return None
 
             # --- Cost of Equity (Ke) ---
-            # Use CAPM: Rf + beta * (Rm - Rf), with market-specific inputs
-            # (e.g. India: Rf=7%, ERP=6%; Switzerland: Rf=1.2%, ERP=5%).
-            prof = market_profile(symbol)
+            # Use CAPM: Rf + beta * (Rm - Rf), with market-specific inputs.
+            # When fin_ccy != trading_ccy (e.g. ABB: USD earnings, CHF listing)
+            # the appropriate Rf and ERP are those of the reporting currency.
+            fin_prof_er = MARKET_PROFILES.get(fin_ccy) if fin_ccy != trading_ccy else None
+            prof = fin_prof_er if fin_prof_er else market_profile(symbol)
             beta = info.get('beta') or 1.0
             risk_free_rate = prof['risk_free_rate']
             market_premium = prof['equity_risk_premium']
