@@ -3274,35 +3274,75 @@ class Analyzer:
             'risk_appetite': risk_appetite
         }
 
+    @staticmethod
+    def _fast_info_get(fast, *keys):
+        """Safely read a value from a yfinance FastInfo object.
+
+        FastInfo is a Mapping but individual key accesses can raise, so each
+        lookup is guarded. Returns the first truthy value found, else None.
+        """
+        if fast is None:
+            return None
+        for key in keys:
+            try:
+                val = fast.get(key) if hasattr(fast, 'get') else fast[key]
+            except Exception:
+                val = None
+            if val:
+                return val
+        return None
+
     def dcf_valuation(self, symbol):
         """Fetch financial data needed for DCF valuation from yfinance."""
         try:
             ticker_obj = None
             info = {}
+            fast = None
+            # The quoteSummary endpoint behind `.info` is frequently rate-limited
+            # or blocked (especially for non-US listings like *.SW), in which case
+            # it raises or returns a price-less dict. Fall back to `fast_info`,
+            # which uses the same reliable chart endpoint as our price/regime
+            # fetches, so a flaky `.info` no longer kills the whole DCF.
             for candidate in yahoo_ticker_candidates(symbol):
                 try:
                     t = yf.Ticker(candidate)
-                    i = t.info
-                    if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                    i = {}
+                    try:
+                        i = t.info or {}
+                    except Exception:
+                        i = {}
+                    price = i.get('regularMarketPrice') or i.get('currentPrice')
+                    fi = None
+                    if not price:
+                        try:
+                            fi = t.fast_info
+                        except Exception:
+                            fi = None
+                        price = self._fast_info_get(fi, 'lastPrice', 'last_price')
+                    if price:
                         ticker_obj = t
                         info = i
+                        fast = fi
                         break
                 except Exception:
                     continue
 
-            if not ticker_obj or not info:
+            if not ticker_obj:
                 return None
 
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            current_price = (info.get('currentPrice') or
+                             info.get('regularMarketPrice') or
+                             self._fast_info_get(fast, 'lastPrice', 'last_price'))
             if not current_price:
                 return None
 
             shares = (info.get('sharesOutstanding') or
                       info.get('impliedSharesOutstanding') or
-                      info.get('floatShares'))
+                      info.get('floatShares') or
+                      self._fast_info_get(fast, 'shares'))
             # Fallback: derive shares from market cap / price
             if not shares or shares <= 0:
-                mktcap = info.get('marketCap')
+                mktcap = info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap')
                 if mktcap and current_price and current_price > 0:
                     shares = mktcap / current_price
             if not shares or shares <= 0:
@@ -3504,7 +3544,7 @@ class Analyzer:
                 'cash': int(round(float(cash))),
                 'historical_fcf_growth': round(float(historical_growth), 4) if historical_growth is not None else None,
                 'suggested_growth_rate': round(float(suggested_growth), 4),
-                'market_cap': info.get('marketCap'),
+                'market_cap': info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap'),
                 'sector': info.get('sector') or '',
                 'industry': info.get('industry') or '',
                 'pe_ratio': info.get('trailingPE'),
