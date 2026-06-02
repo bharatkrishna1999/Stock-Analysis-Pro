@@ -3512,6 +3512,7 @@ class Analyzer:
                 if income_stmt is not None and not income_stmt.empty:
                     ebit_val = None
                     for row_name in ['EBIT', 'Operating Income', 'Operating Income Or Loss',
+                                     'Total Operating Income As Reported', 'Operating Profit',
                                      'Normalized EBITDA', 'Pretax Income']:
                         if row_name in income_stmt.index:
                             v = income_stmt.loc[row_name].iloc[0]
@@ -3574,6 +3575,70 @@ class Analyzer:
             except Exception as e:
                 print(f"DCF income stmt parse error for {symbol}: {e}")
 
+            # --- Fallback ROE from statements when not available in info ---
+            roe = info.get('returnOnEquity')
+            if not roe and income_stmt is not None and not income_stmt.empty \
+                    and balance_sheet is not None and not balance_sheet.empty:
+                try:
+                    ni = None
+                    for r in ['Net Income', 'Net Income From Continuing Operations',
+                              'Net Income Common Stockholders', 'Normalized Income']:
+                        if r in income_stmt.index:
+                            v = income_stmt.loc[r].iloc[0]
+                            if pd.notna(v):
+                                ni = float(v)
+                                break
+                    eq = None
+                    for r in ['Stockholders Equity', 'Total Stockholders Equity',
+                              'Total Equity Gross Minority Interest', 'Common Stock Equity']:
+                        if r in balance_sheet.index:
+                            v = balance_sheet.loc[r].iloc[0]
+                            if pd.notna(v) and float(v) != 0:
+                                eq = float(v)
+                                break
+                    if ni is not None and eq is not None and eq > 0:
+                        roe = round(ni / eq, 4)
+                except Exception:
+                    pass
+
+            # --- Fallback P/E from EPS when not available in info ---
+            pe_ratio = info.get('trailingPE')
+            if not pe_ratio:
+                eps = info.get('trailingEps') or info.get('forwardEps')
+                if eps and float(eps) > 0 and current_price and float(current_price) > 0:
+                    pe_ratio = round(float(current_price) / (float(eps) * fx), 2)
+
+            # --- Fallback P/B from balance sheet equity when not in info ---
+            pb_ratio = info.get('priceToBook')
+            if not pb_ratio and balance_sheet is not None and not balance_sheet.empty:
+                try:
+                    eq_total = None
+                    for r in ['Stockholders Equity', 'Total Stockholders Equity',
+                              'Total Equity Gross Minority Interest', 'Common Stock Equity']:
+                        if r in balance_sheet.index:
+                            v = balance_sheet.loc[r].iloc[0]
+                            if pd.notna(v) and float(v) > 0:
+                                eq_total = float(v)
+                                break
+                    if eq_total is not None and shares and float(shares) > 0:
+                        bvps_trading = (eq_total * fx) / float(shares)
+                        if bvps_trading > 0:
+                            pb_ratio = round(float(current_price) / bvps_trading, 2)
+                except Exception:
+                    pass
+
+            # --- Market Cap: validate against shares × price, fix if yfinance
+            # returns a stale or wrong-scale figure for non-US listings ---
+            market_cap = (info.get('marketCap') or
+                          self._fast_info_get(fast, 'marketCap', 'market_cap'))
+            computed_mc = (int(round(float(shares) * float(current_price)))
+                           if shares and current_price else None)
+            if not market_cap or market_cap <= 0:
+                market_cap = computed_mc
+            elif computed_mc and (market_cap < computed_mc * 0.1 or
+                                  market_cap > computed_mc * 10):
+                market_cap = computed_mc
+
             # Convert every statement-derived money figure into the trading
             # currency (no-op when fx == 1.0). Margins/RoCE/growth are ratios
             # and stay correct under a uniform scaling, so they're left alone.
@@ -3606,13 +3671,13 @@ class Analyzer:
                 'cash': int(round(float(cash))),
                 'historical_fcf_growth': round(float(historical_growth), 4) if historical_growth is not None else None,
                 'suggested_growth_rate': round(float(suggested_growth), 4),
-                'market_cap': info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap'),
+                'market_cap': market_cap,
                 'sector': info.get('sector') or '',
                 'industry': info.get('industry') or '',
-                'pe_ratio': info.get('trailingPE'),
-                'pb_ratio': info.get('priceToBook'),
+                'pe_ratio': pe_ratio,
+                'pb_ratio': pb_ratio,
                 'ev_ebitda': info.get('enterpriseToEbitda'),
-                'roe': info.get('returnOnEquity'),
+                'roe': roe,
                 'roce': roce,
                 'margin_trend': margin_trend,
                 'fcf_history': fcf_history,
@@ -7556,13 +7621,15 @@ def dashboard():
             var sugG = Math.round(data.suggested_growth_rate * 100);
             var phase2G = Math.max(Math.round(sugG * 0.5), 5);
             var defaultWACC = data.default_wacc || 12, defaultTG = data.default_terminal_growth || 3;
-            var histCagr = data.historical_fcf_growth !== null ? (data.historical_fcf_growth * 100).toFixed(1) + '%' : 'N/A';
+            var histCagr = data.historical_fcf_growth !== null && data.historical_fcf_growth !== undefined ? (data.historical_fcf_growth * 100).toFixed(1) + '%' : 'N/A';
             var mktCap = data.market_cap ? fmtCr(data.market_cap) : 'N/A';
-            var netCash = fmtCr(data.cash - data.total_debt);
-            var pe = data.pe_ratio ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
-            var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
-            var roce = data.roce ? (data.roce * 100).toFixed(1) + '%' : 'N/A';
-            var roe = data.roe ? (data.roe * 100).toFixed(1) + '%' : 'N/A';
+            var _netCashRaw = data.cash - data.total_debt;
+            var netCashLabel = _netCashRaw >= 0 ? 'Net Cash' : 'Net Debt';
+            var netCash = _netCashRaw >= 0 ? fmtCr(_netCashRaw) : fmtCr(-_netCashRaw);
+            var pe = (data.pe_ratio != null) ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
+            var pb = (data.pb_ratio != null) ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
+            var roce = (data.roce != null) ? (data.roce * 100).toFixed(1) + '%' : 'N/A';
+            var roe = (data.roe != null) ? (data.roe * 100).toFixed(1) + '%' : 'N/A';
             var priceStr = money(data.current_price);
             var fcfStr = fmtCr(data.current_fcf);
             var h = '';
@@ -7573,12 +7640,12 @@ def dashboard():
             h += '<div class="dcf-key-stats">';
             h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">Latest FCF</div><div class="dcf-stat-value">' + fcfStr + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--accent-purple);"><div class="dcf-stat-label">Market Cap</div><div class="dcf-stat-value">' + mktCap + '</div></div>';
-            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">Net Cash</div><div class="dcf-stat-value">' + netCash + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">' + netCashLabel + '</div><div class="dcf-stat-value">' + netCash + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--warning);"><div class="dcf-stat-label">P/E Ratio</div><div class="dcf-stat-value">' + pe + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--danger);"><div class="dcf-stat-label">P/B Ratio</div><div class="dcf-stat-value">' + pb + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--text-muted);"><div class="dcf-stat-label">Hist. FCF CAGR</div><div class="dcf-stat-value">' + histCagr + '</div></div>';
-            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">RoCE</div><div class="dcf-stat-value" style="color:' + (data.roce ? (data.roce*100>=20?'var(--accent-green)':data.roce*100>=12?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roce + '</div></div>';
-            h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">RoE</div><div class="dcf-stat-value" style="color:' + (data.roe ? (data.roe*100>=15?'var(--accent-green)':data.roe*100>=8?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roe + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">RoCE</div><div class="dcf-stat-value" style="color:' + (data.roce != null ? (data.roce*100>=20?'var(--accent-green)':data.roce*100>=12?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roce + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">RoE</div><div class="dcf-stat-value" style="color:' + (data.roe != null ? (data.roe*100>=15?'var(--accent-green)':data.roe*100>=8?'var(--warning)':'var(--danger)') : 'var(--text-muted)') + ';">' + roe + '</div></div>';
             h += '</div>';
             if (data.fcf_history && data.fcf_history.length > 1) h += renderFCFHistory(data.fcf_history);
             h += '<div class="dcf-valuation-grid">';
