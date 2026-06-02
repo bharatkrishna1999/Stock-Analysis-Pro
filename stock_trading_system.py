@@ -115,6 +115,66 @@ def currency_symbol(symbol):
     code = currency_for_symbol(symbol)
     return CURRENCY_SYMBOLS.get(code, code + " ")
 
+
+# Per-market parameters used by the benchmark/regime, beta/regression,
+# valuation (DCF + excess-return) and dividend tools. Keyed by the symbol's
+# trading currency. Anything not listed falls back to the INR/India profile,
+# so existing NSE/BSE behaviour is unchanged.
+#   benchmark            – Yahoo ticker of the market index for regime/beta
+#   benchmark_name       – human label shown in the UI
+#   benchmark_fallbacks  – tickers to try if the index has no data
+#   risk_free_rate / equity_risk_premium – CAPM inputs (decimals)
+#   default_wacc / terminal_growth       – DCF defaults (percent)
+#   fy_start_month       – first month of the fiscal year (1 = calendar year)
+#   big_number_scale     – (divisor, suffix) for market-cap / large-money labels
+MARKET_PROFILES = {
+    "INR": {
+        "benchmark": "^NSEI", "benchmark_name": "Nifty 50",
+        "benchmark_fallbacks": ["NIFTYBEES.NS", "RELIANCE.NS"],
+        "risk_free_rate": 0.07, "equity_risk_premium": 0.06,
+        "default_wacc": 12, "terminal_growth": 3,
+        "fy_start_month": 4, "locale": "en-IN",
+        "big_number_scale": (1e7, "Cr"),  # crore
+    },
+    "CHF": {
+        "benchmark": "^SSMI", "benchmark_name": "SMI (Swiss Market Index)",
+        "benchmark_fallbacks": ["^SSMI"],
+        "risk_free_rate": 0.012, "equity_risk_premium": 0.05,
+        "default_wacc": 7, "terminal_growth": 2,
+        "fy_start_month": 1, "locale": "de-CH",
+        "big_number_scale": (1e9, "B"),   # billions
+    },
+    "USD": {
+        "benchmark": "^GSPC", "benchmark_name": "S&P 500",
+        "benchmark_fallbacks": ["SPY"],
+        "risk_free_rate": 0.042, "equity_risk_premium": 0.05,
+        "default_wacc": 8, "terminal_growth": 2.5,
+        "fy_start_month": 1, "locale": "en-US",
+        "big_number_scale": (1e9, "B"),
+    },
+    "EUR": {
+        "benchmark": "^STOXX50E", "benchmark_name": "EURO STOXX 50",
+        "benchmark_fallbacks": ["^STOXX50E"],
+        "risk_free_rate": 0.025, "equity_risk_premium": 0.05,
+        "default_wacc": 8, "terminal_growth": 2,
+        "fy_start_month": 1, "locale": "de-DE",
+        "big_number_scale": (1e9, "B"),
+    },
+    "GBP": {
+        "benchmark": "^FTSE", "benchmark_name": "FTSE 100",
+        "benchmark_fallbacks": ["^FTSE"],
+        "risk_free_rate": 0.04, "equity_risk_premium": 0.05,
+        "default_wacc": 8, "terminal_growth": 2,
+        "fy_start_month": 1, "locale": "en-GB",
+        "big_number_scale": (1e9, "B"),
+    },
+}
+
+
+def market_profile(symbol):
+    """Return the market-parameter profile for a symbol (defaults to INR/India)."""
+    return MARKET_PROFILES.get(currency_for_symbol(symbol), MARKET_PROFILES["INR"])
+
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX
 
@@ -419,40 +479,42 @@ def _save_universe_cache(symbols, source):
         print(f"  [cache] Failed to save cache: {e}")
 
 
-def _fy_dates(n_years_back=0):
-    """Return (start_str, end_str) for a completed Indian financial year.
+def _fy_dates(n_years_back=0, fy_start_month=4):
+    """Return (start_str, end_str) for a completed financial year.
 
-    Indian FY: April 1 → March 31.
-    n_years_back=0 → most recently completed FY
-                      (e.g. FY2024-25 when today is Feb 2026)
-    n_years_back=1 → the FY before that, etc.
+    fy_start_month controls the fiscal calendar: 4 = Indian FY (Apr 1 → Mar 31),
+    1 = calendar year (Jan 1 → Dec 31), etc.
+    n_years_back=0 → most recently completed FY, 1 → the FY before that.
     Returns strings in 'YYYY-MM-DD' format.
     """
     today = date.today()
-    # fy_end_year is the calendar year in which the FY ends (March)
-    fy_end_year = today.year if today.month >= 4 else today.year - 1
+    # fy_end_year is the calendar year in which the FY ends
+    fy_end_year = today.year if today.month >= fy_start_month else today.year - 1
     fy_end_year -= n_years_back
-    fy_start = date(fy_end_year - 1, 4, 1)
-    fy_end   = date(fy_end_year,     3, 31)
+    fy_start = date(fy_end_year - 1, fy_start_month, 1)
+    fy_end   = date(fy_end_year, fy_start_month, 1) - timedelta(days=1)
     return fy_start.strftime('%Y-%m-%d'), fy_end.strftime('%Y-%m-%d')
 
 
-def _fy_label(n_years_back=0):
-    """Return a human-readable label, e.g. 'FY2024-25'."""
+def _fy_label(n_years_back=0, fy_start_month=4):
+    """Return a human-readable label, e.g. 'FY2024-25' (April FY) or '2024' (calendar)."""
     today = date.today()
-    fy_end_year = today.year if today.month >= 4 else today.year - 1
+    fy_end_year = today.year if today.month >= fy_start_month else today.year - 1
     fy_end_year -= n_years_back
+    if fy_start_month == 1:
+        return str(fy_end_year - 1)          # calendar year, e.g. "2025"
     return f"FY{fy_end_year - 1}-{str(fy_end_year)[2:]}"
 
 
-def _compute_sustainable_dividend(dividends, current_price, max_single_pct=0.08):
-    """Compute sustainable annual dividend by comparing last 2 completed Indian FYs.
+def _compute_sustainable_dividend(dividends, current_price, max_single_pct=0.08, fy_start_month=4):
+    """Compute sustainable annual dividend by comparing the last 2 completed FYs.
 
     If the most recent FY's dividend is ≥ 2× the previous FY's dividend (and
     the previous FY had meaningful dividends), the inflated year is likely a
     one-time special dividend.  In that case use the *lower* FY figure so the
     yield reflects what an investor can realistically expect going forward.
 
+    fy_start_month selects the fiscal calendar (see _fy_dates).
     Returns (sustainable_dividend, latest_fy_div, prev_fy_div, was_capped, fy_count).
     fy_count = number of the last 2 FYs that had positive dividends (0, 1, or 2).
     """
@@ -460,7 +522,7 @@ def _compute_sustainable_dividend(dividends, current_price, max_single_pct=0.08)
         return 0.0, 0.0, 0.0, False, 0
 
     def _fy_sum(n_back):
-        s_str, e_str = _fy_dates(n_back)
+        s_str, e_str = _fy_dates(n_back, fy_start_month)
         s_ts, e_ts = pd.Timestamp(s_str), pd.Timestamp(e_str)
         try:
             if dividends.index.tz is not None:
@@ -2106,11 +2168,20 @@ class Analyzer:
             REGIME_CACHE.set(cache_key, result)
             return result['regime'], result['score'], result['details']
 
-    def _get_market_regime(self):
-        """Get Nifty 50 market regime. Falls back to NIFTYBEES ETF if index unavailable."""
-        regime, score, details = self._fetch_regime('^NSEI', 'regime:market:NSEI')
-        if details.get('reason') and 'No data' in details.get('reason', ''):
-            regime, score, details = self._fetch_regime('NIFTYBEES.NS', 'regime:market:NIFTYBEES')
+    def _get_market_regime(self, symbol=None):
+        """Get the market-index regime for a symbol's home market.
+
+        Uses the benchmark from the symbol's market profile (Nifty 50 for
+        Indian stocks, SMI for Swiss, etc.), falling back to the profile's
+        backup tickers if the index has no data.
+        """
+        prof = market_profile(symbol)
+        candidates = [prof['benchmark']] + list(prof.get('benchmark_fallbacks', []))
+        regime, score, details = 'neutral', 0.5, {'reason': 'No data'}
+        for tkr in candidates:
+            regime, score, details = self._fetch_regime(tkr, f'regime:market:{tkr}')
+            if not (details.get('reason') and 'No data' in details.get('reason', '')):
+                break
         return regime, score, details
 
     def _get_sector_regime(self, symbol):
@@ -2353,7 +2424,7 @@ class Analyzer:
 
         # --- Fetch regimes (failsafe: defaults to neutral on error) ---
         try:
-            market_regime, market_score, market_details = self._get_market_regime()
+            market_regime, market_score, market_details = self._get_market_regime(symbol)
         except Exception:
             market_regime, market_score, market_details = 'neutral', 0.5, {'reason': 'Error fetching market data'}
         try:
@@ -2713,18 +2784,23 @@ class Analyzer:
             stock_data, nifty_data = None, None
             nifty_source = None
 
+            # Benchmark index for this stock's home market (Nifty 50 for India,
+            # SMI for Switzerland, etc.) plus the profile's fallback tickers.
+            prof = market_profile(stock_symbol)
+            benchmark_candidates = [(prof['benchmark'], prof['benchmark_name'])]
+            for fb in prof.get('benchmark_fallbacks', []):
+                benchmark_candidates.append((fb, f"{fb} (proxy)"))
+
             for period in periods_to_try:
                 try:
                     stock_data = yf.download(primary_yahoo_ticker(stock_symbol), period=period, interval='1d', progress=False, threads=False)
                     if stock_data is None or stock_data.empty: continue
-                    nifty_data = yf.download("^NSEI", period=period, interval='1d', progress=False, threads=False)
-                    if nifty_data is None or nifty_data.empty:
-                        nifty_data = yf.download("NIFTYBEES.NS", period=period, interval='1d', progress=False, threads=False)
-                        if nifty_data is None or nifty_data.empty:
-                            nifty_data = yf.download("RELIANCE.NS", period=period, interval='1d', progress=False, threads=False)
-                            nifty_source = "RELIANCE (proxy)"
-                        else: nifty_source = "NIFTYBEES ETF"
-                    else: nifty_source = "Nifty 50 Index"
+                    nifty_data, nifty_source = None, None
+                    for bench_ticker, bench_name in benchmark_candidates:
+                        nifty_data = yf.download(bench_ticker, period=period, interval='1d', progress=False, threads=False)
+                        if nifty_data is not None and not nifty_data.empty:
+                            nifty_source = bench_name
+                            break
 
                     if nifty_data is not None and not nifty_data.empty: break
                 except Exception: continue
@@ -2995,9 +3071,6 @@ class Analyzer:
         if not symbols:
             return results, dividend_found
 
-        # Resolve FY window once for this call
-        fy_lbl = _fy_label(0)
-
         def _batched(iterable, size):
             for idx in range(0, len(iterable), size):
                 yield iterable[idx:idx + size]
@@ -3044,9 +3117,12 @@ class Analyzer:
                     if exclude_downtrend and in_downtrend:
                         continue  # never recommend stocks in structural decline
 
-                    # ── Sustainable dividend: compare last 2 FYs ─────────────────────
+                    # ── Sustainable dividend: compare last 2 FYs (per-market calendar) ─
+                    prof = market_profile(symbol)
+                    fy_lbl = _fy_label(0, prof['fy_start_month'])
                     annual_dividend, latest_fy_div, prev_fy_div, was_capped, fy_count = \
-                        _compute_sustainable_dividend(dividends, current_price)
+                        _compute_sustainable_dividend(dividends, current_price,
+                                                      fy_start_month=prof['fy_start_month'])
                     if annual_dividend <= 0:
                         continue
 
@@ -3068,6 +3144,7 @@ class Analyzer:
                         'prev_fy_dividend':   round(prev_fy_div, 2),
                         'yield_capped':       was_capped,
                         'fy_count':           fy_count,
+                        'currency_symbol':    currency_symbol(symbol),
                     })
                 except Exception:
                     continue
@@ -3151,7 +3228,8 @@ class Analyzer:
                 'price': stock['price'],
                 'dividend_yield': stock['dividend_yield'],
                 'expected_dividend': round(expected_div, 2),
-                'volatility': stock['volatility']
+                'volatility': stock['volatility'],
+                'currency_symbol': stock.get('currency_symbol', currency_symbol(stock['symbol'])),
             }
             allocation.append(allocation_entry)
 
@@ -3415,6 +3493,7 @@ class Analyzer:
                                   info.get('revenueGrowth') or 0.10)
                 suggested_growth = min(max(float(analyst_growth), 0.03), 0.40)
 
+            prof = market_profile(symbol)
             return {
                 'symbol': symbol,
                 'name': info.get('longName') or info.get('shortName') or symbol,
@@ -3435,6 +3514,15 @@ class Analyzer:
                 'roce': roce,
                 'margin_trend': margin_trend,
                 'fcf_history': fcf_history,
+                # Market-specific display + valuation defaults for the frontend
+                'currency': currency_for_symbol(symbol),
+                'currency_symbol': currency_symbol(symbol),
+                'big_number_scale': prof['big_number_scale'][0],
+                'big_number_suffix': prof['big_number_scale'][1],
+                'default_wacc': prof['default_wacc'],
+                'default_terminal_growth': prof['terminal_growth'],
+                'risk_free_rate': prof['risk_free_rate'],
+                'equity_risk_premium': prof['equity_risk_premium'],
             }
         except Exception as e:
             print(f"DCF valuation error for {symbol}: {e}")
@@ -3584,11 +3672,12 @@ class Analyzer:
                 return None
 
             # --- Cost of Equity (Ke) ---
-            # Use CAPM: Rf + beta * (Rm - Rf)
-            # Defaults: Rf=7% (India 10-yr govt bond), market premium=6%
+            # Use CAPM: Rf + beta * (Rm - Rf), with market-specific inputs
+            # (e.g. India: Rf=7%, ERP=6%; Switzerland: Rf=1.2%, ERP=5%).
+            prof = market_profile(symbol)
             beta = info.get('beta') or 1.0
-            risk_free_rate = 0.07
-            market_premium = 0.06
+            risk_free_rate = prof['risk_free_rate']
+            market_premium = prof['equity_risk_premium']
             cost_of_equity = risk_free_rate + float(beta) * market_premium
 
             # --- Book Value history ---
@@ -3701,6 +3790,15 @@ class Analyzer:
                 'roce': None,
                 'ev_ebitda': None,
                 'fcf_history': [],
+                # Market-specific display + valuation defaults for the frontend
+                'currency': currency_for_symbol(symbol),
+                'currency_symbol': currency_symbol(symbol),
+                'big_number_scale': prof['big_number_scale'][0],
+                'big_number_suffix': prof['big_number_scale'][1],
+                'default_wacc': prof['default_wacc'],
+                'default_terminal_growth': prof['terminal_growth'],
+                'risk_free_rate': prof['risk_free_rate'],
+                'equity_risk_premium': prof['equity_risk_premium'],
             }
         except Exception as e:
             print(f"Excess return valuation error for {symbol}: {e}")
@@ -5380,7 +5478,7 @@ def dashboard():
                             </div>
                             <div style="background:var(--bg-dark);padding:14px 16px;border-radius:8px;">
                                 <strong style="color:var(--text-primary);font-size:0.9em;">2. Discount to Present Value</strong>
-                                <p style="color:var(--text-muted);font-size:0.82em;margin:5px 0 0;line-height:1.6;">A rupee today is worth more than a rupee tomorrow. We discount future cash using your WACC rate.</p>
+                                <p style="color:var(--text-muted);font-size:0.82em;margin:5px 0 0;line-height:1.6;">A unit of currency today is worth more than the same unit tomorrow. We discount future cash using your WACC rate.</p>
                             </div>
                             <div style="background:var(--bg-dark);padding:14px 16px;border-radius:8px;">
                                 <strong style="color:var(--text-primary);font-size:0.9em;">3. Add Terminal Value</strong>
@@ -6047,11 +6145,19 @@ def dashboard():
         const _sectorPageSize = 20;
         const _sectorQuoteCache = {};
 
-        function _formatMcap(mcap) {
+        function _formatMcap(mcap, curSym) {
             if (!mcap) return '';
-            if (mcap >= 1e12) return '\u20B9' + (mcap / 1e12).toFixed(1) + 'L Cr';
-            if (mcap >= 1e9) return '\u20B9' + (mcap / 1e7 / 100).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' Cr';
-            if (mcap >= 1e7) return '\u20B9' + (mcap / 1e7).toFixed(0) + ' Cr';
+            curSym = curSym || '\u20B9';
+            if (curSym === '\u20B9') {
+                // Indian numbering (lakh crore / crore)
+                if (mcap >= 1e12) return curSym + (mcap / 1e12).toFixed(1) + 'L Cr';
+                if (mcap >= 1e9) return curSym + (mcap / 1e7 / 100).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' Cr';
+                if (mcap >= 1e7) return curSym + (mcap / 1e7).toFixed(0) + ' Cr';
+                return '';
+            }
+            // International numbering (billions / millions)
+            if (mcap >= 1e9) return curSym + (mcap / 1e9).toFixed(1) + 'B';
+            if (mcap >= 1e6) return curSym + (mcap / 1e6).toFixed(0) + 'M';
             return '';
         }
 
@@ -6063,7 +6169,7 @@ def dashboard():
             const chgStr = chg >= 0 ? '+' + chg.toFixed(2) + '%' : chg.toFixed(2) + '%';
             const chgClass = chg >= 0 ? 'up' : 'down';
             const chgIcon = chg >= 0 ? '\u2197' : '\u2198';
-            const mcap = (quote && quote.mcap) ? _formatMcap(quote.mcap) : '';
+            const mcap = (quote && quote.mcap) ? _formatMcap(quote.mcap, curSym) : '';
             const loadingClass = quote ? '' : ' sc-loading';
             return `<div class="stock-card${loadingClass}" onclick="analyze('${sym}')" data-sym="${sym}">
                 <div class="sc-top"><span class="sc-symbol">${sym}</span><span class="sc-change ${chgClass}">${chgIcon} ${chgStr}</span></div>
@@ -6655,7 +6761,7 @@ def dashboard():
             poll();
         }
         function showRegressionResult(data, symbol) {
-            const marketInfo = data.market_source ? `<div style="background: rgba(201,168,76, 0.07); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-gold);"><strong>Market Benchmark:</strong> ${data.market_source} ${data.market_source !== 'Nifty 50 Index' ? '<br><small style="color: var(--text-muted);">Note: Using alternative benchmark due to Nifty 50 data availability.</small>' : ''}</div>` : '';
+            const marketInfo = data.market_source ? `<div style="background: rgba(201,168,76, 0.07); padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 3px solid var(--accent-gold);"><strong>Market Benchmark:</strong> ${data.market_source} ${(data.market_source.indexOf('proxy') !== -1) ? '<br><small style="color: var(--text-muted);">Note: Using an alternative benchmark due to primary index data availability.</small>' : ''}</div>` : '';
             const scorePercent = (data.dependency_score * 100).toFixed(1);
             const compositePercent = (data.composite_score * 100).toFixed(1);
             const cs = data.composite_score;
@@ -6867,11 +6973,12 @@ def dashboard():
                 const fc = s.fy_count || 0;
                 const fcColor = fc >= 2 ? 'var(--accent-green)' : fc === 1 ? 'var(--warning)' : 'var(--accent-red, #ef4444)';
                 const fcLabel = fc >= 2 ? fc + '/2 FY' : fc === 1 ? '1/2 FY' : 'None';
+                const cur = s.currency_symbol || '₹';
                 return `<tr>
                     <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span></td>
                     <td style="font-size:0.8em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
-                    <td style="text-align: right;">${fmt(s.price)}</td>
-                    <td style="text-align: right;">${fmt(s.annual_dividend)}</td>
+                    <td style="text-align: right;">${cur}${fmt(s.price)}</td>
+                    <td style="text-align: right;">${cur}${fmt(s.annual_dividend)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
                     <td style="color: ${fcColor}; font-weight: 600;">${fcLabel}</td>
                     <td>${s.volatility}%</td>
@@ -6934,7 +7041,7 @@ def dashboard():
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Consistency</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price</th><th style="text-align:right;">Annual Div</th><th>Div Yield</th><th>Consistency</th><th>Volatility</th>
                             </tr></thead>
                             <tbody id="live-dividend-body"></tbody>
                         </table>
@@ -7000,18 +7107,20 @@ def dashboard():
         }
         function showDividendResults(data, capital) {
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
-            let allocRows = data.allocation.map((a, idx) => `
+            let allocRows = data.allocation.map((a, idx) => {
+                const cur = a.currency_symbol || '₹';
+                return `
                 <tr>
                     <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}<br><span style="font-size:0.8em; font-weight:400; color: var(--text-muted);">${getStockName(a.symbol)}</span></td>
                     <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(a.symbol)}</td>
                     <td>${a.weight}%</td>
                     <td style="text-align: right;">${a.shares}</td>
-                    <td style="text-align: right;">${fmt(a.price)}</td>
-                    <td style="text-align: right;">${fmt(a.amount)}</td>
+                    <td style="text-align: right;">${cur}${fmt(a.price)}</td>
+                    <td style="text-align: right;">${cur}${fmt(a.amount)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${a.dividend_yield}%</td>
-                    <td style="color: var(--accent-green); font-weight: 700; text-align: right;">${fmt(a.expected_dividend)}</td>
+                    <td style="color: var(--accent-green); font-weight: 700; text-align: right;">${cur}${fmt(a.expected_dividend)}</td>
                     <td>${a.volatility}%</td>
-                </tr>`).join('');
+                </tr>`; }).join('');
             let sortedStocks = [...data.all_dividend_stocks];
             if (dividendHighlight) {
                 sortedStocks.sort((a, b) => {
@@ -7022,16 +7131,17 @@ def dashboard():
             }
             let allStockRows = sortedStocks.map((s, idx) => {
                 const isHL = s.symbol === dividendHighlight;
-                const cappedNote = s.yield_capped ? `<br><span style="font-size:0.75em; color: var(--warning);" title="Latest FY div ₹${fmt(s.latest_fy_dividend)} was ≥2x prev FY ₹${fmt(s.prev_fy_dividend)}. Using prev FY for sustainable yield.">⚠ yield adjusted</span>` : '';
-                const divHistory = (s.prev_fy_dividend > 0) ? `<br><span style="font-size:0.75em; color: var(--text-muted);">prev FY: ₹${fmt(s.prev_fy_dividend)}</span>` : '';
+                const cur = s.currency_symbol || '₹';
+                const cappedNote = s.yield_capped ? `<br><span style="font-size:0.75em; color: var(--warning);" title="Latest FY div ${cur}${fmt(s.latest_fy_dividend)} was ≥2x prev FY ${cur}${fmt(s.prev_fy_dividend)}. Using prev FY for sustainable yield.">⚠ yield adjusted</span>` : '';
+                const divHistory = (s.prev_fy_dividend > 0) ? `<br><span style="font-size:0.75em; color: var(--text-muted);">prev FY: ${cur}${fmt(s.prev_fy_dividend)}</span>` : '';
                 const fc = s.fy_count || 0;
                 const fcColor = fc >= 2 ? 'var(--accent-green)' : fc === 1 ? 'var(--warning)' : 'var(--accent-red, #ef4444)';
                 const fcLabel = fc >= 2 ? fc + '/2 FY' : fc === 1 ? '1/2 FY' : 'None';
                 return `<tr style="${isHL ? 'background: rgba(0,217,255,0.1); border-left: 3px solid var(--accent-cyan);' : ''}">
                     <td>${idx + 1}. ${s.symbol}<br><span style="font-size:0.8em; color: var(--text-muted);">${getStockName(s.symbol)}</span>${cappedNote}</td>
                     <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(s.symbol)}</td>
-                    <td style="text-align: right;">${fmt(s.price)}</td>
-                    <td style="text-align: right;">${fmt(s.annual_dividend)}${divHistory}</td>
+                    <td style="text-align: right;">${cur}${fmt(s.price)}</td>
+                    <td style="text-align: right;">${cur}${fmt(s.annual_dividend)}${divHistory}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${s.dividend_yield}%</td>
                     <td style="color: ${fcColor}; font-weight: 600;">${fcLabel}</td>
                     <td>${s.volatility}%</td>
@@ -7069,7 +7179,7 @@ def dashboard():
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Sector</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price</th><th style="text-align:right;">Investment</th><th>Div Yield</th><th style="text-align:right;">Expected Div</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${allocRows}</tbody>
                         </table>
@@ -7082,7 +7192,7 @@ def dashboard():
                     <div style="overflow-x: auto; max-height: 400px; border: 1px solid var(--border-color); border-radius: 8px;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Annual Div (INR)</th><th>Div Yield</th><th>Consistency</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th style="text-align:right;">Price</th><th style="text-align:right;">Annual Div</th><th>Div Yield</th><th>Consistency</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${allStockRows}</tbody>
                         </table>
@@ -7098,18 +7208,20 @@ def dashboard():
             const fmt = (n) => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 2});
             const status = partial ? 'LIVE (PARTIAL)' : 'LIVE';
             const subText = partial ? `Updated after scanning ${scanned} stocks (${dividendFound} dividend payers)` : '';
-            const rows = data.allocation.slice(0, 10).map((a, idx) => `
+            const rows = data.allocation.slice(0, 10).map((a, idx) => {
+                const cur = a.currency_symbol || '₹';
+                return `
                 <tr>
                     <td style="font-weight: 600; color: var(--accent-cyan);">${idx + 1}. ${a.symbol}<br><span style="font-size:0.8em; font-weight:400; color: var(--text-muted);">${getStockName(a.symbol)}</span></td>
                     <td style="font-size:0.85em; color: var(--text-muted);">${getStockSector(a.symbol)}</td>
                     <td>${a.weight}%</td>
                     <td style="text-align: right;">${a.shares}</td>
-                    <td style="text-align: right;">${fmt(a.price)}</td>
-                    <td style="text-align: right;">${fmt(a.amount)}</td>
+                    <td style="text-align: right;">${cur}${fmt(a.price)}</td>
+                    <td style="text-align: right;">${cur}${fmt(a.amount)}</td>
                     <td style="color: var(--accent-green); font-weight: 600;">${a.dividend_yield}%</td>
-                    <td style="color: var(--accent-green); font-weight: 700; text-align: right;">${fmt(a.expected_dividend)}</td>
+                    <td style="color: var(--accent-green); font-weight: 700; text-align: right;">${cur}${fmt(a.expected_dividend)}</td>
                     <td>${a.volatility}%</td>
-                </tr>`).join('');
+                </tr>`; }).join('');
             const html = `
                 <div class="result-card">
                     <div class="header">
@@ -7139,7 +7251,7 @@ def dashboard():
                     <div style="overflow-x: auto;">
                         <table class="dividend-table">
                             <thead><tr>
-                                <th>Stock</th><th>Sector</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price (INR)</th><th style="text-align:right;">Investment (INR)</th><th>Div Yield</th><th style="text-align:right;">Expected Div (INR)</th><th>Volatility</th>
+                                <th>Stock</th><th>Sector</th><th>Weight</th><th style="text-align:right;">Shares</th><th style="text-align:right;">Price</th><th style="text-align:right;">Investment</th><th>Div Yield</th><th style="text-align:right;">Expected Div</th><th>Volatility</th>
                             </tr></thead>
                             <tbody>${rows}</tbody>
                         </table>
@@ -7187,13 +7299,44 @@ def dashboard():
                 .catch(function(e) { document.getElementById('dcf-result').innerHTML = '<div class="error">\u274c ' + e.message + '</div>'; });
         }
 
+        // Active money-formatting state, set per stock from the valuation payload
+        // (currency, large-number scale and locale). Defaults to INR/India.
+        var _curSym = '\u20b9', _bigSuffix = 'Cr', _numLocale = 'en-IN', _unitLabel = '\u20b9 Cr', _fyPrefix = 'FY ';
+        function setMoneyFmt(data) {
+            if (!data) return;
+            _curSym    = data.currency_symbol || '\u20b9';
+            _bigSuffix = data.big_number_suffix || 'Cr';
+            _numLocale = (data.currency === 'INR' || !data.currency) ? 'en-IN' : 'en-US';
+            _unitLabel = _curSym.trim() + ' ' + _bigSuffix;
+            // Indian stocks report on an April\u2013March fiscal year; most others use
+            // the calendar year, so drop the "FY" prefix for them.
+            _fyPrefix  = (_numLocale === 'en-IN') ? 'FY ' : '';
+        }
+        // Format a per-share / price value in the active currency.
+        function money(n) {
+            if (n === null || n === undefined || isNaN(n)) return 'N/A';
+            return _curSym + Number(n).toLocaleString(_numLocale, {minimumFractionDigits:2, maximumFractionDigits:2});
+        }
+        // Whole-number money (no decimals) in the active currency.
+        function moneyInt(n) {
+            if (n === null || n === undefined || isNaN(n)) return 'N/A';
+            return _curSym + Math.round(Number(n)).toLocaleString(_numLocale);
+        }
         function fmtCr(n) {
             if (n === null || n === undefined || isNaN(n)) return 'N/A';
             var abs = Math.abs(n), sign = n < 0 ? '-' : '';
-            if (abs >= 1e12) return sign + '\u20b9' + (abs / 1e12).toFixed(2) + 'L Cr';
-            if (abs >= 1e7)  return sign + '\u20b9' + (abs / 1e7).toFixed(2) + ' Cr';
-            if (abs >= 1e5)  return sign + '\u20b9' + (abs / 1e5).toFixed(2) + ' L';
-            return sign + '\u20b9' + Math.round(abs).toLocaleString('en-IN');
+            if (_bigSuffix === 'Cr') {
+                // Indian numbering: lakh crore / crore / lakh
+                if (abs >= 1e12) return sign + _curSym + (abs / 1e12).toFixed(2) + 'L Cr';
+                if (abs >= 1e7)  return sign + _curSym + (abs / 1e7).toFixed(2) + ' Cr';
+                if (abs >= 1e5)  return sign + _curSym + (abs / 1e5).toFixed(2) + ' L';
+                return sign + _curSym + Math.round(abs).toLocaleString(_numLocale);
+            }
+            // International numbering: billions / millions / thousands
+            if (abs >= 1e9) return sign + _curSym + (abs / 1e9).toFixed(2) + 'B';
+            if (abs >= 1e6) return sign + _curSym + (abs / 1e6).toFixed(2) + 'M';
+            if (abs >= 1e3) return sign + _curSym + (abs / 1e3).toFixed(2) + 'K';
+            return sign + _curSym + Math.round(abs).toLocaleString(_numLocale);
         }
 
         var _FINANCIAL_SECTORS = ['financial services', 'banking', 'insurance', 'financial'];
@@ -7249,9 +7392,10 @@ def dashboard():
         }
 
         function renderDCFResult(data) {
+            setMoneyFmt(data);
             var sugG = Math.round(data.suggested_growth_rate * 100);
             var phase2G = Math.max(Math.round(sugG * 0.5), 5);
-            var defaultWACC = 12, defaultTG = 3;
+            var defaultWACC = data.default_wacc || 12, defaultTG = data.default_terminal_growth || 3;
             var histCagr = data.historical_fcf_growth !== null ? (data.historical_fcf_growth * 100).toFixed(1) + '%' : 'N/A';
             var mktCap = data.market_cap ? fmtCr(data.market_cap) : 'N/A';
             var netCash = fmtCr(data.cash - data.total_debt);
@@ -7259,7 +7403,7 @@ def dashboard():
             var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
             var roce = data.roce ? (data.roce * 100).toFixed(1) + '%' : 'N/A';
             var roe = data.roe ? (data.roe * 100).toFixed(1) + '%' : 'N/A';
-            var priceStr = '\u20b9' + data.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            var priceStr = money(data.current_price);
             var fcfStr = fmtCr(data.current_fcf);
             var h = '';
             h += '<div class="dcf-stock-hero"><div>';
@@ -7289,7 +7433,7 @@ def dashboard():
             h += '<div class="dcf-param-hint">Growth typically decelerates as companies mature.</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Discount Rate / WACC</span><span class="dcf-param-value" id="dcf-wacc-val">' + defaultWACC + '%</span></div>';
             h += '<input type="range" class="dcf-slider" id="dcf-wacc" min="6" max="25" step="0.5" value="' + defaultWACC + '" oninput="dcfSliderChange(this)">';
-            h += '<div class="dcf-param-hint">Your required rate of return. Typically 10\u201315% for NSE stocks.</div></div>';
+            h += '<div class="dcf-param-hint">Your required rate of return. Default is market-calibrated (' + defaultWACC + '% here).</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Terminal Growth Rate</span><span class="dcf-param-value" id="dcf-tg-val">' + defaultTG + '%</span></div>';
             h += '<input type="range" class="dcf-slider" id="dcf-tg" min="1" max="6" step="0.25" value="' + defaultTG + '" oninput="dcfSliderChange(this)">';
             h += '<div class="dcf-param-hint">Perpetual growth after projection period. Should not exceed long-run GDP growth.</div></div>';
@@ -7310,7 +7454,7 @@ def dashboard():
             h += '<div class="dcf-bar-legend"><div class="dcf-bar-legend-item"><div class="dcf-bar-legend-dot" style="background:var(--accent-cyan);"></div>PV of FCFs</div><div class="dcf-bar-legend-item"><div class="dcf-bar-legend-dot" style="background:var(--accent-purple);"></div>Terminal Value</div></div>';
             h += '</div></div>';
             h += '</div>';
-            h += '<div class="dcf-section"><div class="dcf-section-title">Year-by-Year Free Cash Flow Projection</div><div style="overflow-x:auto;"><table class="dcf-proj-table"><thead><tr><th>Year</th><th>FCF (\u20b9 Cr)</th><th>Growth</th><th>Discount Factor</th><th>PV (\u20b9 Cr)</th></tr></thead><tbody id="dcf-proj-tbody"></tbody></table></div></div>';
+            h += '<div class="dcf-section"><div class="dcf-section-title">Year-by-Year Free Cash Flow Projection</div><div style="overflow-x:auto;"><table class="dcf-proj-table"><thead><tr><th>Year</th><th>FCF (' + _unitLabel + ')</th><th>Growth</th><th>Discount Factor</th><th>PV (' + _unitLabel + ')</th></tr></thead><tbody id="dcf-proj-tbody"></tbody></table></div></div>';
             h += '<div class="dcf-sensitivity dcf-section"><div class="dcf-section-title">Sensitivity Analysis \u2014 Intrinsic Value vs WACC &amp; Terminal Growth</div>';
             h += '<p style="color:var(--text-muted);font-size:0.82em;margin-bottom:12px;">Green = undervalued vs current price &bull; Red = overvalued &bull; Yellow = within \u00b115%.</p>';
             h += '<div style="overflow-x:auto;"><table class="dcf-sens-table" id="dcf-sens-table"></table></div></div>';
@@ -7336,7 +7480,7 @@ def dashboard():
             var intrinsic = res.intrinsic;
             var ivEl = document.getElementById('dcf-intrinsic-val');
             var isUnder = intrinsic > price;
-            ivEl.textContent = '\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            ivEl.textContent = money(intrinsic);
             ivEl.className = 'dcf-intrinsic-value ' + (isUnder ? 'dcf-intrinsic-undervalued' : 'dcf-intrinsic-overvalued');
             var mosEl = document.getElementById('dcf-mos');
             var mos = ((intrinsic - price) / Math.max(intrinsic, 1)) * 100;
@@ -7374,7 +7518,7 @@ def dashboard():
                                 growthCell = '<span style="color:' + (g >= 0 ? 'var(--accent-green)' : 'var(--danger)') + ';">' + (g >= 0 ? '+' : '') + g.toFixed(1) + '%</span>';
                             }
                         }
-                        rows += '<tr class="hist-row"><td>FY ' + h.year + '</td><td>' + fmtCr(h.fcf) + '</td><td>' + growthCell + '</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td></tr>';
+                        rows += '<tr class="hist-row"><td>' + _fyPrefix + h.year + '</td><td>' + fmtCr(h.fcf) + '</td><td>' + growthCell + '</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td></tr>';
                     });
                     rows += '<tr class="hist-separator"><td colspan="5">\u25bc\u25bc Projections \u25bc\u25bc</td></tr>';
                 }
@@ -7384,7 +7528,7 @@ def dashboard():
                 rows += '<tr class="tv-row"><td>Terminal Value</td><td>' + fmtCr(res.terminalValue) + '</td><td style="color:var(--text-secondary);">@TG ' + (tg*100).toFixed(2) + '%</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + wacc, _dcfYears)).toFixed(4) + '</td><td>' + fmtCr(res.terminalPV) + '</td></tr>';
                 rows += '<tr class="total-row"><td>Enterprise Value</td><td colspan="3"></td><td>' + fmtCr(res.enterpriseValue) + '</td></tr>';
                 rows += '<tr class="total-row"><td>' + (_isFin ? 'Equity Value (Financial \u2014 no debt adj.)' : 'Equity Value (\u2212Debt +Cash)') + '</td><td colspan="3"></td><td>' + fmtCr(res.equityValue) + '</td></tr>';
-                rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>' + money(intrinsic) + '</td></tr>';
                 tbody.innerHTML = rows;
             }
             renderDCFSensitivity(price, wacc, tg, fcf, g1, g2, _dcfYears, _debt, _cash, dcfData.shares_outstanding);
@@ -7409,7 +7553,7 @@ def dashboard():
                     var isCurrent = (Math.abs(dw) < 0.001 && Math.abs(tg - baseTG) < 0.001);
                     var cls = ud >= 15 ? 'dcf-sens-undervalue' : ud <= -15 ? 'dcf-sens-overvalue' : 'dcf-sens-near';
                     if (isCurrent) cls += ' dcf-sens-highlight';
-                    html += '<td class="' + cls + '">\u20b9' + Math.round(r.intrinsic).toLocaleString('en-IN') + '</td>';
+                    html += '<td class="' + cls + '">' + moneyInt(r.intrinsic) + '</td>';
                 });
                 html += '</tr>';
             });
@@ -7437,10 +7581,11 @@ def dashboard():
         }
 
         function renderExcessReturnResult(data) {
+            setMoneyFmt(data);
             var roe = data.roe, coe = data.cost_of_equity, bvps = data.book_value_per_share;
             var sugG = Math.round(data.suggested_growth_rate * 100);
             var defaultKe = Math.round(coe * 100);
-            var priceStr = '\u20b9' + data.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            var priceStr = money(data.current_price);
             var mktCap = data.market_cap ? fmtCr(data.market_cap) : 'N/A';
             var pe = data.pe_ratio ? data.pe_ratio.toFixed(1) + 'x' : 'N/A';
             var pb = data.pb_ratio ? data.pb_ratio.toFixed(2) + 'x' : 'N/A';
@@ -7454,7 +7599,7 @@ def dashboard():
             h += '<div style="margin-top:6px;padding:4px 10px;background:var(--accent-purple);color:#fff;border-radius:6px;display:inline-block;font-size:0.78em;font-weight:600;">Damodaran Excess Return Model (Financial Firm)</div>';
             h += '</div><div class="dcf-price-box"><div class="dcf-price-label">Current Price</div><div class="dcf-price-val">' + priceStr + '</div></div></div>';
             h += '<div class="dcf-key-stats">';
-            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">Book Value / Share</div><div class="dcf-stat-value">\u20b9' + bvps.toFixed(2) + '</div></div>';
+            h += '<div class="dcf-stat" style="border-left-color:var(--accent-green);"><div class="dcf-stat-label">Book Value / Share</div><div class="dcf-stat-value">' + money(bvps) + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--accent-cyan);"><div class="dcf-stat-label">Return on Equity</div><div class="dcf-stat-value" style="color:' + (roe*100>=15?'var(--accent-green)':roe*100>=8?'var(--warning)':'var(--danger)') + ';">' + roeStr + '</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:var(--accent-purple);"><div class="dcf-stat-label">Cost of Equity</div><div class="dcf-stat-value">' + (coe * 100).toFixed(1) + '%</div></div>';
             h += '<div class="dcf-stat" style="border-left-color:' + (parseFloat(excessSpread)>0?'var(--accent-green)':'var(--danger)') + ';"><div class="dcf-stat-label">Excess Spread (ROE\u2212Ke)</div><div class="dcf-stat-value" style="color:' + (parseFloat(excessSpread)>0?'var(--accent-green)':'var(--danger)') + ';">' + (parseFloat(excessSpread)>0?'+':'') + excessSpread + '%</div></div>';
@@ -7484,7 +7629,7 @@ def dashboard():
             h += '<div class="dcf-param-hint">Current ROE: ' + roeStr + '. Higher ROE means more excess returns above cost of equity.</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Cost of Equity (Ke)</span><span class="dcf-param-value" id="er-ke-val">' + defaultKe + '%</span></div>';
             h += '<input type="range" class="dcf-slider" id="er-ke" min="6" max="25" step="0.5" value="' + defaultKe + '" oninput="erSliderChange(this)">';
-            h += '<div class="dcf-param-hint">CAPM-derived: Rf(' + (0.07*100).toFixed(0) + '%) + \u03b2(' + data.beta.toFixed(2) + ') \u00d7 MRP(6%). Your required return.</div></div>';
+            h += '<div class="dcf-param-hint">CAPM-derived: Rf(' + ((data.risk_free_rate||0.07)*100).toFixed(1) + '%) + \u03b2(' + data.beta.toFixed(2) + ') \u00d7 MRP(' + ((data.equity_risk_premium||0.06)*100).toFixed(0) + '%). Your required return.</div></div>';
             h += '<div class="dcf-param-row"><div class="dcf-param-label"><span>Book Value Growth Rate</span><span class="dcf-param-value" id="er-g-val">' + sugG + '%</span></div>';
             h += '<input type="range" class="dcf-slider" id="er-g" min="0" max="30" step="0.5" value="' + sugG + '" oninput="erSliderChange(this)">';
             h += '<div class="dcf-param-hint">Rate at which book value per share grows. Historical BV CAGR: ' + bvGrowth + '.</div></div>';
@@ -7493,7 +7638,7 @@ def dashboard():
             h += '<div class="dcf-intrinsic-hero"><div class="dcf-intrinsic-label">Intrinsic Value Per Share</div><div class="dcf-intrinsic-value" id="er-intrinsic-val">\u2014</div></div>';
             h += '<div id="er-verdict-banner" class="dcf-verdict-banner"></div>';
             h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Current Market Price</span><span class="dcf-margin-val">' + priceStr + '</span></div>';
-            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Book Value / Share</span><span class="dcf-margin-val">\u20b9' + bvps.toFixed(2) + '</span></div>';
+            h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Book Value / Share</span><span class="dcf-margin-val">' + money(bvps) + '</span></div>';
             h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Upside / Downside</span><span class="dcf-margin-val" id="er-updown">\u2014</span></div>';
             h += '<div class="dcf-margin-row"><span class="dcf-margin-label">PV of Excess Returns</span><span class="dcf-margin-val" id="er-pv-excess">\u2014</span></div>';
             h += '<div class="dcf-margin-row"><span class="dcf-margin-label">Terminal Value of Excess Returns</span><span class="dcf-margin-val" id="er-tv">\u2014</span></div>';
@@ -7543,14 +7688,14 @@ def dashboard():
             var intrinsic = res.intrinsic;
             var ivEl = document.getElementById('er-intrinsic-val');
             var isUnder = intrinsic > price;
-            ivEl.textContent = '\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+            ivEl.textContent = money(intrinsic);
             ivEl.className = 'dcf-intrinsic-value ' + (isUnder ? 'dcf-intrinsic-undervalued' : 'dcf-intrinsic-overvalued');
             var ud = ((intrinsic - price) / price) * 100;
             var udEl = document.getElementById('er-updown');
             udEl.textContent = (ud >= 0 ? '+' : '') + ud.toFixed(1) + '%';
             udEl.className = 'dcf-margin-val ' + (ud >= 0 ? 'dcf-upside' : 'dcf-downside');
-            document.getElementById('er-pv-excess').textContent = '\u20b9' + res.sumPV.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' / share';
-            document.getElementById('er-tv').textContent = '\u20b9' + res.terminalPV.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' / share';
+            document.getElementById('er-pv-excess').textContent = money(res.sumPV) + ' / share';
+            document.getElementById('er-tv').textContent = money(res.terminalPV) + ' / share';
             // Breakdown bar
             var totalExcess = res.sumPV + res.terminalPV;
             var bvPct = intrinsic > 0 ? Math.max(0, Math.min(bvps / intrinsic * 100, 100)) : 50;
@@ -7573,17 +7718,17 @@ def dashboard():
                     var hist = dcfData.roe_history.slice(-5);
                     hist.forEach(function(r) {
                         var eqPerShare = r.equity / shares;
-                        rows += '<tr class="hist-row"><td>FY ' + r.year + '</td><td>\u20b9' + eqPerShare.toFixed(2) + '</td><td style="color:' + (r.roe>=0?'var(--accent-green)':'var(--danger)') + ';">ROE ' + (r.roe*100).toFixed(1) + '%</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td></tr>';
+                        rows += '<tr class="hist-row"><td>' + _fyPrefix + r.year + '</td><td>' + money(eqPerShare) + '</td><td style="color:' + (r.roe>=0?'var(--accent-green)':'var(--danger)') + ';">ROE ' + (r.roe*100).toFixed(1) + '%</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td><td style="color:var(--text-muted);font-size:0.8em;">Actual</td></tr>';
                     });
                     rows += '<tr class="hist-separator"><td colspan="5">\u25bc\u25bc Projections \u25bc\u25bc</td></tr>';
                 }
                 res.projections.forEach(function(p) {
-                    rows += '<tr><td>Year ' + p.year + '</td><td>\u20b9' + p.bv.toFixed(2) + '</td><td style="color:' + (p.excessReturn>=0?'var(--accent-green)':'var(--danger)') + ';">\u20b9' + p.excessReturn.toFixed(2) + '</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + ke, p.year)).toFixed(4) + '</td><td>\u20b9' + p.pv.toFixed(2) + '</td></tr>';
+                    rows += '<tr><td>Year ' + p.year + '</td><td>' + money(p.bv) + '</td><td style="color:' + (p.excessReturn>=0?'var(--accent-green)':'var(--danger)') + ';">' + money(p.excessReturn) + '</td><td style="color:var(--text-muted);">' + (1 / Math.pow(1 + ke, p.year)).toFixed(4) + '</td><td>' + money(p.pv) + '</td></tr>';
                 });
-                rows += '<tr class="total-row"><td>PV of Excess Returns</td><td colspan="3"></td><td>\u20b9' + res.sumPV.toFixed(2) + '</td></tr>';
-                rows += '<tr class="total-row"><td>Terminal Excess Return (PV)</td><td colspan="3"></td><td>\u20b9' + res.terminalPV.toFixed(2) + '</td></tr>';
-                rows += '<tr class="total-row"><td>Book Value / Share</td><td colspan="3"></td><td>\u20b9' + bvps.toFixed(2) + '</td></tr>';
-                rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>\u20b9' + intrinsic.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td></tr>';
+                rows += '<tr class="total-row"><td>PV of Excess Returns</td><td colspan="3"></td><td>' + money(res.sumPV) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Terminal Excess Return (PV)</td><td colspan="3"></td><td>' + money(res.terminalPV) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Book Value / Share</td><td colspan="3"></td><td>' + money(bvps) + '</td></tr>';
+                rows += '<tr class="total-row"><td>Intrinsic Value / Share</td><td colspan="3"></td><td>' + money(intrinsic) + '</td></tr>';
                 tbody.innerHTML = rows;
             }
             // Sensitivity table: ROE vs Cost of Equity
@@ -7610,7 +7755,7 @@ def dashboard():
                     var isCurrent = (Math.abs(dk) < 0.001 && Math.abs(dr) < 0.001);
                     var cls = ud >= 15 ? 'dcf-sens-undervalue' : ud <= -15 ? 'dcf-sens-overvalue' : 'dcf-sens-near';
                     if (isCurrent) cls += ' dcf-sens-highlight';
-                    html += '<td class="' + cls + '">\u20b9' + Math.round(res.intrinsic).toLocaleString('en-IN') + '</td>';
+                    html += '<td class="' + cls + '">' + moneyInt(res.intrinsic) + '</td>';
                 });
                 html += '</tr>';
             });
@@ -7727,8 +7872,9 @@ def dashboard():
                 h += '<td style="padding:12px 14px;color:var(--text-muted);font-weight:600;">' + (i + 1) + '</td>';
                 h += '<td style="padding:12px 14px;"><div style="font-weight:700;color:var(--text-primary);">' + r.symbol + '</div><div style="font-size:0.78em;color:var(--text-muted);margin-top:2px;">' + (r.name || '') + '</div></td>';
                 h += '<td style="padding:12px 14px;color:var(--text-secondary);font-size:0.85em;">' + (r.sector || '') + '</td>';
-                h += '<td style="padding:12px 14px;text-align:right;color:var(--text-primary);font-weight:600;">\u20b9' + r.current_price.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
-                h += '<td style="padding:12px 14px;text-align:right;color:var(--accent-green);font-weight:700;">\u20b9' + r.intrinsic_value.toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
+                var _rc = r.currency_symbol || '\u20b9';
+                h += '<td style="padding:12px 14px;text-align:right;color:var(--text-primary);font-weight:600;">' + _rc + r.current_price.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
+                h += '<td style="padding:12px 14px;text-align:right;color:var(--accent-green);font-weight:700;">' + _rc + r.intrinsic_value.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}) + '</td>';
                 h += '<td style="padding:12px 14px;text-align:right;font-weight:800;color:' + upsideColor + ';font-size:1.05em;">+' + r.upside_pct.toFixed(1) + '%</td>';
                 h += '<td style="padding:12px 14px;text-align:right;color:var(--text-secondary);">' + peStr + '</td>';
                 h += '<td style="padding:12px 14px;text-align:right;color:' + roceColor + ';font-weight:600;">' + roceStr + '</td>';
@@ -7920,6 +8066,7 @@ def dashboard():
             }
             let score = 0;
             const fyLbl = divD.fy_label || 'FY';
+            const dCur = divD.currency_symbol || '₹';
 
             // ── Long-term trend guard ────────────────────────────────────────────
             if (divD.in_downtrend) {
@@ -7960,16 +8107,16 @@ def dashboard():
             if (divD.payment_date)     { score += 4; items.push({ label: 'Payment Date', value: divD.payment_date, color: 'cyan' }); }
 
             const annDiv = parseFloat(divD.annual_dividend) || 0;
-            if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: '\u20b9' + annDiv.toFixed(2) + ' (' + fyLbl + ')', color: 'cyan' });
+            if (annDiv > 0) items.push({ label: 'Annual Div/Share', value: dCur + annDiv.toFixed(2) + ' (' + fyLbl + ')', color: 'cyan' });
 
             // ── Sustainability check: flag if yield was capped ─────────────────
             if (divD.yield_capped) {
                 score -= 10;
                 const latFy = parseFloat(divD.latest_fy_dividend) || 0;
                 const prvFy = parseFloat(divD.prev_fy_dividend) || 0;
-                items.push({ label: 'Dividend Spike', value: 'Latest FY \u20b9' + latFy.toFixed(2) + ' vs prev FY \u20b9' + prvFy.toFixed(2) + ' \u2014 yield adjusted down', color: 'red' });
+                items.push({ label: 'Dividend Spike', value: 'Latest ' + dCur + latFy.toFixed(2) + ' vs prev ' + dCur + prvFy.toFixed(2) + ' \u2014 yield adjusted down', color: 'red' });
             } else if (divD.prev_fy_dividend > 0) {
-                items.push({ label: 'Prev FY Div', value: '\u20b9' + parseFloat(divD.prev_fy_dividend).toFixed(2), color: 'cyan' });
+                items.push({ label: 'Prev FY Div', value: dCur + parseFloat(divD.prev_fy_dividend).toFixed(2), color: 'cyan' });
             }
 
             return { score: Math.max(0, Math.min(100, score)), items };
@@ -8074,6 +8221,9 @@ def dashboard():
 
         function buildLTSection(tech, dcfD, regr, ltRes) {
             var [badge, bdgClass] = verdictBadge(ltRes.score);
+            var ltCur = (dcfD && dcfD.currency_symbol) || '₹';
+            var ltWacc = (dcfD && dcfD.default_wacc ? dcfD.default_wacc / 100 : 0.12);
+            var ltTg = (dcfD && dcfD.default_terminal_growth ? dcfD.default_terminal_growth / 100 : 0.03);
             var h = '<div class="vd-section" id="vd-lt-section">';
             h += vdSectionHeader('&#128200; Long-Term Holding', 'var(--accent-green)', badge, bdgClass, ltRes.score);
             h += buildMetricsHtml(ltRes.items);
@@ -8085,7 +8235,7 @@ def dashboard():
                 var g = dcfD.suggested_growth_rate || 0.1;
                 var res = runExcessReturn(dcfD.book_value_per_share, roe, ke, g, 10, dcfD.shares_outstanding);
                 var up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
-                var ivStr = '\u20b9' + res.intrinsic.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                var ivStr = ltCur + res.intrinsic.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                 h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;">
                     <div class="vd-level"><div class="vd-level-label">Intrinsic Value (Excess Return)</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${ivStr}</div></div>
                     <div class="vd-level"><div class="vd-level-label">Upside / Downside</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${(up >= 0 ? '+' : '') + up.toFixed(1)}%</div></div>
@@ -8105,9 +8255,9 @@ def dashboard():
                 var g1 = dcfD.suggested_growth_rate || 0.1;
                 var g2 = Math.max(g1 * 0.5, 0.04);
                 var _isF3 = isFinancialSector(dcfD.sector);
-                var res = runDCF(dcfD.current_fcf, g1, g2, 0.12, 0.03, 10, _isF3 ? 0 : (dcfD.total_debt || 0), _isF3 ? 0 : (dcfD.cash || 0), dcfD.shares_outstanding);
+                var res = runDCF(dcfD.current_fcf, g1, g2, ltWacc, ltTg, 10, _isF3 ? 0 : (dcfD.total_debt || 0), _isF3 ? 0 : (dcfD.cash || 0), dcfD.shares_outstanding);
                 var up = ((res.intrinsic - dcfD.current_price) / Math.max(dcfD.current_price, 1)) * 100;
-                var ivStr = '\u20b9' + res.intrinsic.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                var ivStr = ltCur + res.intrinsic.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                 h += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:0 0 14px;">
                     <div class="vd-level"><div class="vd-level-label">Intrinsic Value (DCF)</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${ivStr}</div></div>
                     <div class="vd-level"><div class="vd-level-label">Upside / Downside</div><div class="vd-level-val" style="color:${up >= 0 ? 'var(--accent-green)' : 'var(--danger)'};">${(up >= 0 ? '+' : '') + up.toFixed(1)}%</div></div>
@@ -8127,7 +8277,7 @@ def dashboard():
                 if (beta < 0.85) narrativeParts.push('Low beta of <strong>' + beta.toFixed(2) + '</strong> means this stock tends to be defensive — it typically falls less than the market in downturns, suiting a long-term portfolio.');
                 else if (beta > 1.3) narrativeParts.push('High beta of <strong>' + beta.toFixed(2) + '</strong> — amplifies market moves. Factor in higher volatility for long-term holding.');
                 if (dep < 0.4) narrativeParts.push('Low market dependency (' + (dep * 100).toFixed(0) + '%) — provides <strong>good diversification</strong> from broad market swings.');
-                else if (dep > 0.7) narrativeParts.push('High market dependency (' + (dep * 100).toFixed(0) + '%) — performance closely tracks the Nifty 50.');
+                else if (dep > 0.7) narrativeParts.push('High market dependency (' + (dep * 100).toFixed(0) + '%) — performance closely tracks ' + (regr.market_source || 'the broad market') + '.');
             }
             if (narrativeParts.length > 0) h += '<div class="vd-narrative">' + narrativeParts.join(' ') + '</div>';
             // --- Trend section ---
@@ -8841,13 +8991,11 @@ def dividend_info_route():
         try:
             hist_divs = yf.Ticker(primary_yahoo_ticker(symbol)).dividends
             if hist_divs is not None and not hist_divs.empty:
-                today_d = date.today()
-                fy_end_year = today_d.year if today_d.month >= 4 else today_d.year - 1
+                fy_m = market_profile(symbol)['fy_start_month']
                 for i in range(10):  # check up to 10 FYs back
-                    fy_s = date(fy_end_year - i - 1, 4, 1)
-                    fy_e = date(fy_end_year - i,     3, 31)
-                    fy_s_ts = pd.Timestamp(fy_s)
-                    fy_e_ts = pd.Timestamp(fy_e)
+                    fy_s_str, fy_e_str = _fy_dates(i, fy_m)
+                    fy_s_ts = pd.Timestamp(fy_s_str)
+                    fy_e_ts = pd.Timestamp(fy_e_str)
                     try:
                         if hist_divs.index.tz is not None:
                             fy_s_ts = fy_s_ts.tz_localize('UTC')
@@ -8986,8 +9134,6 @@ def dividend_optimize_stream_route():
             max_results = DIVIDEND_MAX_RESULTS
             truncated = False
             last_portfolio_update = 0
-            # FY label for display
-            _fy_lbl   = _fy_label(0)
             yield f"data: {json.dumps({'type': 'meta', 'total_scanned': len(symbols), 'max_results': max_results})}\n\n"
 
             # Serve cached entries first
@@ -9094,9 +9240,11 @@ def dividend_optimize_stream_route():
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
 
-                        # ── Sustainable dividend: compare last 2 FYs ─────────────────
+                        # ── Sustainable dividend: compare last 2 FYs (per-market) ────
+                        prof = market_profile(symbol)
                         annual_dividend, latest_fy_div, prev_fy_div, was_capped, fy_count = \
-                            _compute_sustainable_dividend(dividends, current_price)
+                            _compute_sustainable_dividend(dividends, current_price,
+                                                          fy_start_month=prof['fy_start_month'])
                         if annual_dividend <= 0:
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
@@ -9110,12 +9258,13 @@ def dividend_optimize_stream_route():
                             'annual_dividend': round(annual_dividend, 2),
                             'dividend_yield':  round(dividend_yield, 2),
                             'volatility':      round(volatility, 2),
-                            'fy_label':        _fy_lbl,
+                            'fy_label':        _fy_label(0, prof['fy_start_month']),
                             'in_downtrend':    False,
                             'latest_fy_dividend': round(latest_fy_div, 2),
                             'prev_fy_dividend':   round(prev_fy_div, 2),
                             'yield_capped':       was_capped,
                             'fy_count':           fy_count,
+                            'currency_symbol':    currency_symbol(symbol),
                         }
                         dividend_found += 1
                         results.append(entry)
@@ -9347,7 +9496,7 @@ def validate_regime_layer():
     def _mock_regime(obj, market_regime, sector_regime,
                      market_score, sector_score, symbol='TCS'):
         """Monkey-patch regime methods on the analyzer for one test."""
-        obj._get_market_regime = lambda: (market_regime, market_score,
+        obj._get_market_regime = lambda symbol=None: (market_regime, market_score,
                                           {'source': 'mock', 'reason': 'test'})
         obj._get_sector_regime = lambda s: (sector_regime, sector_score,
                                             {'source': 'mock', 'reason': 'test'})
@@ -9537,8 +9686,9 @@ def _server_side_dcf(data):
             sug_g = data.get('suggested_growth_rate', 0.10)
             g1 = min(sug_g, 0.40)
             g2 = max(g1 * 0.5, 0.05)
-            wacc = 0.12
-            tg = 0.03
+            # Market-specific discount rate / terminal growth (percent -> decimal)
+            wacc = data.get('default_wacc', 12) / 100.0
+            tg = data.get('default_terminal_growth', 3) / 100.0
             years = 10
             # Skip debt/cash adjustment for financial-sector stocks
             sector = (data.get('sector') or '').lower()
@@ -9572,10 +9722,11 @@ def _build_writeup(data, intrinsic, model_name):
     price = data.get('current_price', 0)
     upside = ((intrinsic - price) / price * 100) if price else 0
     sector = data.get('sector') or data.get('industry') or 'N/A'
+    cur = data.get('currency_symbol') or currency_symbol(symbol)
 
     parts = []
-    parts.append(f"{name} ({symbol}) trades at \u20b9{price:,.2f} against a DCF intrinsic value "
-                 f"of \u20b9{intrinsic:,.2f}, implying {upside:+.1f}% upside.")
+    parts.append(f"{name} ({symbol}) trades at {cur}{price:,.2f} against a DCF intrinsic value "
+                 f"of {cur}{intrinsic:,.2f}, implying {upside:+.1f}% upside.")
 
     if model_name == 'excess_return':
         roe = (data.get('roe') or 0) * 100
@@ -9706,6 +9857,7 @@ def dcf_screen_route():
                         'suggested_growth_rate': data.get('suggested_growth_rate'),
                         'historical_fcf_growth': data.get('historical_fcf_growth'),
                         'margin_trend': data.get('margin_trend'),
+                        'currency_symbol': data.get('currency_symbol', currency_symbol(symbol)),
                         'writeup': _build_writeup(data, intrinsic, model_name),
                     })
 
@@ -10704,28 +10856,29 @@ def _agent_get_dividend_analysis(ticker):
     }
 
 
-def _market_correlation_plain_english(hsic):
+def _market_correlation_plain_english(hsic, benchmark="the market index"):
     if not isinstance(hsic, (int, float)):
         return None
     if hsic >= 0.85:
-        return "Moves like Nifty's shadow — when the market sneezes, this stock catches a cold"
+        return f"Moves like {benchmark}'s shadow — when the market sneezes, this stock catches a cold"
     if hsic >= 0.65:
         return "Follows the crowd — usually drifts with the market but has some independent moves"
     if hsic >= 0.40:
-        return "Half its own boss — listens to Nifty about half the time, ignores it the rest"
-    return "Marches to its own drum — Nifty's mood barely shows up in this stock's chart"
+        return f"Half its own boss — listens to {benchmark} about half the time, ignores it the rest"
+    return f"Marches to its own drum — {benchmark}'s mood barely shows up in this stock's chart"
 
 
-def _market_correlation_crash_scenario(beta):
+def _market_correlation_crash_scenario(beta, benchmark="the market index"):
     if not isinstance(beta, (int, float)):
         return None
-    return f"If Nifty 50 falls 2% in a day, expect this stock to move about {round(beta * 2, 2):+.1f}%."
+    return f"If {benchmark} falls 2% in a day, expect this stock to move about {round(beta * 2, 2):+.1f}%."
 
 
 def _agent_get_market_correlation(ticker):
     sym, _orig = Analyzer.normalize_symbol(ticker)
     if not sym:
         return {"error": f"Unknown ticker: {ticker}"}
+    bench = market_profile(sym)['benchmark_name']
     cached = REGRESSION_CACHE.get(sym)
     if cached:
         hsic = cached.get("hsic_score")
@@ -10736,8 +10889,9 @@ def _agent_get_market_correlation(ticker):
             "correlation_label": cached.get("label"),
             "systematic_risk": cached.get("systematic_risk"),
             "beta": round(beta, 2) if isinstance(beta, (int, float)) else beta,
-            "plain_english": _market_correlation_plain_english(hsic),
-            "crash_scenario": _market_correlation_crash_scenario(beta),
+            "benchmark": bench,
+            "plain_english": _market_correlation_plain_english(hsic, bench),
+            "crash_scenario": _market_correlation_crash_scenario(beta, bench),
         }
     fut = _submit_regression_job(sym)
     try:
@@ -10754,8 +10908,9 @@ def _agent_get_market_correlation(ticker):
         "correlation_label": res.get("label"),
         "systematic_risk": res.get("systematic_risk"),
         "beta": round(beta, 2) if isinstance(beta, (int, float)) else beta,
-        "plain_english": _market_correlation_plain_english(hsic),
-        "crash_scenario": _market_correlation_crash_scenario(beta),
+        "benchmark": bench,
+        "plain_english": _market_correlation_plain_english(hsic, bench),
+        "crash_scenario": _market_correlation_crash_scenario(beta, bench),
     }
 
 
