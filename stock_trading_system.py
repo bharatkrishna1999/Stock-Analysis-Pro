@@ -3274,39 +3274,128 @@ class Analyzer:
             'risk_appetite': risk_appetite
         }
 
+    @staticmethod
+    def _fast_info_get(fast, *keys):
+        """Safely read a value from a yfinance FastInfo object.
+
+        FastInfo is a Mapping but individual key accesses can raise, so each
+        lookup is guarded. Returns the first truthy value found, else None.
+        """
+        if fast is None:
+            return None
+        for key in keys:
+            try:
+                val = fast.get(key) if hasattr(fast, 'get') else fast[key]
+            except Exception:
+                val = None
+            if val:
+                return val
+        return None
+
+    @classmethod
+    def _fx_rate(cls, from_ccy, to_ccy):
+        """Spot rate to convert 1 unit of `from_ccy` into `to_ccy`.
+
+        Used to bring statement figures reported in a company's financial
+        currency (e.g. ABB reports in USD) into the symbol's trading currency
+        (e.g. CHF on SIX). Returns 1.0 when the currencies match and None when
+        no rate can be sourced, so callers can decide how to degrade.
+        """
+        if not from_ccy or not to_ccy or from_ccy == to_ccy:
+            return 1.0
+        # Yahoo FX convention: "EURUSD=X" = USD per 1 EUR, so "{from}{to}=X"
+        # gives `to` per 1 `from`, which is exactly our multiplier.
+        for pair, invert in ((f"{from_ccy}{to_ccy}=X", False),
+                             (f"{to_ccy}{from_ccy}=X", True)):
+            try:
+                rate = cls._fast_info_get(yf.Ticker(pair).fast_info,
+                                          'lastPrice', 'last_price')
+                if not rate:
+                    data = yf.download(pair, period='5d', interval='1d',
+                                       progress=False, threads=False)
+                    if data is not None and not data.empty and 'Close' in data:
+                        close = data['Close'].dropna()
+                        if not close.empty:
+                            rate = float(close.iloc[-1])
+                if rate and float(rate) > 0:
+                    rate = float(rate)
+                    return (1.0 / rate) if invert else rate
+            except Exception:
+                continue
+        return None
+
     def dcf_valuation(self, symbol):
         """Fetch financial data needed for DCF valuation from yfinance."""
         try:
             ticker_obj = None
             info = {}
+            fast = None
+            # The quoteSummary endpoint behind `.info` is frequently rate-limited
+            # or blocked (especially for non-US listings like *.SW), in which case
+            # it raises or returns a price-less dict. Fall back to `fast_info`,
+            # which uses the same reliable chart endpoint as our price/regime
+            # fetches, so a flaky `.info` no longer kills the whole DCF.
             for candidate in yahoo_ticker_candidates(symbol):
                 try:
                     t = yf.Ticker(candidate)
-                    i = t.info
-                    if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                    i = {}
+                    try:
+                        i = t.info or {}
+                    except Exception:
+                        i = {}
+                    price = i.get('regularMarketPrice') or i.get('currentPrice')
+                    fi = None
+                    if not price:
+                        try:
+                            fi = t.fast_info
+                        except Exception:
+                            fi = None
+                        price = self._fast_info_get(fi, 'lastPrice', 'last_price')
+                    if price:
                         ticker_obj = t
                         info = i
+                        fast = fi
                         break
                 except Exception:
                     continue
 
-            if not ticker_obj or not info:
+            if not ticker_obj:
                 return None
 
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            current_price = (info.get('currentPrice') or
+                             info.get('regularMarketPrice') or
+                             self._fast_info_get(fast, 'lastPrice', 'last_price'))
             if not current_price:
                 return None
 
             shares = (info.get('sharesOutstanding') or
                       info.get('impliedSharesOutstanding') or
-                      info.get('floatShares'))
+                      info.get('floatShares') or
+                      self._fast_info_get(fast, 'shares'))
             # Fallback: derive shares from market cap / price
             if not shares or shares <= 0:
-                mktcap = info.get('marketCap')
+                mktcap = info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap')
                 if mktcap and current_price and current_price > 0:
                     shares = mktcap / current_price
             if not shares or shares <= 0:
                 return None
+
+            # Statement figures (FCF, debt, cash, revenue) are reported in the
+            # company's financial currency, which can differ from the currency
+            # it trades in — e.g. ABB reports in USD but trades in CHF on SIX.
+            # Resolve an FX multiplier so every money figure below ends up in the
+            # symbol's trading currency. Price/market-cap are already quoted in
+            # the trading currency and are left untouched; ratios are FX-neutral.
+            trading_ccy = currency_for_symbol(symbol)
+            fin_ccy = info.get('financialCurrency') or trading_ccy
+            fx = 1.0
+            if fin_ccy != trading_ccy:
+                rate = self._fx_rate(fin_ccy, trading_ccy)
+                if rate:
+                    fx = rate
+                else:
+                    print(f"DCF: no FX rate {fin_ccy}->{trading_ccy} for {symbol}; "
+                          f"statement figures left in {fin_ccy}")
 
             # --- Parse Cash Flow Statement ---
             current_fcf = None
@@ -3485,6 +3574,19 @@ class Analyzer:
             except Exception as e:
                 print(f"DCF income stmt parse error for {symbol}: {e}")
 
+            # Convert every statement-derived money figure into the trading
+            # currency (no-op when fx == 1.0). Margins/RoCE/growth are ratios
+            # and stay correct under a uniform scaling, so they're left alone.
+            if fx != 1.0:
+                current_fcf = float(current_fcf) * fx
+                total_debt = float(total_debt) * fx
+                cash = float(cash) * fx
+                for h in fcf_history:
+                    h['fcf'] = int(round(h['fcf'] * fx))
+                for m in margin_trend:
+                    if m.get('revenue') is not None:
+                        m['revenue'] = int(round(m['revenue'] * fx))
+
             # Suggested growth rate: clamp historical CAGR to [3%, 40%]
             if historical_growth is not None:
                 suggested_growth = min(max(float(historical_growth), 0.03), 0.40)
@@ -3504,7 +3606,7 @@ class Analyzer:
                 'cash': int(round(float(cash))),
                 'historical_fcf_growth': round(float(historical_growth), 4) if historical_growth is not None else None,
                 'suggested_growth_rate': round(float(suggested_growth), 4),
-                'market_cap': info.get('marketCap'),
+                'market_cap': info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap'),
                 'sector': info.get('sector') or '',
                 'industry': info.get('industry') or '',
                 'pe_ratio': info.get('trailingPE'),
@@ -3517,6 +3619,10 @@ class Analyzer:
                 # Market-specific display + valuation defaults for the frontend
                 'currency': currency_for_symbol(symbol),
                 'currency_symbol': currency_symbol(symbol),
+                # Reporting currency of the financials + the rate used to convert
+                # them into the trading currency (1.0 when they already match).
+                'financial_currency': fin_ccy,
+                'fx_rate': round(fx, 6),
                 'big_number_scale': prof['big_number_scale'][0],
                 'big_number_suffix': prof['big_number_scale'][1],
                 'default_wacc': prof['default_wacc'],
@@ -3564,33 +3670,67 @@ class Analyzer:
         try:
             ticker_obj = None
             info = {}
+            fast = None
+            # Same quoteSummary fragility as dcf_valuation: fall back to fast_info
+            # (chart endpoint) for price/shares so a blocked `.info` doesn't sink
+            # the valuation. Book value and ROE already have statement fallbacks.
             for candidate in yahoo_ticker_candidates(symbol):
                 try:
                     t = yf.Ticker(candidate)
-                    i = t.info
-                    if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                    i = {}
+                    try:
+                        i = t.info or {}
+                    except Exception:
+                        i = {}
+                    price = i.get('regularMarketPrice') or i.get('currentPrice')
+                    fi = None
+                    if not price:
+                        try:
+                            fi = t.fast_info
+                        except Exception:
+                            fi = None
+                        price = self._fast_info_get(fi, 'lastPrice', 'last_price')
+                    if price:
                         ticker_obj = t
                         info = i
+                        fast = fi
                         break
                 except Exception:
                     continue
 
-            if not ticker_obj or not info:
+            if not ticker_obj:
                 return None
 
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice')
+            current_price = (info.get('currentPrice') or
+                             info.get('regularMarketPrice') or
+                             self._fast_info_get(fast, 'lastPrice', 'last_price'))
             if not current_price:
                 return None
 
             shares = (info.get('sharesOutstanding') or
                       info.get('impliedSharesOutstanding') or
-                      info.get('floatShares'))
+                      info.get('floatShares') or
+                      self._fast_info_get(fast, 'shares'))
             if not shares or shares <= 0:
-                mktcap = info.get('marketCap')
+                mktcap = info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap')
                 if mktcap and current_price and current_price > 0:
                     shares = mktcap / current_price
             if not shares or shares <= 0:
                 return None
+
+            # Resolve FX so balance-sheet/income figures land in the trading
+            # currency (e.g. a foreign-reporting financial firm). Ratios (ROE,
+            # book-value growth) are FX-neutral and stay as-is.
+            trading_ccy = currency_for_symbol(symbol)
+            fin_ccy = info.get('financialCurrency') or trading_ccy
+            fx = 1.0
+            if fin_ccy != trading_ccy:
+                rate = self._fx_rate(fin_ccy, trading_ccy)
+                if rate:
+                    fx = rate
+                else:
+                    print(f"Excess-return: no FX rate {fin_ccy}->{trading_ccy} for "
+                          f"{symbol}; figures left in {fin_ccy}")
 
             # --- Book Value Per Share ---
             book_value_per_share = info.get('bookValue')
@@ -3760,6 +3900,24 @@ class Analyzer:
             except Exception as e:
                 print(f"Excess-return margin trend parse error for {symbol}: {e}")
 
+            # Convert statement-derived money figures into the trading currency
+            # (no-op when fx == 1.0). ROE / book-value growth are ratios and are
+            # left untouched; price and market cap are already trading-currency.
+            if fx != 1.0:
+                book_value_per_share = float(book_value_per_share) * fx
+                total_book_value = float(total_book_value) * fx
+                if net_income is not None:
+                    net_income = float(net_income) * fx
+                for h in roe_history:
+                    h['net_income'] = int(round(h['net_income'] * fx))
+                    h['equity'] = int(round(h['equity'] * fx))
+                for h in bv_history:
+                    h['equity'] = int(round(h['equity'] * fx))
+                    h['bvps'] = round(h['bvps'] * fx, 2)
+                for m in margin_trend:
+                    if m.get('revenue') is not None:
+                        m['revenue'] = int(round(m['revenue'] * fx))
+
             return {
                 'valuation_model': 'excess_return',
                 'symbol': symbol,
@@ -3773,7 +3931,7 @@ class Analyzer:
                 'beta': round(float(beta), 2),
                 'suggested_growth_rate': round(float(suggested_growth), 4),
                 'bv_growth': round(float(bv_growth), 4) if bv_growth is not None else None,
-                'market_cap': info.get('marketCap'),
+                'market_cap': info.get('marketCap') or self._fast_info_get(fast, 'marketCap', 'market_cap'),
                 'sector': info.get('sector') or '',
                 'industry': info.get('industry') or '',
                 'pe_ratio': info.get('trailingPE'),
@@ -3793,6 +3951,8 @@ class Analyzer:
                 # Market-specific display + valuation defaults for the frontend
                 'currency': currency_for_symbol(symbol),
                 'currency_symbol': currency_symbol(symbol),
+                'financial_currency': fin_ccy,
+                'fx_rate': round(fx, 6),
                 'big_number_scale': prof['big_number_scale'][0],
                 'big_number_suffix': prof['big_number_scale'][1],
                 'default_wacc': prof['default_wacc'],
