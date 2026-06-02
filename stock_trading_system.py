@@ -89,6 +89,32 @@ def primary_yahoo_ticker(symbol):
     """Single best Yahoo Finance ticker for a symbol (first candidate)."""
     return yahoo_ticker_candidates(symbol)[0]
 
+
+# Home-exchange currency per symbol. Anything not listed defaults to INR
+# (NSE/BSE). Foreign listings render prices in their own currency.
+SYMBOL_CURRENCY = {
+    "ABBN": "CHF",   # ABB Ltd trades in Swiss francs on the SIX Swiss Exchange
+}
+DEFAULT_CURRENCY = "INR"
+CURRENCY_SYMBOLS = {
+    "INR": "₹", "CHF": "CHF ", "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
+}
+
+
+def currency_for_symbol(symbol):
+    """Home-exchange currency code for a watchlist symbol (defaults to INR)."""
+    return SYMBOL_CURRENCY.get(symbol, DEFAULT_CURRENCY)
+
+
+def currency_symbol(symbol):
+    """Currency glyph/prefix used when rendering prices for a symbol.
+
+    e.g. INR -> '₹', CHF -> 'CHF ', USD -> '$'. Unknown codes fall back to the
+    code itself with a trailing space (e.g. 'SEK ').
+    """
+    code = currency_for_symbol(symbol)
+    return CURRENCY_SYMBOLS.get(code, code + " ")
+
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX
 
@@ -1476,14 +1502,15 @@ class Analyzer:
         except:
             return 7
 
-    def signal(self, ind):
+    def signal(self, ind, symbol=None):
         if not ind:
             return None
         i = ind
+        cur = currency_symbol(symbol)  # '₹' for NSE/BSE, e.g. 'CHF ' for ABBN
         uptrend = i['price'] > i['sma9']
         strong_move = abs(i['daily']) > 2
         not_extreme = 20 < i['pct_from_low'] < 80
-        trend_explain = f"Price ₹{i['price']:.2f} vs SMA9 ₹{i['sma9']:.2f}"
+        trend_explain = f"Price {cur}{i['price']:.2f} vs SMA9 {cur}{i['sma9']:.2f}"
         if uptrend:
             trend_explain += " → Price ABOVE average = UPTREND. Buyers in control."
         else:
@@ -1514,7 +1541,7 @@ class Analyzer:
         else:
             position_explain += " → MIDDLE of range."
         deviation_direction = "above" if i['pct_deviation'] > 0 else "below"
-        zscore_explain = f"Z-Score: {i['zscore']:.2f} | Price is {abs(i['pct_deviation']):.2f}% {deviation_direction} mean (₹{i['mean_price']:.2f})"
+        zscore_explain = f"Z-Score: {i['zscore']:.2f} | Price is {abs(i['pct_deviation']):.2f}% {deviation_direction} mean ({cur}{i['mean_price']:.2f})"
         if i['zscore'] > 2:
             zscore_explain += f" → EXTREME OVEREXTENSION (+2σ). Price {abs(i['pct_deviation']):.1f}% above average, with HIGH probability mean reversion DOWN expected."
         elif i['zscore'] > 1:
@@ -1527,9 +1554,9 @@ class Analyzer:
             zscore_explain += f" → NEAR MEAN (within ±1σ). Price at fair value."
         bb_explain = f"Bollinger Band: {i['bb_position']:.0f}% position"
         if i['bb_position'] > 95:
-            bb_explain += f" → TOUCHING UPPER BAND (₹{i['bb_upper']:.2f}). Overextended."
+            bb_explain += f" → TOUCHING UPPER BAND ({cur}{i['bb_upper']:.2f}). Overextended."
         elif i['bb_position'] < 5:
-            bb_explain += f" → TOUCHING LOWER BAND (₹{i['bb_lower']:.2f}). Oversold."
+            bb_explain += f" → TOUCHING LOWER BAND ({cur}{i['bb_lower']:.2f}). Oversold."
         elif i['bb_position'] > 70:
             bb_explain += " → UPPER half. Bullish zone."
         elif i['bb_position'] < 30:
@@ -1710,7 +1737,7 @@ class Analyzer:
                 f"For a SHORT/SELL setup, 'gain' means the price dropping to your target. "
                 f"Inputs: Expected downward move ({expected_move_pct:.1f}%), Max Risk if price rises ({max_risk_pct:.1f}%). "
                 f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
-                f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f} if the price falls to target. "
+                f"Example: at {risk_reward:.2f}x, if you risk {cur}100, you stand to gain {cur}{risk_reward * 100:.0f} if the price falls to target. "
                 f"Above 1.5x is favourable. Below 1.0x means the potential loss (price rising to stop) exceeds the potential gain."
             )
         else:
@@ -1718,7 +1745,7 @@ class Analyzer:
                 f"Definition: How many units of potential gain you get for every 1 unit of risk (the R-multiple). "
                 f"Inputs: Expected Move ({expected_move_pct:.1f}%), Max Risk ({max_risk_pct:.1f}%). "
                 f"Formula: Expected Move / Max Risk = {expected_move_pct:.1f} / {max_risk_pct:.1f} = {risk_reward:.2f}x. "
-                f"Example: at {risk_reward:.2f}x, if you risk ₹100, you stand to gain ₹{risk_reward * 100:.0f}. "
+                f"Example: at {risk_reward:.2f}x, if you risk {cur}100, you stand to gain {cur}{risk_reward * 100:.0f}. "
                 f"Above 1.5x is favourable. Below 1.0x means the potential loss exceeds the potential gain."
             )
         # Determine setup duration label
@@ -1755,18 +1782,18 @@ class Analyzer:
         else:
             bb_label = "Middle Bollinger"
         if sig == "BUY":
-            entry_explain = f"Enter when price dips to ₹{entry_price:.2f}. This is a good entry because it's near the average price and provides a better risk-reward ratio."
-            exit_explain = f"Exit (sell) at ₹{target_price:.2f}. This target is {expected_move_pct:.1f}% above current price."
+            entry_explain = f"Enter when price dips to {cur}{entry_price:.2f}. This is a good entry because it's near the average price and provides a better risk-reward ratio."
+            exit_explain = f"Exit (sell) at {cur}{target_price:.2f}. This target is {expected_move_pct:.1f}% above current price."
             confidence_explain = f"{confidence}% confidence based on: trend strength, RSI level, mean reversion signal, and market volatility. Higher confidence = more reliable setup."
             time_explain = f"Expected to reach target in approximately {days_to_target} trading days based on historical price movement patterns and current momentum."
         elif sig == "SELL":
-            entry_explain = f"Exit long positions or enter short at ₹{entry_price:.2f}. Price is likely to fall towards mean."
-            exit_explain = f"Cover shorts or re-enter longs at ₹{target_price:.2f}. This is {expected_move_pct:.1f}% below current price."
+            entry_explain = f"Exit long positions or enter short at {cur}{entry_price:.2f}. Price is likely to fall towards mean."
+            exit_explain = f"Cover shorts or re-enter longs at {cur}{target_price:.2f}. This is {expected_move_pct:.1f}% below current price."
             confidence_explain = f"{confidence}% confidence based on: downtrend confirmation, overbought conditions, and mean reversion probability."
             time_explain = f"Expected downward move in approximately {days_to_target} trading days."
         else:
-            entry_explain = f"Wait for clearer signals. Consider entry only if price moves decisively above ₹{entry_price:.2f}."
-            exit_explain = f"If already holding, consider taking profits at ₹{target_price:.2f}."
+            entry_explain = f"Wait for clearer signals. Consider entry only if price moves decisively above {cur}{entry_price:.2f}."
+            exit_explain = f"If already holding, consider taking profits at {cur}{target_price:.2f}."
             confidence_explain = f"{confidence}% confidence. Moderate confidence suggests waiting for better setup."
             time_explain = f"Market consolidating. Wait for breakout confirmation."
         # ── Williams %R explain ──
@@ -1817,7 +1844,7 @@ class Analyzer:
         return {
             'signal': {
                 'signal': sig, 'action': action, 'rec': rec,
-                'entry': f"₹{entry_price:.2f}", 'stop': f"₹{stop_price:.2f}", 'target': f"₹{target_price:.2f}",
+                'entry': f"{cur}{entry_price:.2f}", 'stop': f"{cur}{stop_price:.2f}", 'target': f"{cur}{target_price:.2f}",
                 'entry_raw': round(entry_price, 2), 'stop_raw': round(stop_price, 2), 'target_raw': round(target_price, 2),
                 'confidence': confidence, 'days_to_target': days_to_target,
                 'expected_move_pct': round(expected_move_pct, 1),
@@ -1842,18 +1869,20 @@ class Analyzer:
                 'rsi_divergence_explain': rsi_divergence_explain,
                 'minmax_regime_note': minmax_regime_note,
             },
+            'currency': currency_for_symbol(symbol),
+            'currency_symbol': cur,
             'details': {
-                'price': f"₹{i['price']:.2f}", 'price_raw': round(i['price'], 2),
+                'price': f"{cur}{i['price']:.2f}", 'price_raw': round(i['price'], 2),
                 'daily': f"{i['daily']:+.2f}%", 'daily_raw': round(i['daily'], 2),
                 'hourly': f"{i['hourly']:+.2f}%",
                 'rsi': f"{i['rsi']:.1f}", 'rsi_raw': round(i['rsi'], 1),
                 'zscore': f"{i['zscore']:.2f}", 'zscore_raw': round(i['zscore'], 2),
                 'pct_deviation': f"{i['pct_deviation']:+.2f}%",
-                'mean': f"₹{i['mean_price']:.2f}", 'sma9': f"₹{i['sma9']:.2f}",
-                'sma20': f"₹{i.get('sma20', i['sma9']):.2f}", 'sma50': f"₹{i.get('sma50', i['sma9']):.2f}",
+                'mean': f"{cur}{i['mean_price']:.2f}", 'sma9': f"{cur}{i['sma9']:.2f}",
+                'sma20': f"{cur}{i.get('sma20', i['sma9']):.2f}", 'sma50': f"{cur}{i.get('sma50', i['sma9']):.2f}",
                 'above_sma20': above_sma20, 'above_sma50': above_sma50,
-                'high': f"₹{i['high']:.2f}", 'low': f"₹{i['low']:.2f}",
-                'bb_upper': f"₹{i['bb_upper']:.2f}", 'bb_lower': f"₹{i['bb_lower']:.2f}",
+                'high': f"{cur}{i['high']:.2f}", 'low': f"{cur}{i['low']:.2f}",
+                'bb_upper': f"{cur}{i['bb_upper']:.2f}", 'bb_lower': f"{cur}{i['bb_lower']:.2f}",
                 'bb_position': round(i['bb_position'], 0), 'bb_label': bb_label,
                 'volatility': f"{i['volatility']:.2f}%", 'macd': "BULLISH" if i['macd_bullish'] else "BEARISH",
                 'macd_bullish': i['macd_bullish'],
@@ -1877,6 +1906,7 @@ class Analyzer:
             target_raw = s.get('target_raw', 0)
             stop_raw = s.get('stop_raw', 0)
             days_to_target = s.get('days_to_target', 7)
+            cur = signal_result.get('currency_symbol', '₹')
             price_raw = signal_result.get('details', {}).get('price_raw', 0)
             if not price_raw or not target_raw or not stop_raw:
                 return None
@@ -1930,7 +1960,7 @@ class Analyzer:
 
             # Current price marker
             ax.scatter([hist_len - 1], [current], color='#ffffff', s=50, zorder=6, edgecolors=action_color, linewidths=2)
-            ax.annotate(f'CMP ₹{current:.2f}', xy=(hist_len - 1, current),
+            ax.annotate(f'CMP {cur}{current:.2f}', xy=(hist_len - 1, current),
                         xytext=(hist_len - 1 - 8, current + (max(hist_prices) - min(hist_prices)) * 0.12),
                         color='#ffffff', fontsize=8, fontweight='bold',
                         arrowprops=dict(arrowstyle='->', color='#ffffff', lw=0.8),
@@ -1940,7 +1970,7 @@ class Analyzer:
             total_x = hist_len + forecast_days
             ax.axhline(y=target_raw, color=action_color, linewidth=1, linestyle=':',
                         alpha=0.7, zorder=2)
-            ax.text(total_x - 1, target_raw, f' Target ₹{target_raw:.2f}',
+            ax.text(total_x - 1, target_raw, f' Target {cur}{target_raw:.2f}',
                     color=action_color, fontsize=7.5, va='bottom' if target_raw > current else 'top',
                     fontweight='bold', zorder=7)
 
@@ -1948,7 +1978,7 @@ class Analyzer:
             stop_color = '#ef4444' if sig == "BUY" else '#10b981'
             ax.axhline(y=stop_raw, color=stop_color, linewidth=1, linestyle=':',
                         alpha=0.7, zorder=2)
-            ax.text(total_x - 1, stop_raw, f' Stop ₹{stop_raw:.2f}',
+            ax.text(total_x - 1, stop_raw, f' Stop {cur}{stop_raw:.2f}',
                     color=stop_color, fontsize=7.5, va='top' if stop_raw < current else 'bottom',
                     fontweight='bold', zorder=7)
 
@@ -1968,7 +1998,7 @@ class Analyzer:
             ax.set_ylabel('')
             ax.set_xticks([])
             # Rupee labels on y-axis
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'₹{x:,.0f}'))
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{cur}{x:,.0f}'))
 
             plt.tight_layout(pad=0.5)
             buf = io.BytesIO()
@@ -2569,7 +2599,7 @@ class Analyzer:
         ind = self.calc_indicators(data)
         if not ind:
             return None
-        result = self.signal(ind)
+        result = self.signal(ind, symbol)
         if result:
             # Apply regime layer (failsafe: if it errors, stock signal is unchanged)
             try:
@@ -6027,7 +6057,8 @@ def dashboard():
 
         function _stockCardHtml(sym, quote) {
             const name = (quote && quote.name) || getStockName(sym);
-            const price = (quote && quote.price) ? '\u20B9' + quote.price.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '';
+            const curSym = (quote && quote.currency_symbol) || '\u20B9';
+            const price = (quote && quote.price) ? curSym + quote.price.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2}) : '';
             const chg = (quote && quote.change_pct) || 0;
             const chgStr = chg >= 0 ? '+' + chg.toFixed(2) + '%' : chg.toFixed(2) + '%';
             const chgClass = chg >= 0 ? 'up' : 'down';
@@ -6037,7 +6068,7 @@ def dashboard():
             return `<div class="stock-card${loadingClass}" onclick="analyze('${sym}')" data-sym="${sym}">
                 <div class="sc-top"><span class="sc-symbol">${sym}</span><span class="sc-change ${chgClass}">${chgIcon} ${chgStr}</span></div>
                 <div class="sc-name">${name}</div>
-                <div class="sc-bottom"><span class="sc-price">${price || '\u20B9---'}</span><span class="sc-mcap">${mcap}</span></div>
+                <div class="sc-bottom"><span class="sc-price">${price || (curSym + '---')}</span><span class="sc-mcap">${mcap}</span></div>
             </div>`;
         }
 
@@ -9249,6 +9280,7 @@ def sector_quotes_route():
                 'price': round(price, 2),
                 'change_pct': round(change_pct, 2),
                 'mcap': mcap,
+                'currency_symbol': currency_symbol(sym),
             })
         except Exception:
             quotes.append({
@@ -9257,6 +9289,7 @@ def sector_quotes_route():
                 'price': 0,
                 'change_pct': 0,
                 'mcap': 0,
+                'currency_symbol': currency_symbol(sym),
             })
 
     return jsonify({
