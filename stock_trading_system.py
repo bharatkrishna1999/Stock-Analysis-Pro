@@ -64,6 +64,31 @@ YAHOO_TICKER_ALIASES = {
     "ETERNAL": ["ZOMATO"],
 }
 
+# Symbols that trade on exchanges other than NSE/BSE. Maps a display symbol to
+# its explicit Yahoo Finance ticker(s); these bypass the default .NS/.BO
+# suffixes that are applied to Indian listings. Order is the lookup priority.
+YAHOO_TICKER_OVERRIDES = {
+    "ABBN": ["ABBN.SW"],   # ABB Ltd — SIX Swiss Exchange
+}
+
+
+def yahoo_ticker_candidates(symbol):
+    """Ordered list of Yahoo Finance tickers to try for a watchlist symbol.
+
+    Foreign listings registered in YAHOO_TICKER_OVERRIDES use their explicit
+    ticker(s); everything else falls back to the usual .NS then .BO suffixes
+    (including any YAHOO_TICKER_ALIASES variants).
+    """
+    if symbol in YAHOO_TICKER_OVERRIDES:
+        return list(YAHOO_TICKER_OVERRIDES[symbol])
+    base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
+    return [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
+
+
+def primary_yahoo_ticker(symbol):
+    """Single best Yahoo Finance ticker for a symbol (first candidate)."""
+    return yahoo_ticker_candidates(symbol)[0]
+
 # ===== EXPANDED STOCK LIST - ALL NSE STOCKS =====
 # Organized by sector for better UX
 
@@ -163,7 +188,11 @@ STOCKS = {
                       'TATACOMM', 'TORNTPHARM', 'TRENT', 'TVSMOTOR', 'VEDL', 'VOLTAS', 'ZEEL', 'ETERNAL'],
     
     'Others': ['ETERNAL', 'PAYTM', 'NYKAA', 'POLICYBZR', 'DELHIVERY', 'CARTRADE', 'EASEMYTRIP',
-               'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS']
+               'ROUTE', 'LATENTVIEW', 'APTUS', 'RAINBOW', 'LAXMIMACH', 'SYNGENE', 'METROPOLIS'],
+
+    # Listings outside India (see YAHOO_TICKER_OVERRIDES for the Yahoo tickers).
+    # Prices for these are quoted in their home-exchange currency (e.g. CHF).
+    'Swiss Exchange': ['ABBN'],
 }
 
 UNIVERSE_SECTOR_NAME = "All NSE"
@@ -774,7 +803,7 @@ def _resolve_sector(yf_sector, yf_industry):
 def _fetch_sector_for_symbol(symbol):
     """Fetch sector classification for a single symbol from yfinance."""
     try:
-        ns_sym = symbol if symbol.endswith('.NS') else symbol + '.NS'
+        ns_sym = primary_yahoo_ticker(symbol) if not symbol.endswith('.NS') else symbol
         info = yf.Ticker(ns_sym).info
         yf_sector = info.get('sector', '')
         yf_industry = info.get('industry', '')
@@ -978,6 +1007,9 @@ COMPANY_TO_TICKER = {
     'ZOMATO': 'ETERNAL', 'ETERNAL': 'ETERNAL', 'PAYTM': 'PAYTM', 'NYKAA': 'NYKAA', 'POLICYBAZAAR': 'POLICYBZR',
     'DELHIVERY': 'DELHIVERY', 'DIXON': 'DIXON', 'POLYCAB': 'POLYCAB', 'HAVELLS': 'HAVELLS',
     'AARTI': 'AARTIIND', 'AARTI INDUSTRIES': 'AARTIIND',
+
+    # Swiss Exchange
+    'ABB LTD': 'ABBN', 'ABB GROUP': 'ABBN', 'ABBN': 'ABBN',
 }
 
 # Build reverse mapping: ticker -> best company name (longest/most descriptive)
@@ -1165,8 +1197,7 @@ class Analyzer:
             return df.iloc[::step].tail(MAX_HISTORY_POINTS)
 
         try:
-            base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
-            tickers = [f"{base}.NS" for base in base_symbols] + [f"{base}.BO" for base in base_symbols]
+            tickers = yahoo_ticker_candidates(symbol)
             attempts = [
                 (period, interval, 8),
                 ("1y", "1d", 8),
@@ -2654,7 +2685,7 @@ class Analyzer:
 
             for period in periods_to_try:
                 try:
-                    stock_data = yf.download(f"{stock_symbol}.NS", period=period, interval='1d', progress=False, threads=False)
+                    stock_data = yf.download(primary_yahoo_ticker(stock_symbol), period=period, interval='1d', progress=False, threads=False)
                     if stock_data is None or stock_data.empty: continue
                     nifty_data = yf.download("^NSEI", period=period, interval='1d', progress=False, threads=False)
                     if nifty_data is None or nifty_data.empty:
@@ -2942,7 +2973,7 @@ class Analyzer:
                 yield iterable[idx:idx + size]
 
         for batch in _batched(symbols, 75):
-            tickers = [f"{symbol}.NS" for symbol in batch]
+            tickers = [primary_yahoo_ticker(symbol) for symbol in batch]
             try:
                 # 3y: covers last 2 complete FYs for sustainable-dividend comparison
                 # AND provides enough history (~500 days) for a reliable 200-DMA
@@ -2963,7 +2994,7 @@ class Analyzer:
                 try:
                     if data is None or data.empty:
                         continue
-                    ticker_symbol = f"{symbol}.NS"
+                    ticker_symbol = primary_yahoo_ticker(symbol)
                     if isinstance(data.columns, pd.MultiIndex):
                         close_series = data['Close'][ticker_symbol].dropna()
                         dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
@@ -3138,22 +3169,18 @@ class Analyzer:
     def dcf_valuation(self, symbol):
         """Fetch financial data needed for DCF valuation from yfinance."""
         try:
-            base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
             ticker_obj = None
             info = {}
-            for base in base_symbols:
-                for suffix in ['.NS', '.BO']:
-                    try:
-                        t = yf.Ticker(f"{base}{suffix}")
-                        i = t.info
-                        if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
-                            ticker_obj = t
-                            info = i
-                            break
-                    except Exception:
-                        continue
-                if ticker_obj:
-                    break
+            for candidate in yahoo_ticker_candidates(symbol):
+                try:
+                    t = yf.Ticker(candidate)
+                    i = t.info
+                    if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                        ticker_obj = t
+                        info = i
+                        break
+                except Exception:
+                    continue
 
             if not ticker_obj or not info:
                 return None
@@ -3417,22 +3444,18 @@ class Analyzer:
     def excess_return_valuation(self, symbol):
         """Damodaran Excess Return (ROE-Book Value) model for financial firms."""
         try:
-            base_symbols = [symbol] + YAHOO_TICKER_ALIASES.get(symbol, [])
             ticker_obj = None
             info = {}
-            for base in base_symbols:
-                for suffix in ['.NS', '.BO']:
-                    try:
-                        t = yf.Ticker(f"{base}{suffix}")
-                        i = t.info
-                        if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
-                            ticker_obj = t
-                            info = i
-                            break
-                    except Exception:
-                        continue
-                if ticker_obj:
-                    break
+            for candidate in yahoo_ticker_candidates(symbol):
+                try:
+                    t = yf.Ticker(candidate)
+                    i = t.info
+                    if i and (i.get('regularMarketPrice') or i.get('currentPrice')):
+                        ticker_obj = t
+                        info = i
+                        break
+                except Exception:
+                    continue
 
             if not ticker_obj or not info:
                 return None
@@ -8785,7 +8808,7 @@ def dividend_info_route():
         # ── Consistency: count consecutive FYs with at least one dividend ──────
         years_consistent = 0
         try:
-            hist_divs = yf.Ticker(f"{symbol}.NS").dividends
+            hist_divs = yf.Ticker(primary_yahoo_ticker(symbol)).dividends
             if hist_divs is not None and not hist_divs.empty:
                 today_d = date.today()
                 fy_end_year = today_d.year if today_d.month >= 4 else today_d.year - 1
@@ -8813,7 +8836,7 @@ def dividend_info_route():
 
         # Fetch ex-dividend and payment dates from ticker info
         try:
-            info = yf.Ticker(f"{symbol}.NS").info
+            info = yf.Ticker(primary_yahoo_ticker(symbol)).info
             ex_div = info.get('exDividendDate')
             pay_dt = info.get('lastDividendDate') or info.get('payDate')
             if ex_div:
@@ -8991,7 +9014,7 @@ def dividend_optimize_stream_route():
             # Render free tier: keep downloads strictly sequential to avoid
             # CPU spikes and memory pressure.
             for batch in _batched(symbols_to_fetch, 75):
-                tickers = [f"{s}.NS" for s in batch]
+                tickers = [primary_yahoo_ticker(s) for s in batch]
                 try:
                     # 3y: covers last 2 complete FYs for sustainable-dividend
                     # comparison AND provides enough history for 200-DMA
@@ -9015,7 +9038,7 @@ def dividend_optimize_stream_route():
                             payload = {'type': 'progress', 'scanned': scanned, 'dividend_found': dividend_found}
                             yield f"data: {json.dumps(payload)}\n\n"
                             continue
-                        ticker_symbol = f"{symbol}.NS"
+                        ticker_symbol = primary_yahoo_ticker(symbol)
                         if isinstance(data.columns, pd.MultiIndex):
                             close_series = data['Close'][ticker_symbol].dropna()
                             dividends = data['Dividends'][ticker_symbol].dropna() if 'Dividends' in data.columns.get_level_values(0) else pd.Series(dtype=float)
@@ -9212,7 +9235,7 @@ def sector_quotes_route():
     quotes = []
 
     for sym in page:
-        ns_sym = sym + '.NS'
+        ns_sym = primary_yahoo_ticker(sym)
         try:
             info = yf.Ticker(ns_sym).info
             price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
@@ -9738,7 +9761,7 @@ def midfilter_route():
     if not symbol:
         return jsonify({'symbol': symbol, 'passed': False, 'fails': ['no_symbol']})
 
-    ns_sym = symbol if symbol.endswith('.NS') else symbol + '.NS'
+    ns_sym = symbol if symbol.endswith('.NS') else primary_yahoo_ticker(symbol)
     try:
         info = yf.Ticker(ns_sym).info
     except Exception:
@@ -9864,7 +9887,7 @@ def prefilter_stream_route():
 
     def to_ns(s):
         s = s.strip().upper()
-        return s if s.endswith('.NS') else s + '.NS'
+        return s if s.endswith('.NS') else primary_yahoo_ticker(s)
 
     def generate():
         checked = 0
@@ -10788,7 +10811,7 @@ def _agent_fetch_top_movers(direction, sector=None, limit=5):
                 and time.time() - cached["ts"] < _TOP_MOVERS_TTL_SEC):
             return cached["data"]
 
-    yahoo_syms = [f"{s}.NS" for s in unique]
+    yahoo_syms = [primary_yahoo_ticker(s) for s in unique]
     movers = []
     try:
         df = yf.download(
