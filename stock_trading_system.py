@@ -4038,6 +4038,812 @@ alert_monitor = StockAlertMonitor(analyzer)
 if alert_monitor.config.get("watchlist") and alert_monitor.config.get("smtp_user"):
     alert_monitor.start()
 
+# ===== PORTFOLIO PERFORMANCE (Groww Excel upload) =====
+
+import difflib
+
+PORTFOLIO_MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+PORTFOLIO_RISK_FREE_RATE = 0.065  # annual, used for the Sharpe ratio
+
+# Indices the user can benchmark against. Candidate tickers are tried in
+# order until one returns price history (index feeds on Yahoo can be flaky,
+# so liquid ETF proxies act as fallbacks).
+PORTFOLIO_INDEX_OPTIONS = {
+    'NIFTY50':   {'label': 'Nifty 50',        'tickers': ['^NSEI', 'NIFTYBEES.NS']},
+    'SENSEX':    {'label': 'BSE Sensex',      'tickers': ['^BSESN']},
+    'NIFTY500':  {'label': 'Nifty 500',       'tickers': ['^CRSLDX']},
+    'BANKNIFTY': {'label': 'Nifty Bank',      'tickers': ['^NSEBANK', 'BANKBEES.NS']},
+    'MIDCAP':    {'label': 'Nifty Midcap 50', 'tickers': ['^NSEMDCP50', 'MID150BEES.NS']},
+    'NIFTYIT':   {'label': 'Nifty IT',        'tickers': ['^CNXIT', 'ITBEES.NS']},
+    'SP500':     {'label': 'S&P 500 (USD)',   'tickers': ['^GSPC', 'SPY']},
+    'NASDAQ100': {'label': 'Nasdaq 100 (USD)', 'tickers': ['^NDX', 'QQQ']},
+}
+
+# Column-name synonyms seen across Groww exports (holdings statement, order
+# history, and the Stocks P&L report with its "Realised trades" /
+# "Unrealised trades" tables). Matching is done on a normalized lowercase
+# header. Order matters: more specific fields must be matched before generic
+# ones (e.g. "sell date" and "closing date" before plain "date").
+PORTFOLIO_COL_SYNONYMS = {
+    'isin': ['isin', 'isin code'],
+    'sell_date': ['sell date', 'sale date', 'sold date'],
+    'sell_price': ['sell price', 'avg sell price', 'average sell price', 'sale price'],
+    'sell_value': ['sell value', 'sale value', 'sold value'],
+    'current_value': ['current value', 'cur val', 'cur value', 'present value',
+                      'market value', 'closing value', 'holding value'],
+    'current_price': ['current price', 'ltp', 'last traded price', 'closing price',
+                      'live price'],
+    'ignore': ['closing date', 'realised pl', 'unrealised pl', 'realised p l',
+               'unrealised p l', 'remark', 'remarks'],
+    'date': ['date', 'trade date', 'buy date', 'purchase date', 'transaction date',
+             'order date', 'execution date', 'execution date time',
+             'order execution time', 'time of buying', 'buy time', 'executed at'],
+    'type': ['type', 'buy sell', 'transaction type', 'trade type', 'order type',
+             'side', 'action'],
+    'qty': ['qty', 'quantity', 'shares', 'units', 'no of shares', 'no of units',
+            'quantity available', 'net quantity'],
+    'amount': ['amount', 'buy value', 'invested', 'invested amount', 'invested value',
+               'investment value', 'net amount', 'total amount', 'trade value',
+               'purchase value', 'net value', 'exchange net amount'],
+    'price': ['price', 'buy price', 'avg buy price', 'average buy price',
+              'avg price', 'average price', 'purchase price', 'trade price',
+              'executed price', 'price at that point', 'buy average price',
+              'average cost', 'avg cost'],
+    'symbol': ['symbol', 'nse symbol', 'bse symbol', 'ticker', 'trading symbol',
+               'scrip code', 'stock symbol'],
+    'name': ['stock name', 'company', 'company name', 'scrip', 'scrip name',
+             'instrument', 'instrument name', 'security', 'security name',
+             'stock', 'name'],
+}
+
+
+def _portfolio_norm_header(value):
+    """Normalize a candidate header cell for synonym matching."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ''
+    s = str(value).strip().lower()
+    s = re.sub(r'[^a-z0-9 ]+', ' ', s)
+    return re.sub(r'\s+', ' ', s).strip()
+
+
+def _portfolio_match_column(header):
+    """Map a raw header cell to a canonical field name, or None."""
+    h = _portfolio_norm_header(header)
+    if not h or len(h) > 60:
+        return None
+    for field, synonyms in PORTFOLIO_COL_SYNONYMS.items():
+        if h in synonyms:
+            return field
+    for field, synonyms in PORTFOLIO_COL_SYNONYMS.items():
+        for syn in synonyms:
+            if len(syn) >= 4 and syn in h:
+                return field
+    return None
+
+
+def _portfolio_header_fields(row):
+    """Field→column map when a raw row is a table header, else None.
+
+    A header needs an identity column (name/symbol/ISIN), a numeric column and
+    at least 3 recognized columns overall — data rows never satisfy this.
+    """
+    fields = {}
+    for col_idx, cell in enumerate(row):
+        f = _portfolio_match_column(cell)
+        if f and f != 'ignore' and f not in fields:
+            fields[f] = col_idx
+    has_identity = any(k in fields for k in ('name', 'symbol', 'isin'))
+    has_numbers = any(k in fields for k in ('qty', 'price', 'amount', 'current_value'))
+    if has_identity and has_numbers and len(fields) >= 3:
+        return fields
+    return None
+
+
+def _portfolio_extract_tables(df_raw):
+    """All (fields, start_row, end_row) tables in a raw sheet.
+
+    Groww's P&L report puts several tables in one sheet ("Realised trades"
+    then "Unrealised trades"), separated by section-title and blank rows, so
+    scanning continues after each table ends instead of stopping at the first.
+    """
+    tables = []
+    i, n = 0, len(df_raw)
+    while i < n:
+        fields = _portfolio_header_fields(df_raw.iloc[i])
+        if not fields:
+            i += 1
+            continue
+        j = i + 1
+        blank_streak = 0
+        while j < n:
+            row = df_raw.iloc[j]
+            if _portfolio_header_fields(row):
+                break
+            if row.notna().sum() == 0:
+                blank_streak += 1
+                if blank_streak >= 8:
+                    break
+            else:
+                blank_streak = 0
+            j += 1
+        tables.append((fields, i + 1, j))
+        i = j
+    return tables
+
+
+def _portfolio_to_float(value):
+    """Parse a numeric cell that may carry currency symbols/commas."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return float(value)
+    s = str(value).strip().replace(',', '').replace('₹', '').replace('Rs.', '').replace('Rs', '')
+    s = s.replace('(', '-').replace(')', '')
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _portfolio_to_date(value):
+    """Parse a transaction date cell (string, datetime, or Excel serial)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, (datetime, pd.Timestamp)):
+        ts = pd.Timestamp(value)
+        if pd.isna(ts):
+            return None
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+        return ts.normalize()
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        # Excel serial dates land here when the sheet stores them as numbers
+        if 20000 < float(value) < 80000:
+            return (pd.Timestamp('1899-12-30') + pd.Timedelta(days=float(value))).normalize()
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    ts = pd.to_datetime(s, dayfirst=True, errors='coerce')
+    if pd.isna(ts):
+        ts = pd.to_datetime(s, dayfirst=False, errors='coerce')
+    if pd.isna(ts):
+        return None
+    ts = pd.Timestamp(ts)
+    if ts.tzinfo is not None:
+        ts = ts.tz_localize(None)
+    return ts.normalize()
+
+
+def _portfolio_parse_table(df_raw, fields, start, end, stats):
+    """Normalized transactions from one table's rows.
+
+    Handles both layouts: transaction-style rows (one leg per row, optional
+    Buy/Sell type column) and P&L-report rows, where a single "Realised
+    trades" row carries the buy leg AND the sell leg (Sell date/price/value).
+    """
+    txns = []
+    today = pd.Timestamp.today().normalize()
+    for i in range(start, end):
+        row = df_raw.iloc[i]
+
+        def cell(field):
+            col = fields.get(field)
+            return row.iloc[col] if col is not None and col < len(row) else None
+
+        name = cell('name')
+        symbol = cell('symbol')
+        isin = cell('isin')
+        name = str(name).strip() if name is not None and not pd.isna(name) else ''
+        symbol = str(symbol).strip() if symbol is not None and not pd.isna(symbol) else ''
+        isin = str(isin).strip().upper() if isin is not None and not pd.isna(isin) else ''
+        if not name and not symbol:
+            continue  # blank or spacer row
+        if _portfolio_match_column(name or symbol):
+            continue  # a repeated header row inside the table
+
+        qty = _portfolio_to_float(cell('qty'))
+        price = _portfolio_to_float(cell('price'))
+        amount = _portfolio_to_float(cell('amount'))
+        cur_val = _portfolio_to_float(cell('current_value'))
+        txn_date = _portfolio_to_date(cell('date'))
+        sell_date = _portfolio_to_date(cell('sell_date'))
+        sell_price = _portfolio_to_float(cell('sell_price'))
+        sell_value = _portfolio_to_float(cell('sell_value'))
+
+        # Derive whichever of qty/price/amount is missing from the other two
+        if amount is None and qty is not None and price is not None:
+            amount = qty * price
+        if qty is None and amount is not None and price:
+            qty = amount / price
+        if price is None and amount is not None and qty:
+            price = amount / qty
+
+        side = 'BUY'
+        type_raw = cell('type')
+        if type_raw is not None and not pd.isna(type_raw):
+            t = str(type_raw).strip().lower()
+            if 'sell' in t or t in ('s', 'sale', 'debit'):
+                side = 'SELL'
+        if qty is not None and qty < 0:
+            side = 'SELL'
+            qty = abs(qty)
+            amount = abs(amount) if amount is not None else None
+
+        if txn_date is None or txn_date > today:
+            # Only flag rows that actually look like transactions (footer
+            # notes and disclaimers land here too, with no numbers at all)
+            if qty is not None or amount is not None:
+                stats['no_date'] += 1
+            continue
+        # amount == 0 is legitimate: bonus/rights shares arrive with a zero
+        # buy value in the P&L report but still add quantity to the holding
+        if not qty or qty <= 0 or amount is None or amount < 0:
+            stats['no_numbers'] += 1
+            continue
+
+        base = {'name': name, 'symbol': symbol, 'isin': isin}
+        txns.append(dict(base, date=txn_date, side=side, qty=float(qty),
+                         price=float(price) if price else float(amount) / float(qty),
+                         amount=float(amount), stated_current_value=cur_val))
+
+        # P&L-report realised rows: emit the matching sell leg (a zero sell
+        # value still closes the position — e.g. shares that became worthless)
+        if side == 'BUY' and sell_date is not None and sell_date <= today:
+            s_amount = sell_value
+            if s_amount is None and sell_price is not None:
+                s_amount = qty * sell_price
+            if s_amount is not None and s_amount >= 0:
+                # matched_cost preserves Groww's exact lot pairing so realised
+                # P&L reproduces the report instead of average-cost pooling
+                txns.append(dict(base, date=max(sell_date, txn_date), side='SELL',
+                                 qty=float(qty), price=float(s_amount) / float(qty),
+                                 amount=float(s_amount), stated_current_value=None,
+                                 matched_cost=float(amount)))
+    return txns
+
+
+def parse_portfolio_file(file_bytes, filename):
+    """Parse an uploaded Groww Excel/CSV into normalized transactions.
+
+    Supports the holdings/order-history statements as well as the Stocks P&L
+    report (Trade Level sheet with "Realised trades" + "Unrealised trades"
+    tables). Returns (transactions, warnings); each transaction is a dict:
+    {name, symbol, isin, date (Timestamp), side ('BUY'|'SELL'), qty, price,
+     amount, stated_current_value (float|None)}.
+    Raises ValueError with a user-facing message when nothing usable is found.
+    """
+    fname = (filename or '').lower()
+    if fname.endswith('.csv'):
+        try:
+            sheets = {'csv': pd.read_csv(io.BytesIO(file_bytes), header=None, dtype=object)}
+        except Exception:
+            raise ValueError('Could not read the CSV file. Please upload the statement exported from Groww.')
+    else:
+        try:
+            sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, header=None, dtype=object)
+        except Exception:
+            raise ValueError('Could not read the Excel file. Please upload the .xlsx statement exported from Groww.')
+
+    # Parse every table in every sheet, then keep the sheet with the most
+    # dated transactions. This picks "Trade Level" over "Scrip Level" in the
+    # P&L report (the scrip sheet aggregates without dates) and avoids double
+    # counting the same trades from both sheets.
+    best_txns, best_stats, any_table = None, None, False
+    for _sheet_name, df_raw in sheets.items():
+        if df_raw is None or df_raw.empty:
+            continue
+        tables = _portfolio_extract_tables(df_raw)
+        if tables:
+            any_table = True
+        stats = {'no_date': 0, 'no_numbers': 0}
+        sheet_txns = []
+        for fields, start, end in tables:
+            sheet_txns.extend(_portfolio_parse_table(df_raw, fields, start, end, stats))
+        if best_txns is None or len(sheet_txns) > len(best_txns):
+            best_txns, best_stats = sheet_txns, stats
+
+    if not any_table:
+        raise ValueError(
+            'Could not find a transactions table in the file. Expected columns like '
+            '"Stock name", "Buy date", "Quantity", "Buy price" / "Buy value" and "Current value".')
+    if not best_txns:
+        if best_stats and best_stats['no_date']:
+            raise ValueError(
+                'The file was read but no rows had a usable buy date. Time-based analysis '
+                '(XIRR, performance vs index) needs the date of each purchase — please export '
+                'the statement that includes transaction dates.')
+        raise ValueError('The file was read but no usable transaction rows were found.')
+
+    warnings_list = []
+    if best_stats['no_date']:
+        warnings_list.append(f"{best_stats['no_date']} row(s) skipped — missing or invalid date.")
+    if best_stats['no_numbers']:
+        warnings_list.append(f"{best_stats['no_numbers']} row(s) skipped — missing quantity/price/amount.")
+    return best_txns, warnings_list
+
+
+_PORTFOLIO_NAME_TO_TICKER = None
+
+
+def _portfolio_name_map():
+    """Uppercase company-name → ticker map (COMPANY_TO_TICKER + TICKER_TO_NAME)."""
+    global _PORTFOLIO_NAME_TO_TICKER
+    if _PORTFOLIO_NAME_TO_TICKER is None:
+        m = {n.upper(): t for n, t in COMPANY_TO_TICKER.items()}
+        for tkr, full_name in TICKER_TO_NAME.items():
+            m.setdefault(full_name.upper(), tkr)
+        _PORTFOLIO_NAME_TO_TICKER = m
+    return _PORTFOLIO_NAME_TO_TICKER
+
+
+def resolve_portfolio_ticker(name, symbol):
+    """Resolve a Groww stock name/symbol to an NSE watchlist ticker, or None."""
+    # An explicit symbol column is short and unambiguous — the standard
+    # resolver (with its substring heuristics) is safe there.
+    if symbol:
+        resolved, _ = Analyzer.normalize_symbol(str(symbol))
+        if resolved:
+            return resolved
+    if not name:
+        return None
+    # Company names need stricter matching: normalize_symbol's substring
+    # heuristics misfire on long names (e.g. ticker 'LT' inside 'LTD').
+    cleaned = re.sub(r'\b(ltd|limited|pvt|private|co|corp|corporation)\b\.?', '', str(name), flags=re.I)
+    cleaned = re.sub(r'[^A-Za-z0-9& ]+', ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip().upper()
+    if not cleaned:
+        return None
+    if cleaned in ALL_VALID_TICKERS:
+        return cleaned
+    name_map = _portfolio_name_map()
+    if cleaned in name_map:
+        return name_map[cleaned]
+    # Unambiguous whole-word prefix: 'RELIANCE INDUSTRIES' → key 'RELIANCE'
+    prefix_hits = {t for n, t in name_map.items()
+                   if cleaned.startswith(n + ' ') or n.startswith(cleaned + ' ')}
+    if len(prefix_hits) == 1:
+        return prefix_hits.pop()
+    close = difflib.get_close_matches(cleaned, list(name_map.keys()), n=1, cutoff=0.85)
+    if close:
+        return name_map[close[0]]
+    return None
+
+
+_ISIN_YAHOO_CACHE = {}
+_ISIN_RE = re.compile(r'^[A-Z]{2}[A-Z0-9]{9}[0-9]$')
+
+
+def _resolve_isin_yahoo(isin):
+    """Yahoo ticker for an ISIN via the Yahoo search API, or None.
+
+    Groww's P&L report identifies scrips by (often abbreviated) name + ISIN;
+    the ISIN is the reliable identifier, so unresolved names fall back to
+    this lookup. Results are cached for the process lifetime.
+    """
+    isin = (isin or '').strip().upper()
+    if not _ISIN_RE.match(isin):
+        return None
+    if isin in _ISIN_YAHOO_CACHE:
+        return _ISIN_YAHOO_CACHE[isin]
+    result = None
+    try:
+        quotes = yf.Search(isin, max_results=5).quotes or []
+        symbols = [q.get('symbol', '') for q in quotes if q.get('symbol')]
+        result = (next((s for s in symbols if s.endswith('.NS')), None)
+                  or next((s for s in symbols if s.endswith('.BO')), None))
+    except Exception as e:
+        print(f"[portfolio] ISIN lookup failed for {isin}: {e}")
+    _ISIN_YAHOO_CACHE[isin] = result
+    return result
+
+
+def resolve_portfolio_instruments(transactions):
+    """Resolve every transaction to (display_symbol, yahoo_ticker, full_name).
+
+    Tries the free name/symbol resolution first, then parallel ISIN lookups
+    for the rest. Sets txn['ticker'] (display) on each transaction and returns
+    ({display: yahoo_ticker}, {display: full_name}, [unmatched labels]).
+    """
+    unique = {}
+    for txn in transactions:
+        key = (txn['symbol'] or txn['name']).upper()
+        txn['_key'] = key
+        unique.setdefault(key, {'name': txn['name'], 'symbol': txn['symbol'],
+                                'isin': txn.get('isin', '')})
+
+    resolved = {}
+    needs_isin = []
+    for key, info in unique.items():
+        tkr = resolve_portfolio_ticker(info['name'], info['symbol'])
+        if tkr:
+            resolved[key] = (tkr, primary_yahoo_ticker(tkr))
+        elif info['isin'] and _ISIN_RE.match(info['isin']):
+            needs_isin.append(key)
+        else:
+            resolved[key] = None
+    if needs_isin:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            lookups = ex.map(lambda k: _resolve_isin_yahoo(unique[k]['isin']), needs_isin)
+            for key, yahoo in zip(needs_isin, lookups):
+                base = yahoo.split('.')[0].upper() if yahoo else None
+                resolved[key] = (base or yahoo, yahoo) if yahoo else None
+
+    yahoo_map, name_map, unmatched = {}, {}, []
+    for txn in transactions:
+        pair = resolved.get(txn.pop('_key'))
+        if pair is None:
+            txn['ticker'] = None
+            unmatched.append(txn['name'] or txn['symbol'])
+            continue
+        display, yahoo = pair
+        txn['ticker'] = display
+        yahoo_map.setdefault(display, yahoo)
+        name_map.setdefault(display, TICKER_TO_NAME.get(display) or (txn['name'] or display).title())
+    return yahoo_map, name_map, unmatched
+
+
+def compute_xirr(cashflows):
+    """Annualized money-weighted return (XIRR) via bisection.
+
+    cashflows: list of (Timestamp, amount) with investments negative and
+    proceeds/terminal value positive. Returns a decimal rate or None when the
+    flows don't bracket a root (e.g. total loss or same-day flows).
+    """
+    if len(cashflows) < 2:
+        return None
+    amounts = [a for _, a in cashflows]
+    if not (any(a > 0 for a in amounts) and any(a < 0 for a in amounts)):
+        return None
+    d0 = min(d for d, _ in cashflows)
+    years = [(d - d0).days / 365.25 for d, _ in cashflows]
+    if max(years) <= 0:
+        return None
+
+    def npv(rate):
+        return sum(a / (1.0 + rate) ** t for t, (_, a) in zip(years, cashflows))
+
+    lo, hi = -0.9999, 10.0
+    f_lo, f_hi = npv(lo), npv(hi)
+    if f_lo * f_hi > 0:
+        return None
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        f_mid = npv(mid)
+        if abs(f_mid) < 1e-8:
+            return mid
+        if f_lo * f_mid < 0:
+            hi, f_hi = mid, f_mid
+        else:
+            lo, f_lo = mid, f_mid
+        if hi - lo < 1e-9:
+            break
+    return (lo + hi) / 2.0
+
+
+def _portfolio_fetch_closes(tickers, start_date):
+    """Daily close prices for a list of Yahoo tickers from start_date to today."""
+    start = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+    # threads=True: P&L reports can hold 100+ scrips and this is a single
+    # user-triggered request, unlike the scanner's sustained polling
+    data = yf.download(tickers, start=start, interval='1d', progress=False,
+                       threads=True, auto_adjust=False, timeout=20)
+    if data is None or data.empty:
+        return pd.DataFrame()
+    closes = data['Close'] if 'Close' in data else data
+    if isinstance(closes, pd.Series):
+        closes = closes.to_frame(name=tickers[0])
+    idx = pd.to_datetime(closes.index)
+    if getattr(idx, 'tz', None) is not None:
+        idx = idx.tz_localize(None)
+    closes.index = idx.normalize()
+    return closes.dropna(how='all')
+
+
+def _portfolio_fetch_index(index_key, start_date):
+    """Close series for the chosen benchmark, trying fallbacks in order."""
+    opt = PORTFOLIO_INDEX_OPTIONS[index_key]
+    for tkr in opt['tickers']:
+        try:
+            closes = _portfolio_fetch_closes([tkr], start_date)
+            if not closes.empty and closes.iloc[:, 0].dropna().shape[0] > 5:
+                series = closes.iloc[:, 0].dropna()
+                label = opt['label'] if tkr == opt['tickers'][0] else f"{opt['label']} ({tkr} proxy)"
+                return series, label
+        except Exception as e:
+            print(f"[portfolio] index fetch failed for {tkr}: {e}")
+    return None, opt['label']
+
+
+def _inr_short(v):
+    """Compact Indian-format currency label: ₹85k / ₹1.24L / ₹2.05Cr."""
+    sign = '-' if v < 0 else ''
+    a = abs(v)
+    if a >= 1e7:
+        return f'{sign}₹{a / 1e7:.2f}Cr'
+    if a >= 1e5:
+        return f'{sign}₹{a / 1e5:.2f}L'
+    if a >= 1e3:
+        return f'{sign}₹{a / 1e3:.1f}k'
+    return f'{sign}₹{a:.0f}'
+
+
+def _render_portfolio_chart(port_series, bench_series, bench_label):
+    """Portfolio vs same-cashflows-in-index value chart (dark theme, base64 PNG)."""
+    surface = '#131822'
+    grid_col = '#242c3d'
+    ink = '#E8EDF2'
+    ink_muted = '#90A4BE'
+    col_port, col_bench = '#3987e5', '#c98500'  # validated on the dark surface
+
+    fig, ax = plt.subplots(figsize=(10.5, 5.2), dpi=110)
+    fig.patch.set_facecolor(surface)
+    ax.set_facecolor(surface)
+
+    ax.plot(port_series.index, port_series.values, color=col_port, linewidth=2.0,
+            label='Your portfolio', zorder=3)
+    ax.plot(bench_series.index, bench_series.values, color=col_bench, linewidth=2.0,
+            label=f'Same cashflows in {bench_label}', zorder=2)
+
+    # End-point markers + direct value labels (identity via the colored dot,
+    # value text stays in ink per accessibility rules). When the two lines end
+    # close together, push the labels apart vertically so they stay readable.
+    ends = [(s, c) for s, c in ((port_series, col_port), (bench_series, col_bench)) if len(s)]
+    y_span = max(s.values.max() for s, _ in ends) - min(min(s.values.min() for s, _ in ends), 0)
+    offsets = [0.0] * len(ends)
+    if len(ends) == 2 and y_span > 0:
+        gap = abs(ends[0][0].values[-1] - ends[1][0].values[-1])
+        if gap < 0.05 * y_span:
+            hi = 0 if ends[0][0].values[-1] >= ends[1][0].values[-1] else 1
+            offsets[hi], offsets[1 - hi] = 8.0, -8.0
+    for (series, color), dy in zip(ends, offsets):
+        ax.scatter([series.index[-1]], [series.values[-1]], color=color, s=28, zorder=4)
+        ax.annotate(_inr_short(series.values[-1]),
+                    xy=(series.index[-1], series.values[-1]),
+                    xytext=(8, dy), textcoords='offset points',
+                    color=ink, fontsize=9.5, va='center', fontweight='bold')
+
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _p: _inr_short(v)))
+    ax.grid(axis='y', color=grid_col, linewidth=0.7, alpha=0.8)
+    ax.set_axisbelow(True)
+    for spine in ('top', 'right', 'left'):
+        ax.spines[spine].set_visible(False)
+    ax.spines['bottom'].set_color(grid_col)
+    ax.tick_params(colors=ink_muted, labelsize=9)
+    ax.margins(x=0.02)
+    # Room on the right for the end labels
+    x0, x1 = ax.get_xlim()
+    ax.set_xlim(x0, x1 + (x1 - x0) * 0.09)
+    leg = ax.legend(loc='upper left', frameon=False, fontsize=9.5)
+    for text in leg.get_texts():
+        text.set_color(ink)
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', facecolor=surface, bbox_inches='tight', pad_inches=0.18)
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode('utf-8')
+
+
+def compute_portfolio_performance(transactions, index_key):
+    """Full portfolio analysis: value series, benchmark shadow, XIRR & risk stats.
+
+    Returns a JSON-serializable dict for the /portfolio/analyze endpoint.
+    """
+    warnings_list = []
+
+    # ── Resolve each row to a Yahoo ticker (name/symbol, then ISIN) ───────
+    yahoo_map, display_names, unmatched = resolve_portfolio_instruments(transactions)
+    usable = [t for t in transactions if t['ticker']]
+    if unmatched:
+        warnings_list.append(
+            'Not recognized as NSE/BSE stocks (excluded from analysis): ' + ', '.join(sorted(set(unmatched))))
+    if not usable:
+        raise ValueError('None of the stocks in the file could be matched to NSE/BSE tickers.')
+
+    # ── Fetch price history for every held stock ──────────────────────────
+    first_date = min(t['date'] for t in usable)
+    tickers = sorted({t['ticker'] for t in usable})
+    closes = _portfolio_fetch_closes([yahoo_map[t] for t in tickers], first_date)
+    if closes.empty:
+        raise ValueError('Could not download price history for the portfolio stocks. Please try again.')
+
+    # Scrips with no price history on Yahoo (delisted/suspended). Fully
+    # exited positions keep their buy/sell cashflows (they still shape XIRR
+    # and the index comparison) but can't contribute to the daily value
+    # curve; still-open ones have to be excluded entirely.
+    dead = [tkr for tkr in tickers
+            if yahoo_map[tkr] not in closes.columns or closes[yahoo_map[tkr]].dropna().empty]
+    if dead:
+        net_qty = {tkr: 0.0 for tkr in dead}
+        for t in usable:
+            if t['ticker'] in net_qty:
+                net_qty[t['ticker']] += t['qty'] if t['side'] == 'BUY' else -t['qty']
+        open_dead = sorted(tkr for tkr, q in net_qty.items() if abs(q) > 1e-6)
+        closed_dead = sorted(tkr for tkr in dead if tkr not in open_dead)
+        if open_dead:
+            warnings_list.append(
+                'No price history available — these open holdings were excluded: ' + ', '.join(open_dead))
+            usable = [t for t in usable if t['ticker'] not in open_dead]
+        if closed_dead:
+            warnings_list.append(
+                'No longer quoted (delisted/suspended) but fully sold — their buys/sells are '
+                'included in returns, though not in the chart while they were held: ' + ', '.join(closed_dead))
+        tickers = [tkr for tkr in tickers if tkr not in dead]
+        if not usable or not tickers:
+            raise ValueError('Price history could not be fetched for any stock in the file.')
+        first_date = min(t['date'] for t in usable)
+
+    dates = closes.index[closes.index >= first_date]
+    if len(dates) < 2:
+        raise ValueError('Not enough price history after the first buy date to build a performance chart.')
+    px = closes.reindex(closes.index).ffill().reindex(dates)
+
+    def _asof_pos(d):
+        pos = dates.searchsorted(d)
+        return min(pos, len(dates) - 1)
+
+    # ── Daily holdings → portfolio value series ───────────────────────────
+    qty_events = pd.DataFrame(0.0, index=dates, columns=tickers)
+    flow_events = pd.Series(0.0, index=dates)  # +ve = money into the portfolio
+    for t in usable:
+        # Delisted-but-closed scrips have no price column: they stay in the
+        # XIRR cashflows below but can't enter the daily value/return series.
+        if t['ticker'] not in qty_events.columns:
+            continue
+        pos = _asof_pos(t['date'])
+        flow_events.iloc[pos] += t['amount'] if t['side'] == 'BUY' else -t['amount']
+        signed_qty = t['qty'] if t['side'] == 'BUY' else -t['qty']
+        qty_events.iloc[pos, qty_events.columns.get_loc(t['ticker'])] += signed_qty
+    qty_cum = qty_events.cumsum()
+
+    value_matrix = pd.DataFrame(0.0, index=dates, columns=tickers)
+    for tkr in tickers:
+        value_matrix[tkr] = qty_cum[tkr] * px[yahoo_map[tkr]].fillna(0.0)
+    port_val = value_matrix.sum(axis=1)
+
+    # ── Benchmark shadow: invest the identical cashflows in the index ─────
+    idx_series, idx_label = _portfolio_fetch_index(index_key, first_date)
+    if idx_series is None:
+        raise ValueError(f'Could not fetch data for {idx_label}. Please try another index.')
+    idx_px = idx_series.reindex(idx_series.index.union(dates)).ffill().reindex(dates)
+    if idx_px.dropna().empty:
+        raise ValueError(f'{idx_label} has no overlapping price history with the portfolio period.')
+    idx_px = idx_px.bfill()  # covers flows that predate the first index quote
+
+    unit_events = pd.Series(0.0, index=dates)
+    for t in usable:
+        pos = _asof_pos(t['date'])
+        p = idx_px.iloc[pos]
+        if p and p > 0:
+            delta = t['amount'] / p
+            unit_events.iloc[pos] += delta if t['side'] == 'BUY' else -delta
+    bench_val = unit_events.cumsum() * idx_px
+
+    # ── Cash flows & XIRR (portfolio vs index, same flows) ────────────────
+    today = dates[-1]
+    flows = [(t['date'], -t['amount'] if t['side'] == 'BUY' else t['amount']) for t in usable]
+    invested = sum(t['amount'] for t in usable if t['side'] == 'BUY')
+    withdrawn = sum(t['amount'] for t in usable if t['side'] == 'SELL')
+    current_value = float(port_val.iloc[-1])
+    bench_final = float(bench_val.iloc[-1])
+
+    xirr = compute_xirr(flows + [(today, current_value)])
+    idx_xirr = compute_xirr(flows + [(today, bench_final)])
+
+    abs_gain = current_value + withdrawn - invested
+    abs_return_pct = (abs_gain / invested * 100.0) if invested > 0 else None
+
+    # ── Risk stats from flow-adjusted (Modified Dietz) daily returns ──────
+    dv = port_val.diff()
+    base = port_val.shift(1) + flow_events
+    daily_ret = ((dv - flow_events) / base).replace([np.inf, -np.inf], np.nan)
+    daily_ret[base.abs() < 1.0] = np.nan
+    daily_ret = daily_ret.dropna()
+
+    volatility_pct = max_drawdown_pct = sharpe = beta = None
+    if len(daily_ret) >= 20:
+        vol = float(daily_ret.std() * np.sqrt(252))
+        volatility_pct = vol * 100.0
+        twr = (1.0 + daily_ret).cumprod()
+        max_drawdown_pct = float((twr / twr.cummax() - 1.0).min() * 100.0)
+        ann_twr = float(twr.iloc[-1] ** (252.0 / len(daily_ret)) - 1.0)
+        if vol > 1e-9:
+            sharpe = (ann_twr - PORTFOLIO_RISK_FREE_RATE) / vol
+        idx_ret = idx_px.pct_change().reindex(daily_ret.index).dropna()
+        joined = pd.concat([daily_ret, idx_ret], axis=1, join='inner').dropna()
+        if len(joined) >= 20 and float(joined.iloc[:, 1].var()) > 1e-12:
+            beta = float(joined.iloc[:, 0].cov(joined.iloc[:, 1]) / joined.iloc[:, 1].var())
+
+    # ── Per-scrip summary (average-cost accounting) ───────────────────────
+    # Runs over every resolved scrip (including delisted-but-closed ones, for
+    # realised P&L); only positions still held appear in the holdings table.
+    holdings = []
+    realized_total = 0.0
+    for tkr in sorted({t['ticker'] for t in usable}):
+        txns = sorted((t for t in usable if t['ticker'] == tkr), key=lambda t: t['date'])
+        qty = cost = realized = 0.0
+        for t in txns:
+            if t['side'] == 'BUY':
+                qty += t['qty']
+                cost += t['amount']
+            elif t.get('matched_cost') is not None:
+                # P&L-report sell: Groww already matched this lot's buy cost
+                realized += t['amount'] - t['matched_cost']
+                cost -= min(t['matched_cost'], cost)
+                qty -= min(t['qty'], qty)
+            else:
+                avg = cost / qty if qty > 0 else 0.0
+                sell_qty = min(t['qty'], qty)
+                realized += t['amount'] - avg * sell_qty
+                cost -= avg * sell_qty
+                qty -= sell_qty
+        realized_total += realized
+        if qty <= 1e-9:
+            continue
+        px_col = px[yahoo_map[tkr]].dropna() if tkr in tickers else pd.Series(dtype=float)
+        last_px = float(px_col.iloc[-1]) if not px_col.empty else 0.0
+        cur_val = qty * last_px
+        pnl = cur_val - cost
+        holdings.append({
+            'symbol': tkr,
+            'name': display_names.get(tkr, tkr),
+            'qty': round(qty, 4),
+            'avg_cost': round(cost / qty, 2) if qty > 0 else None,
+            'invested': round(cost, 2),
+            'current_price': round(last_px, 2),
+            'current_value': round(cur_val, 2),
+            'pnl': round(pnl, 2),
+            'pnl_pct': round(pnl / cost * 100.0, 2) if cost > 0 else None,
+        })
+    unrealized_total = sum(h['pnl'] for h in holdings)
+    holdings.sort(key=lambda h: h['current_value'], reverse=True)
+    total_cv = sum(h['current_value'] for h in holdings)
+    for h in holdings:
+        h['weight_pct'] = round(h['current_value'] / total_cv * 100.0, 1) if total_cv > 0 else 0.0
+    ranked = [h for h in holdings if h['pnl_pct'] is not None]
+    ranked.sort(key=lambda h: h['pnl_pct'], reverse=True)
+
+    stated_cv = sum(t['stated_current_value'] for t in transactions
+                    if t.get('stated_current_value'))
+    if stated_cv and current_value and abs(stated_cv - current_value) / max(stated_cv, current_value) > 0.15:
+        warnings_list.append(
+            f'Computed current value ({_inr_short(current_value)}) differs from the value stated in the '
+            f'file ({_inr_short(stated_cv)}) by more than 15% — some rows may not have been matched.')
+
+    chart_b64 = _render_portfolio_chart(port_val, bench_val, idx_label)
+
+    return {
+        'chart': chart_b64,
+        'index_label': idx_label,
+        'summary': {
+            'invested': round(invested, 2),
+            'withdrawn': round(withdrawn, 2),
+            'current_value': round(current_value, 2),
+            'abs_gain': round(abs_gain, 2),
+            'abs_return_pct': round(abs_return_pct, 2) if abs_return_pct is not None else None,
+            'realized_pnl': round(realized_total, 2),
+            'unrealized_pnl': round(unrealized_total, 2),
+            'xirr_pct': round(xirr * 100.0, 2) if xirr is not None else None,
+            'index_xirr_pct': round(idx_xirr * 100.0, 2) if idx_xirr is not None else None,
+            'alpha_pct': round((xirr - idx_xirr) * 100.0, 2) if xirr is not None and idx_xirr is not None else None,
+            'index_final_value': round(bench_final, 2),
+            'volatility_pct': round(volatility_pct, 2) if volatility_pct is not None else None,
+            'max_drawdown_pct': round(max_drawdown_pct, 2) if max_drawdown_pct is not None else None,
+            'sharpe': round(sharpe, 2) if sharpe is not None else None,
+            'beta': round(beta, 2) if beta is not None else None,
+            'first_buy_date': str(first_date.date()),
+            'as_of': str(today.date()),
+            'stated_current_value': round(stated_cv, 2) if stated_cv else None,
+        },
+        'holdings': holdings,
+        'best': ranked[0] if ranked else None,
+        'worst': ranked[-1] if ranked else None,
+        'txn_count': len(usable),
+        'warnings': warnings_list,
+    }
+
+
 # ===== HTML TEMPLATE (IDENTICAL TO WORKING VERSION) =====
 # [Keeping your exact HTML - no changes needed]
 
@@ -5565,6 +6371,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dcf" onclick="switchTab('dcf', event)">DCF Valuation</button>
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
+                <button class="nav-link" data-tab="portfolio" onclick="switchTab('portfolio', event)">&#128200; Portfolio</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
                 <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; Artha</button>
             </div>
@@ -5580,6 +6387,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dcf">DCF Valuation</button>
         <button class="mobile-menu-item" data-tab="dividend">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression">Market Connection</button>
+        <button class="mobile-menu-item" data-tab="portfolio">&#128200; Portfolio</button>
         <button class="mobile-menu-item" data-tab="scanner">&#128269; Scanner</button>
         <button class="mobile-menu-item" data-tab="ai">&#10024; Artha</button>
     </div>
@@ -5639,6 +6447,42 @@ def dashboard():
                 <p style="color: var(--text-muted); font-size: 0.82em; margin-top: 12px; margin-bottom: 0; font-style: italic;">All results are based on historical data (up to 1 year) and describe past behaviour. They do not guarantee future performance.</p>
             </div>
             <div id="regression-result" style="margin-top: 30px;"></div>
+        </div>
+        <div id="portfolio-tab" class="tab-content">
+            <div class="card" style="margin-bottom: 20px;">
+                <h2>&#128200; Portfolio Performance</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.92em; line-height: 1.7;">
+                    Upload your <strong style="color: var(--text-primary);">Groww Stocks P&amp;L report</strong> (Profile &rarr; Reports &rarr; Stocks P&amp;L) or any Groww
+                    statement with buy dates, prices and values, to see how your portfolio has performed against an index of your
+                    choice &mdash; with XIRR, alpha, drawdown and other key indicators.
+                </p>
+                <div style="display: grid; grid-template-columns: 1fr 260px; gap: 15px; align-items: end;">
+                    <div>
+                        <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Groww Statement (.xlsx / .csv)</label>
+                        <label id="portfolio-drop" for="portfolio-file" style="display: flex; align-items: center; justify-content: center; gap: 10px; padding: 22px 14px; border: 2px dashed var(--border-color); border-radius: 10px; cursor: pointer; color: var(--text-secondary); background: var(--bg-dark); transition: border-color 0.2s;">
+                            <span style="font-size: 1.3em;">&#128196;</span>
+                            <span id="portfolio-file-label">Click to choose a file (or drop it here)</span>
+                        </label>
+                        <input type="file" id="portfolio-file" accept=".xlsx,.xls,.csv" style="display: none;">
+                    </div>
+                    <div>
+                        <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Compare Against</label>
+                        <select id="portfolio-index" style="width: 100%; padding: 14px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-dark); color: var(--text-primary); font-size: 0.95em; font-family: 'Inter', sans-serif;">
+                            <option value="NIFTY50" selected>Nifty 50</option>
+                            <option value="SENSEX">BSE Sensex</option>
+                            <option value="NIFTY500">Nifty 500</option>
+                            <option value="BANKNIFTY">Nifty Bank</option>
+                            <option value="MIDCAP">Nifty Midcap 50</option>
+                            <option value="NIFTYIT">Nifty IT</option>
+                            <option value="SP500">S&amp;P 500 (USD)</option>
+                            <option value="NASDAQ100">Nasdaq 100 (USD)</option>
+                        </select>
+                    </div>
+                </div>
+                <button id="portfolio-analyze-btn" onclick="analyzePortfolio()" style="margin-top: 18px; width: 100%; background: linear-gradient(135deg, #1C3A5E, #243F68); color: var(--text-primary); border: 1px solid rgba(61,122,181,0.35); font-weight: 700; padding: 14px; border-radius: 8px; cursor: pointer; font-family: 'Space Grotesk', sans-serif; font-size: 1em;">Analyze Portfolio</button>
+                <p style="color: var(--text-muted); font-size: 0.8em; margin-top: 12px; margin-bottom: 0; font-style: italic;">Your file is processed in memory for this analysis only &mdash; it is not stored.</p>
+            </div>
+            <div id="portfolio-results"></div>
         </div>
         <div id="dividend-tab" class="tab-content">
             <div class="grid">
@@ -6498,6 +7342,8 @@ def dashboard():
                     if (e.key === 'Enter') analyzeRegression();
                 });
             } else if (tab === 'dividend') {
+            } else if (tab === 'portfolio') {
+                initPortfolioUpload();
             } else if (tab === 'dcf') {
                 setupAutocomplete('dcf-search', 'dcf-suggestions', 'dcfAutocomplete');
                 document.getElementById('dcf-search').addEventListener('keypress', (e) => {
@@ -6550,6 +7396,176 @@ def dashboard():
         }
         function init() {
             ensureTabLoaded('verdict');
+        }
+
+        // ===== Portfolio Performance (Groww upload) =====
+        function initPortfolioUpload() {
+            const input = document.getElementById('portfolio-file');
+            const drop = document.getElementById('portfolio-drop');
+            const label = document.getElementById('portfolio-file-label');
+            if (!input || !drop) return;
+            input.addEventListener('change', () => {
+                label.textContent = input.files.length ? input.files[0].name : 'Click to choose a file (or drop it here)';
+            });
+            ['dragover', 'dragenter'].forEach(ev => drop.addEventListener(ev, e => {
+                e.preventDefault();
+                drop.style.borderColor = 'var(--accent-gold)';
+            }));
+            ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => {
+                e.preventDefault();
+                drop.style.borderColor = 'var(--border-color)';
+            }));
+            drop.addEventListener('drop', e => {
+                if (e.dataTransfer.files.length) {
+                    input.files = e.dataTransfer.files;
+                    label.textContent = input.files[0].name;
+                }
+            });
+        }
+        function fmtINR(v, decimals) {
+            if (v === null || v === undefined || isNaN(v)) return '—';
+            return '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: decimals === undefined ? 0 : decimals });
+        }
+        function fmtPct(v) {
+            if (v === null || v === undefined || isNaN(v)) return '—';
+            return (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
+        }
+        function pnlColor(v) {
+            if (v === null || v === undefined || isNaN(v)) return 'var(--text-secondary)';
+            return v >= 0 ? 'var(--success)' : 'var(--danger)';
+        }
+        function analyzePortfolio() {
+            const input = document.getElementById('portfolio-file');
+            const results = document.getElementById('portfolio-results');
+            const btn = document.getElementById('portfolio-analyze-btn');
+            if (!input.files.length) {
+                results.innerHTML = '<div class="card" style="border-left: 3px solid var(--warning);"><p style="color: var(--warning); margin: 0;">Please choose your Groww statement file first.</p></div>';
+                return;
+            }
+            const fd = new FormData();
+            fd.append('file', input.files[0]);
+            fd.append('index', document.getElementById('portfolio-index').value);
+            btn.disabled = true;
+            btn.textContent = 'Analyzing…';
+            results.innerHTML = '<div class="loading">⏳ Reading your statement, fetching price history and crunching the numbers… this can take up to a minute for large portfolios.</div>';
+            fetch('/portfolio/analyze', { method: 'POST', body: fd })
+                .then(r => r.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.textContent = 'Analyze Portfolio';
+                    if (data.error) {
+                        results.innerHTML = '<div class="card" style="border-left: 3px solid var(--danger);"><p style="color: var(--danger); margin: 0;">' + data.error + '</p></div>';
+                        return;
+                    }
+                    renderPortfolioResults(data);
+                })
+                .catch(() => {
+                    btn.disabled = false;
+                    btn.textContent = 'Analyze Portfolio';
+                    results.innerHTML = '<div class="card" style="border-left: 3px solid var(--danger);"><p style="color: var(--danger); margin: 0;">Something went wrong while analyzing the portfolio. Please try again.</p></div>';
+                });
+        }
+        function portfolioMetricCard(label, value, sub, color) {
+            return '<div style="background: var(--bg-dark); padding: 16px 18px; border-radius: 10px; border: 1px solid var(--border-color);">'
+                + '<div style="color: var(--text-muted); font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px;">' + label + '</div>'
+                + '<div style="font-family: \\'Space Grotesk\\', sans-serif; font-size: 1.35em; font-weight: 700; color: ' + (color || 'var(--text-primary)') + ';">' + value + '</div>'
+                + (sub ? '<div style="color: var(--text-muted); font-size: 0.78em; margin-top: 4px;">' + sub + '</div>' : '')
+                + '</div>';
+        }
+        function renderPortfolioResults(data) {
+            const s = data.summary;
+            const results = document.getElementById('portfolio-results');
+            let html = '';
+
+            if (data.warnings && data.warnings.length) {
+                html += '<div class="card" style="border-left: 3px solid var(--warning); margin-bottom: 20px;">'
+                    + '<h3 style="color: var(--warning); font-size: 0.95em; margin-bottom: 8px;">Heads up</h3>'
+                    + data.warnings.map(w => '<p style="color: var(--text-secondary); font-size: 0.88em; margin: 4px 0;">' + w + '</p>').join('')
+                    + '</div>';
+            }
+
+            html += '<div class="card" style="margin-bottom: 20px;">'
+                + '<h2>Overview <span style="color: var(--text-muted); font-weight: 400; font-size: 0.62em;">' + s.first_buy_date + ' → ' + s.as_of + ' · ' + data.txn_count + ' transactions</span></h2>'
+                + '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 14px;">'
+                + portfolioMetricCard('Current Value', fmtINR(s.current_value), s.withdrawn > 0 ? '+ ' + fmtINR(s.withdrawn) + ' withdrawn' : '')
+                + portfolioMetricCard('Total Invested', fmtINR(s.invested), '')
+                + portfolioMetricCard('Net P&amp;L', fmtINR(s.abs_gain), fmtPct(s.abs_return_pct) + ' absolute', pnlColor(s.abs_gain))
+                + portfolioMetricCard('Realised P&amp;L', fmtINR(s.realized_pnl), 'booked on completed sells', pnlColor(s.realized_pnl))
+                + portfolioMetricCard('Unrealised P&amp;L', fmtINR(s.unrealized_pnl), 'on current holdings', pnlColor(s.unrealized_pnl))
+                + portfolioMetricCard('Your XIRR', fmtPct(s.xirr_pct), 'annualized, money-weighted', pnlColor(s.xirr_pct))
+                + portfolioMetricCard(data.index_label + ' XIRR', fmtPct(s.index_xirr_pct), 'same cashflows in the index', pnlColor(s.index_xirr_pct))
+                + portfolioMetricCard('Alpha vs ' + data.index_label, fmtPct(s.alpha_pct), 'your XIRR minus index XIRR', pnlColor(s.alpha_pct))
+                + '</div></div>';
+
+            html += '<div class="card" style="margin-bottom: 20px;">'
+                + '<h2>Portfolio vs ' + data.index_label + '</h2>'
+                + '<p style="color: var(--text-muted); font-size: 0.85em; margin-bottom: 12px;">The index line shows what the exact same investments, on the same dates, would be worth in ' + data.index_label + '.'
+                + (s.index_final_value ? ' Index-equivalent value today: <strong style="color: var(--text-secondary);">' + fmtINR(s.index_final_value) + '</strong>.' : '') + '</p>'
+                + '<img src="data:image/png;base64,' + data.chart + '" style="width: 100%; border-radius: 8px;" alt="Portfolio value vs index over time">'
+                + '</div>';
+
+            html += '<div class="card" style="margin-bottom: 20px;">'
+                + '<h2>Risk &amp; Quality Indicators</h2>'
+                + '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 14px;">'
+                + portfolioMetricCard('Volatility', s.volatility_pct === null ? '—' : s.volatility_pct.toFixed(1) + '%', 'annualized, of daily returns')
+                + portfolioMetricCard('Max Drawdown', s.max_drawdown_pct === null ? '—' : s.max_drawdown_pct.toFixed(1) + '%', 'worst peak-to-trough fall', s.max_drawdown_pct === null ? undefined : 'var(--danger)')
+                + portfolioMetricCard('Sharpe Ratio', s.sharpe === null ? '—' : s.sharpe.toFixed(2), 'return per unit of risk (6.5% risk-free)')
+                + portfolioMetricCard('Beta vs ' + data.index_label, s.beta === null ? '—' : s.beta.toFixed(2), 'above 1 = swings more than the index')
+                + '</div>'
+                + (s.volatility_pct === null ? '<p style="color: var(--text-muted); font-size: 0.8em; margin-top: 10px; margin-bottom: 0;">Risk indicators need at least ~1 month of history after your first purchase.</p>' : '')
+                + '</div>';
+
+            if (data.best || data.worst) {
+                html += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 15px; margin-bottom: 20px;">';
+                if (data.best) {
+                    html += '<div class="card" style="border-left: 3px solid var(--success);"><h3 style="color: var(--success); font-size: 0.9em; margin-bottom: 6px;">Best Performer</h3>'
+                        + '<div style="font-family: \\'Space Grotesk\\', sans-serif; font-weight: 700; font-size: 1.1em;">' + data.best.symbol + '</div>'
+                        + '<div style="color: var(--text-muted); font-size: 0.82em;">' + data.best.name + '</div>'
+                        + '<div style="color: var(--success); font-weight: 700; margin-top: 6px;">' + fmtPct(data.best.pnl_pct) + ' <span style="color: var(--text-muted); font-weight: 400;">(' + fmtINR(data.best.pnl) + ')</span></div></div>';
+                }
+                if (data.worst && (!data.best || data.worst.symbol !== data.best.symbol)) {
+                    html += '<div class="card" style="border-left: 3px solid var(--danger);"><h3 style="color: var(--danger); font-size: 0.9em; margin-bottom: 6px;">Worst Performer</h3>'
+                        + '<div style="font-family: \\'Space Grotesk\\', sans-serif; font-weight: 700; font-size: 1.1em;">' + data.worst.symbol + '</div>'
+                        + '<div style="color: var(--text-muted); font-size: 0.82em;">' + data.worst.name + '</div>'
+                        + '<div style="color: ' + pnlColor(data.worst.pnl_pct) + '; font-weight: 700; margin-top: 6px;">' + fmtPct(data.worst.pnl_pct) + ' <span style="color: var(--text-muted); font-weight: 400;">(' + fmtINR(data.worst.pnl) + ')</span></div></div>';
+                }
+                html += '</div>';
+            }
+
+            if (data.holdings && data.holdings.length) {
+                html += '<div class="card"><h2>Current Holdings <span style="color: var(--text-muted); font-weight: 400; font-size: 0.62em;">' + data.holdings.length + ' stocks</span></h2><div style="overflow-x: auto; margin-top: 10px;">'
+                    + '<table style="width: 100%; border-collapse: collapse; font-size: 0.88em; white-space: nowrap;">'
+                    + '<thead><tr style="color: var(--text-muted); text-transform: uppercase; font-size: 0.78em; letter-spacing: 0.5px;">'
+                    + '<th style="text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Stock</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Qty</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Avg Cost</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Invested</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Price</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Value</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">P&amp;L</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">P&amp;L %</th>'
+                    + '<th style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Weight</th>'
+                    + '</tr></thead><tbody>';
+                data.holdings.forEach(h => {
+                    html += '<tr>'
+                        + '<td style="padding: 10px 12px; border-bottom: 1px solid var(--border-color);"><strong>' + h.symbol + '</strong> <span style="color: var(--text-muted); font-size: 0.85em;">' + h.name + '</span></td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums;">' + h.qty + '</td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums;">' + (h.avg_cost === null ? '—' : fmtINR(h.avg_cost, 2)) + '</td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums;">' + fmtINR(h.invested) + '</td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums;">' + fmtINR(h.current_price, 2) + '</td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums;">' + fmtINR(h.current_value) + '</td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums; color: ' + pnlColor(h.pnl) + ';">' + fmtINR(h.pnl) + '</td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums; color: ' + pnlColor(h.pnl_pct) + ';">' + fmtPct(h.pnl_pct) + '</td>'
+                        + '<td style="text-align: right; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-variant-numeric: tabular-nums;">' + h.weight_pct + '%</td>'
+                        + '</tr>';
+                });
+                html += '</tbody></table></div>'
+                    + '<p style="color: var(--text-muted); font-size: 0.8em; margin-top: 12px; margin-bottom: 0; font-style: italic;">XIRR is the money-weighted annual return of your actual cashflows. The index comparison invests the same amounts on the same dates, so timing luck is accounted for. P&amp;L figures are gross of brokerage, charges and taxes. Past performance does not guarantee future returns.</p>'
+                    + '</div>';
+            }
+
+            results.innerHTML = html;
+            results.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
         function analyze(symbol) {
             document.getElementById('search-view').style.display = 'none';
@@ -9127,6 +10143,30 @@ def _submit_regression_job(symbol):
     fut = REGRESSION_EXECUTOR.submit(analyzer.regression_analysis, symbol)
     REGRESSION_JOB_CACHE[symbol] = fut
     return fut
+
+
+@app.route('/portfolio/analyze', methods=['POST'])
+def portfolio_analyze_route():
+    """Analyze an uploaded Groww statement: performance vs index, XIRR, risk stats."""
+    f = request.files.get('file')
+    if f is None or not f.filename:
+        return jsonify({'error': 'No file uploaded. Please choose the Excel statement exported from Groww.'})
+    index_key = request.form.get('index', 'NIFTY50').upper()
+    if index_key not in PORTFOLIO_INDEX_OPTIONS:
+        index_key = 'NIFTY50'
+    file_bytes = f.read(PORTFOLIO_MAX_UPLOAD_BYTES + 1)
+    if len(file_bytes) > PORTFOLIO_MAX_UPLOAD_BYTES:
+        return jsonify({'error': 'File is larger than 5 MB. Please upload the standard Groww statement export.'})
+    try:
+        transactions, parse_warnings = parse_portfolio_file(file_bytes, f.filename)
+        result = compute_portfolio_performance(transactions, index_key)
+        result['warnings'] = parse_warnings + result.get('warnings', [])
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)})
+    except Exception as e:
+        print(f"Error in portfolio analysis: {e}")
+        return jsonify({'error': f'Portfolio analysis failed: {str(e)}'})
 
 
 @app.route('/regression')
