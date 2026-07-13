@@ -6347,17 +6347,28 @@ def dashboard():
         .ai-thinking-step.active { color:var(--text-secondary); border-color:var(--accent-gold); }
         @media (max-width:720px) { .ai-msg,.ai-thinking-block { max-width:90%; } }
         .ai-input-row { display:flex; gap:10px; padding:14px 16px; border-top:1px solid var(--border-color); background:rgba(255,255,255,0.02); }
-        #ai-input { flex:1; background:var(--bg-dark); border:1px solid var(--border-color); border-radius:10px; padding:12px 14px; color:var(--text-primary); font-size:0.92em; font-family:'Inter',sans-serif; resize:none; height:46px; max-height:140px; line-height:1.45; transition:border-color .2s; }
-        #ai-input:focus { outline:none; border-color:var(--accent-gold); }
-        #ai-send-btn { background:var(--accent-gold); border:none; border-radius:10px; padding:0 22px; cursor:pointer; color:var(--bg-dark); font-size:0.92em; font-weight:700; transition:opacity .2s; flex-shrink:0; font-family:inherit; }
-        #ai-send-btn:hover { opacity:0.88; }
-        #ai-send-btn:disabled { opacity:0.4; cursor:not-allowed; }
+        #ai-input, #pf-chat-input { flex:1; min-width:0; background:var(--bg-dark); border:1px solid var(--border-color); border-radius:10px; padding:12px 14px; color:var(--text-primary); font-size:0.92em; font-family:'Inter',sans-serif; resize:none; height:46px; max-height:140px; line-height:1.45; transition:border-color .2s; }
+        #ai-input:focus, #pf-chat-input:focus { outline:none; border-color:var(--accent-gold); }
+        #ai-send-btn, #pf-chat-send { background:var(--accent-gold); border:none; border-radius:10px; padding:0 22px; cursor:pointer; color:var(--bg-dark); font-size:0.92em; font-weight:700; transition:opacity .2s; flex-shrink:0; font-family:inherit; }
+        #ai-send-btn:hover, #pf-chat-send:hover { opacity:0.88; }
+        #ai-send-btn:disabled, #pf-chat-send:disabled { opacity:0.4; cursor:not-allowed; }
         .ai-disclaimer { font-size:0.72em; color:var(--text-muted); text-align:center; padding:14px 16px 0; }
+        /* ===== Portfolio tab: upload form + embedded chat ===== */
+        .pf-upload-grid { display:grid; grid-template-columns:1fr 260px; gap:15px; align-items:end; }
+        .pf-chat-card { min-height:380px; max-height:65vh; }
+        .pf-table-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:10px; }
         @media (max-width:720px) {
             .ai-hero { padding:32px 16px 12px; }
             .ai-hero h1 { font-size:1.9em; }
             .ai-msg { max-width:90%; }
             .ai-chat-card { min-height:60vh; max-height:75vh; border-radius:14px; }
+            .pf-upload-grid { grid-template-columns:1fr; gap:12px; align-items:stretch; }
+            .pf-chat-card { min-height:55vh; max-height:70vh; }
+            .ai-input-row { padding:10px 10px; }
+            #ai-input, #pf-chat-input { font-size:16px; } /* 16px stops iOS Safari zooming on focus */
+            .ai-chat-header { padding:12px 14px; flex-wrap:wrap; gap:8px; }
+            .ai-suggest-row { gap:8px; margin:16px auto; }
+            .ai-suggest-chip { font-size:0.8em; padding:8px 12px; }
         }
     </style>
 </head>
@@ -6456,7 +6467,7 @@ def dashboard():
                     statement with buy dates, prices and values, to see how your portfolio has performed against an index of your
                     choice &mdash; with XIRR, alpha, drawdown and other key indicators.
                 </p>
-                <div style="display: grid; grid-template-columns: 1fr 260px; gap: 15px; align-items: end;">
+                <div class="pf-upload-grid">
                     <div>
                         <label style="display: block; color: var(--text-secondary); font-size: 0.85em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Groww Statement (.xlsx / .csv)</label>
                         <label id="portfolio-drop" for="portfolio-file" style="display: flex; align-items: center; justify-content: center; gap: 10px; padding: 22px 14px; border: 2px dashed var(--border-color); border-radius: 10px; cursor: pointer; color: var(--text-secondary); background: var(--bg-dark); transition: border-color 0.2s;">
@@ -6483,6 +6494,26 @@ def dashboard():
                 <p style="color: var(--text-muted); font-size: 0.8em; margin-top: 12px; margin-bottom: 0; font-style: italic;">Your file is processed in memory for this analysis only &mdash; it is not stored.</p>
             </div>
             <div id="portfolio-results"></div>
+            <div id="portfolio-chat-section" style="display: none; margin-top: 20px;">
+                <div class="ai-suggest-row">
+                    <button class="ai-suggest-chip" type="button" onclick="pfChatSuggest('How is my portfolio doing overall?')">How am I doing overall?</button>
+                    <button class="ai-suggest-chip" type="button" onclick="pfChatSuggest('Which holdings are dragging my returns down?')">What&#39;s dragging my returns?</button>
+                    <button class="ai-suggest-chip" type="button" onclick="pfChatSuggest('Is my portfolio too concentrated in a few stocks?')">Am I too concentrated?</button>
+                    <button class="ai-suggest-chip" type="button" onclick="pfChatSuggest('Which of my holdings should I review or consider selling first?')">What should I review first?</button>
+                </div>
+                <div class="ai-chat-card pf-chat-card">
+                    <div class="ai-chat-header">
+                        <div class="ai-chat-title"><span class="ai-status-dot"></span> Ask Artha About Your Portfolio</div>
+                        <div class="ai-rate-tag">Powered by your uploaded statement</div>
+                    </div>
+                    <div class="ai-messages" id="pf-chat-messages"></div>
+                    <div class="ai-input-row">
+                        <textarea id="pf-chat-input" placeholder="Ask about your portfolio&hellip;" rows="1" aria-label="Portfolio chat message input"></textarea>
+                        <button id="pf-chat-send" type="button" onclick="pfChatSend()">Send</button>
+                    </div>
+                </div>
+                <div class="ai-disclaimer">Artha sees the analysis above (summary &amp; holdings) for this chat only &mdash; nothing is stored. For research and educational use only. Not investment advice.</div>
+            </div>
         </div>
         <div id="dividend-tab" class="tab-content">
             <div class="grid">
@@ -7533,7 +7564,7 @@ def dashboard():
             }
 
             if (data.holdings && data.holdings.length) {
-                html += '<div class="card"><h2>Current Holdings <span style="color: var(--text-muted); font-weight: 400; font-size: 0.62em;">' + data.holdings.length + ' stocks</span></h2><div style="overflow-x: auto; margin-top: 10px;">'
+                html += '<div class="card"><h2>Current Holdings <span style="color: var(--text-muted); font-weight: 400; font-size: 0.62em;">' + data.holdings.length + ' stocks</span></h2><div class="pf-table-wrap">'
                     + '<table style="width: 100%; border-collapse: collapse; font-size: 0.88em; white-space: nowrap;">'
                     + '<thead><tr style="color: var(--text-muted); text-transform: uppercase; font-size: 0.78em; letter-spacing: 0.5px;">'
                     + '<th style="text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Stock</th>'
@@ -7565,7 +7596,38 @@ def dashboard():
             }
 
             results.innerHTML = html;
+            initPortfolioChat(data);
             results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        function initPortfolioChat(data) {
+            const section = document.getElementById('portfolio-chat-section');
+            const box = document.getElementById('pf-chat-messages');
+            if (!section || !box) return;
+            // Compact payload sent with every portfolio chat message (chart omitted).
+            pfChatPortfolio = {
+                index_label: data.index_label,
+                txn_count: data.txn_count,
+                summary: data.summary,
+                holdings: (data.holdings || []).map(function(h) {
+                    return {
+                        symbol: h.symbol, name: h.name, qty: h.qty, avg_cost: h.avg_cost,
+                        invested: h.invested, current_price: h.current_price,
+                        current_value: h.current_value, pnl: h.pnl, pnl_pct: h.pnl_pct,
+                        weight_pct: h.weight_pct
+                    };
+                })
+            };
+            pfChat.history = [];
+            box.innerHTML = '';
+            const s = data.summary || {};
+            const n = (data.holdings || []).length;
+            const welcome = 'Your portfolio is loaded — ' + n + ' holding' + (n !== 1 ? 's' : '')
+                + ' worth ' + fmtINR(s.current_value)
+                + (s.xirr_pct !== null && s.xirr_pct !== undefined ? ', XIRR ' + fmtPct(s.xirr_pct) : '')
+                + '. Ask me anything about it: concentration, laggards, how you stack up against '
+                + data.index_label + ', or whether a specific holding is still worth keeping.';
+            aiAppend(pfChat, 'agent', welcome);
+            section.style.display = 'block';
         }
         function analyze(symbol) {
             document.getElementById('search-view').style.display = 'none';
@@ -9771,10 +9833,23 @@ def dashboard():
         });
 
         // ── AI Assistant tab ─────────────────────────────────────────────
-        let aiHistory = [];
-        let aiSending = false;
-        let aiCooldownUntil = 0;
-        let aiCooldownTimer = null;
+        // Two chat instances share the same widget code: the Artha tab and the
+        // portfolio chat embedded in the Portfolio tab. Each keeps its own
+        // history/cooldown state; buildExtras() adds per-chat request fields.
+        let pfChatPortfolio = null; // compact /portfolio/analyze payload for the AI
+        const arthaChat = {
+            boxId: 'ai-messages', inputId: 'ai-input', btnId: 'ai-send-btn',
+            history: [], sending: false, cooldownUntil: 0, cooldownTimer: null,
+            buildExtras: function() {
+                const sel = document.getElementById('ai-model-select');
+                return { provider: (sel && sel.value) ? sel.value : 'auto' };
+            }
+        };
+        const pfChat = {
+            boxId: 'pf-chat-messages', inputId: 'pf-chat-input', btnId: 'pf-chat-send',
+            history: [], sending: false, cooldownUntil: 0, cooldownTimer: null,
+            buildExtras: function() { return { provider: 'auto', portfolio: pfChatPortfolio }; }
+        };
 
         function aiEscapeHtml(s) {
             return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -9869,8 +9944,8 @@ def dashboard():
             if (inCode) out.push('<pre><code>' + aiEscapeHtml(codeBuf.join('\\n')) + '</code></pre>');
             return out.join('');
         }
-        function aiAppend(role, text) {
-            const box = document.getElementById('ai-messages');
+        function aiAppend(chat, role, text) {
+            const box = document.getElementById(chat.boxId);
             if (!box) return null;
             const el = document.createElement('div');
             el.className = 'ai-msg ' + role;
@@ -9883,12 +9958,12 @@ def dashboard():
             box.scrollTop = box.scrollHeight;
             return el;
         }
-        function aiScrollBottom() {
-            const box = document.getElementById('ai-messages');
+        function aiScrollBottom(chat) {
+            const box = document.getElementById(chat.boxId);
             if (box) box.scrollTop = box.scrollHeight;
         }
-        function aiCreateThinkingBlock() {
-            const box = document.getElementById('ai-messages');
+        function aiCreateThinkingBlock(chat) {
+            const box = document.getElementById(chat.boxId);
             if (!box) return null;
             const wrap = document.createElement('div');
             wrap.className = 'ai-thinking-block';
@@ -9908,10 +9983,10 @@ def dashboard():
             det.appendChild(steps);
             wrap.appendChild(det);
             box.appendChild(wrap);
-            aiScrollBottom();
+            aiScrollBottom(chat);
             return wrap;
         }
-        function aiAddThinkingStep(block, text) {
+        function aiAddThinkingStep(chat, block, text) {
             if (!block) return;
             const det = block.querySelector('details');
             const steps = block.querySelector('.think-steps');
@@ -9925,7 +10000,7 @@ def dashboard():
             step.textContent = text;
             steps.appendChild(step);
             if (label) label.textContent = text;
-            aiScrollBottom();
+            aiScrollBottom(chat);
         }
         function aiFinishThinkingBlock(block, stepCount) {
             if (!block) return;
@@ -9943,16 +10018,16 @@ def dashboard():
             inp.value = text;
             inp.focus();
         }
-        function aiStartCooldown(seconds, errEl) {
+        function aiStartCooldown(chat, seconds, errEl) {
             const secs = Math.max(1, parseInt(seconds, 10) || 0);
-            aiCooldownUntil = Date.now() + secs * 1000;
-            const sendBtn = document.getElementById('ai-send-btn');
-            const inp = document.getElementById('ai-input');
+            chat.cooldownUntil = Date.now() + secs * 1000;
+            const sendBtn = document.getElementById(chat.btnId);
+            const inp = document.getElementById(chat.inputId);
             if (sendBtn) sendBtn.disabled = true;
             if (inp) inp.disabled = true;
-            if (aiCooldownTimer) clearInterval(aiCooldownTimer);
+            if (chat.cooldownTimer) clearInterval(chat.cooldownTimer);
             const tick = function() {
-                const left = Math.max(0, Math.ceil((aiCooldownUntil - Date.now()) / 1000));
+                const left = Math.max(0, Math.ceil((chat.cooldownUntil - Date.now()) / 1000));
                 if (errEl && errEl.parentNode) {
                     errEl.dataset.cooldown = '1';
                     errEl.textContent = left > 0
@@ -9960,50 +10035,52 @@ def dashboard():
                         : 'Ready. Try again.';
                 }
                 if (left <= 0) {
-                    clearInterval(aiCooldownTimer);
-                    aiCooldownTimer = null;
+                    clearInterval(chat.cooldownTimer);
+                    chat.cooldownTimer = null;
                     if (sendBtn) sendBtn.disabled = false;
                     if (inp) inp.disabled = false;
                 }
             };
             tick();
-            aiCooldownTimer = setInterval(tick, 1000);
+            chat.cooldownTimer = setInterval(tick, 1000);
         }
-        async function aiSendQuery() {
-            if (aiSending) return;
-            if (Date.now() < aiCooldownUntil) return;
-            const inp = document.getElementById('ai-input');
+        async function aiChatSend(chat) {
+            if (chat.sending) return;
+            if (Date.now() < chat.cooldownUntil) return;
+            const inp = document.getElementById(chat.inputId);
             if (!inp) return;
             const message = inp.value.trim();
             if (!message) return;
             inp.value = '';
-            aiAppend('user', message);
-            aiHistory.push({ role: 'user', content: message });
-            aiSending = true;
-            const sendBtn = document.getElementById('ai-send-btn');
+            aiAppend(chat, 'user', message);
+            chat.history.push({ role: 'user', content: message });
+            chat.sending = true;
+            const sendBtn = document.getElementById(chat.btnId);
             if (sendBtn) sendBtn.disabled = true;
             inp.disabled = true;
 
-            const thinkBlock = aiCreateThinkingBlock();
+            const thinkBlock = aiCreateThinkingBlock(chat);
             let agentEl = null;
             let fullReply = '';
             let stepCount = 0;
             let committed = false;
 
             try {
-                const modelSel = document.getElementById('ai-model-select');
-                const chosenProvider = (modelSel && modelSel.value) ? modelSel.value : 'auto';
+                const body = Object.assign(
+                    { message: message, history: chat.history.slice(0, -1) },
+                    chat.buildExtras ? chat.buildExtras() : {}
+                );
                 const res = await fetch('/api/agent/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: message, history: aiHistory.slice(0, -1), provider: chosenProvider })
+                    body: JSON.stringify(body)
                 });
                 if (!res.ok) {
                     const errData = await res.json().catch(() => ({}));
                     if (thinkBlock && thinkBlock.parentNode) thinkBlock.parentNode.removeChild(thinkBlock);
-                    const errEl = aiAppend('error', errData.error || 'Request failed. Please try again.');
-                    aiHistory.pop();
-                    if (res.status === 429) aiStartCooldown(errData.retryAfter || 30, errEl);
+                    const errEl = aiAppend(chat, 'error', errData.error || 'Request failed. Please try again.');
+                    chat.history.pop();
+                    if (res.status === 429) aiStartCooldown(chat, errData.retryAfter || 30, errEl);
                     return;
                 }
                 const reader = res.body.getReader();
@@ -10021,20 +10098,20 @@ def dashboard():
                         try { evt = JSON.parse(line.slice(6)); } catch { continue; }
                         if (evt.type === 'thinking') {
                             stepCount++;
-                            aiAddThinkingStep(thinkBlock, evt.text);
+                            aiAddThinkingStep(chat, thinkBlock, evt.text);
                         } else if (evt.type === 'token') {
                             if (!agentEl) {
                                 aiFinishThinkingBlock(thinkBlock, stepCount);
-                                agentEl = aiAppend('agent', '');
+                                agentEl = aiAppend(chat, 'agent', '');
                                 agentEl.classList.add('streaming');
                             }
                             fullReply += evt.text;
                             agentEl.innerHTML = aiRenderMarkdown(fullReply);
-                            aiScrollBottom();
+                            aiScrollBottom(chat);
                         } else if (evt.type === 'done') {
                             if (agentEl) agentEl.classList.remove('streaming');
                             if (!committed && fullReply) {
-                                aiHistory.push({ role: 'assistant', content: fullReply });
+                                chat.history.push({ role: 'assistant', content: fullReply });
                                 committed = true;
                             }
                             if (stepCount === 0 && thinkBlock && thinkBlock.parentNode) {
@@ -10043,31 +10120,39 @@ def dashboard():
                         } else if (evt.type === 'error') {
                             if (thinkBlock && thinkBlock.parentNode) thinkBlock.parentNode.removeChild(thinkBlock);
                             if (agentEl && agentEl.parentNode) agentEl.parentNode.removeChild(agentEl);
-                            const errEl = aiAppend('error', evt.text || 'Request failed. Please try again.');
-                            aiHistory.pop();
-                            if (evt.retryAfter) aiStartCooldown(evt.retryAfter, errEl);
+                            const errEl = aiAppend(chat, 'error', evt.text || 'Request failed. Please try again.');
+                            chat.history.pop();
+                            if (evt.retryAfter) aiStartCooldown(chat, evt.retryAfter, errEl);
                         }
                     }
                 }
                 // Ensure cleanup if stream ended without explicit done event
                 if (agentEl) agentEl.classList.remove('streaming');
                 if (!committed && fullReply) {
-                    aiHistory.push({ role: 'assistant', content: fullReply });
+                    chat.history.push({ role: 'assistant', content: fullReply });
                 }
                 if (stepCount === 0 && thinkBlock && thinkBlock.parentNode) {
                     thinkBlock.parentNode.removeChild(thinkBlock);
                 }
             } catch(e) {
                 if (thinkBlock && thinkBlock.parentNode) thinkBlock.parentNode.removeChild(thinkBlock);
-                aiAppend('error', 'Network error. Please try again.');
-                aiHistory.pop();
+                aiAppend(chat, 'error', 'Network error. Please try again.');
+                chat.history.pop();
             } finally {
-                aiSending = false;
-                const onCooldown = Date.now() < aiCooldownUntil;
+                chat.sending = false;
+                const onCooldown = Date.now() < chat.cooldownUntil;
                 if (sendBtn) sendBtn.disabled = onCooldown;
                 inp.disabled = onCooldown;
                 if (!onCooldown) inp.focus();
             }
+        }
+        function aiSendQuery() { aiChatSend(arthaChat); }
+        function pfChatSend() { aiChatSend(pfChat); }
+        function pfChatSuggest(text) {
+            const inp = document.getElementById('pf-chat-input');
+            if (!inp || inp.disabled) return;
+            inp.value = text;
+            aiChatSend(pfChat);
         }
         async function aiLoadProviders() {
             const sel = document.getElementById('ai-model-select');
@@ -10103,6 +10188,10 @@ def dashboard():
             const inp = document.getElementById('ai-input');
             if (inp) inp.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); aiSendQuery(); }
+            });
+            const pfInp = document.getElementById('pf-chat-input');
+            if (pfInp) pfInp.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pfChatSend(); }
             });
             aiLoadProviders();
         });
@@ -12741,11 +12830,13 @@ _AGENT_CACHE_TTL_SEC = float(os.environ.get("AGENT_CACHE_TTL_SEC", "300"))
 _AGENT_CACHE_MAX_ENTRIES = 256
 
 
-def _agent_cache_key(history, preferred_provider=None):
+def _agent_cache_key(history, preferred_provider=None, portfolio_context=None):
     """Cache key from the latest user message + the immediately preceding turn
     (to disambiguate follow-ups like 'what about its dividend?'). The user's
     chosen provider is folded in so switching models doesn't return the prior
-    model's cached answer."""
+    model's cached answer. The portfolio context is folded in too, so an
+    answer computed against one user's holdings is never replayed for a
+    different portfolio (or for a portfolio-free question)."""
     if not history:
         return None
     last = history[-1]
@@ -12758,7 +12849,8 @@ def _agent_cache_key(history, preferred_provider=None):
     if len(history) >= 2:
         prev = (history[-2].get("content") or "").strip().lower()[:200]
     pref = (preferred_provider or "auto").strip().lower()
-    return hashlib.sha256(f"{pref}||{prev}||{msg}".encode("utf-8")).hexdigest()
+    pf = portfolio_context or ""
+    return hashlib.sha256(f"{pref}||{pf}||{prev}||{msg}".encode("utf-8")).hexdigest()
 
 
 def _agent_cache_get(key):
@@ -12849,7 +12941,119 @@ class _NarrationFilter:
         return tail
 
 
-def _run_agent_provider_stream(provider, history):
+# ── Portfolio chat context ───────────────────────────────────────────────────
+# The Portfolio tab sends the analyzed portfolio (summary + holdings from
+# /portfolio/analyze) alongside each chat message. It is sanitized into a
+# compact text block and injected as an extra system message, so Artha can
+# answer "how is my portfolio doing", "am I too concentrated", etc. without
+# any server-side per-user state.
+
+_PORTFOLIO_CTX_MAX_HOLDINGS = 40
+
+
+def _pf_num(d, key):
+    v = d.get(key)
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _pf_inr(v):
+    return f"Rs {v:,.0f}" if v is not None else "n/a"
+
+
+def _pf_pct(v):
+    return f"{v:+.2f}%" if v is not None else "n/a"
+
+
+def _agent_portfolio_context(pf):
+    """Build the system-message text for an uploaded portfolio. Accepts the
+    (untrusted) 'portfolio' object from the request body; only whitelisted
+    numeric/string fields make it into the prompt. Returns None if there is
+    no usable portfolio data."""
+    if not isinstance(pf, dict):
+        return None
+    summary = pf.get("summary") if isinstance(pf.get("summary"), dict) else {}
+    holdings = pf.get("holdings") if isinstance(pf.get("holdings"), list) else []
+    holdings = [h for h in holdings if isinstance(h, dict) and h.get("symbol")]
+    if not summary and not holdings:
+        return None
+
+    index_label = str(pf.get("index_label") or "the index")[:40]
+    lines = ["USER PORTFOLIO (from their uploaded broker statement, analyzed on this platform):"]
+
+    if summary:
+        as_of = str(summary.get("as_of") or "")[:20]
+        first_buy = str(summary.get("first_buy_date") or "")[:20]
+        if first_buy or as_of:
+            lines.append(f"- Period: {first_buy or '?'} to {as_of or 'today'}")
+        cur = _pf_num(summary, "current_value")
+        inv = _pf_num(summary, "invested")
+        wdr = _pf_num(summary, "withdrawn")
+        gain = _pf_num(summary, "abs_gain")
+        gain_pct = _pf_num(summary, "abs_return_pct")
+        line = f"- Current value {_pf_inr(cur)} | invested {_pf_inr(inv)}"
+        if wdr:
+            line += f" | withdrawn {_pf_inr(wdr)}"
+        line += f" | net P&L {_pf_inr(gain)} ({_pf_pct(gain_pct)} absolute)"
+        lines.append(line)
+        lines.append(
+            f"- Realized P&L {_pf_inr(_pf_num(summary, 'realized_pnl'))} | "
+            f"unrealized P&L {_pf_inr(_pf_num(summary, 'unrealized_pnl'))}")
+        xirr = _pf_num(summary, "xirr_pct")
+        idx_xirr = _pf_num(summary, "index_xirr_pct")
+        alpha = _pf_num(summary, "alpha_pct")
+        lines.append(
+            f"- XIRR {_pf_pct(xirr)} vs {index_label} XIRR {_pf_pct(idx_xirr)} "
+            f"(same cashflows in the index) -> alpha {_pf_pct(alpha)}")
+        vol = _pf_num(summary, "volatility_pct")
+        mdd = _pf_num(summary, "max_drawdown_pct")
+        sharpe = _pf_num(summary, "sharpe")
+        beta = _pf_num(summary, "beta")
+        if any(v is not None for v in (vol, mdd, sharpe, beta)):
+            lines.append(
+                "- Risk: volatility " + (f"{vol:.1f}%" if vol is not None else "n/a")
+                + ", max drawdown " + (f"{mdd:.1f}%" if mdd is not None else "n/a")
+                + ", Sharpe " + (f"{sharpe:.2f}" if sharpe is not None else "n/a")
+                + f", beta vs {index_label} " + (f"{beta:.2f}" if beta is not None else "n/a"))
+
+    if holdings:
+        shown = holdings[:_PORTFOLIO_CTX_MAX_HOLDINGS]
+        lines.append(
+            f"Current holdings ({len(holdings)} stocks) — "
+            "symbol | qty | avg cost | invested | price | value | P&L | P&L% | weight%:")
+        for h in shown:
+            sym = str(h.get("symbol"))[:20]
+            name = h.get("name")
+            name = name[:40] if isinstance(name, str) else ""
+            qty = _pf_num(h, "qty")
+            cells = [
+                f"{sym} ({name})" if name and name != sym else sym,
+                f"{qty:g}" if qty is not None else "?",
+                _pf_inr(_pf_num(h, "avg_cost")),
+                _pf_inr(_pf_num(h, "invested")),
+                _pf_inr(_pf_num(h, "current_price")),
+                _pf_inr(_pf_num(h, "current_value")),
+                _pf_inr(_pf_num(h, "pnl")),
+                _pf_pct(_pf_num(h, "pnl_pct")),
+                (f"{_pf_num(h, 'weight_pct'):.1f}%" if _pf_num(h, "weight_pct") is not None else "n/a"),
+            ]
+            lines.append("  " + " | ".join(cells))
+        if len(holdings) > len(shown):
+            rest_w = sum(w for w in (_pf_num(h, "weight_pct") for h in holdings[len(shown):]) if w)
+            lines.append(f"  ...and {len(holdings) - len(shown)} smaller positions"
+                         + (f" (combined weight {rest_w:.1f}%)" if rest_w else ""))
+
+    lines.append("""
+PORTFOLIO MODE — for this conversation:
+- The user's questions about "my portfolio", their holdings, allocation, concentration, diversification, winners/losers, or performance vs the index ARE in scope. The 'whole-portfolio planning' exclusion in SCOPE does NOT apply to analyzing the actual holdings above. Tax advice, brokerage/account support, and non-equity asset allocation stay out of scope.
+- Answer portfolio-math questions (P&L, weights, XIRR vs index, best/worst) directly from the numbers above — do not call tools for data that is already here, and never invent holdings that are not listed.
+- For a view on a specific holding ("should I keep X", "is my Y position safe"), call the normal research tools (verdict/DCF/technicals/dividends/correlation) on that ticker and tie the answer back to their position size and P&L.
+- Weight% is the share of current portfolio value. Flag concentration when one stock is above ~25% or the top 3 are above ~60%, and thin diversification when almost everything sits in one sector.
+- XIRR vs index XIRR is the honest scorecard: positive alpha means they beat the same cashflows parked in the index. Use it when they ask "am I doing well".
+- Keep the persona: decisive, numbers-first, one crisp risk line. Never dump the whole table back at the user — cite only the rows that matter for the question.""")
+    return "\n".join(lines)
+
+
+def _run_agent_provider_stream(provider, history, portfolio_context=None):
     """Generator yielding SSE events for ONE provider. Raises
     _ProviderUnavailableError on the first request if the provider is unusable
     (rate-limited, auth failure, network error) so the failover wrapper can
@@ -12864,6 +13068,8 @@ def _run_agent_provider_stream(provider, history):
 
     tools = _groq_build_tools()
     messages = [{"role": "system", "content": _AGENT_SYSTEM_PROMPT}]
+    if portfolio_context:
+        messages.append({"role": "system", "content": portfolio_context})
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -13041,13 +13247,13 @@ def _run_agent_provider_stream(provider, history):
     yield {"type": "error", "text": "Could not complete the analysis. Please try again."}
 
 
-def _run_agent_with_failover_stream(history, preferred_provider=None):
+def _run_agent_with_failover_stream(history, preferred_provider=None, portfolio_context=None):
     """Top-level streaming generator. Checks the response cache first; on miss,
     walks through the provider list (Gemini → Groq → Cerebras), failing over
     on rate-limit / auth / network errors. If `preferred_provider` is set and
     enabled, it's tried first; the remaining providers still act as fallbacks
     so a transient rate-limit on the user's pick doesn't kill the request."""
-    cache_key = _agent_cache_key(history, preferred_provider)
+    cache_key = _agent_cache_key(history, preferred_provider, portfolio_context)
     cached = _agent_cache_get(cache_key)
     if cached:
         _metrics_record_cache_hit()
@@ -13070,7 +13276,7 @@ def _run_agent_with_failover_stream(history, preferred_provider=None):
     for provider in providers:
         full_response_parts = []
         try:
-            gen = _run_agent_provider_stream(provider, history)
+            gen = _run_agent_provider_stream(provider, history, portfolio_context)
             for event in gen:
                 if event.get("type") == "token":
                     full_response_parts.append(event["text"])
@@ -13099,12 +13305,12 @@ def _run_agent_with_failover_stream(history, preferred_provider=None):
     yield err_event
 
 
-def _run_agent_groq(history):
+def _run_agent_groq(history, portfolio_context=None):
     """Non-streaming JSON fallback — drains the streaming failover wrapper and
     returns the full text. The frontend uses /api/agent/stream; this exists
     purely for /api/agent/query consumers."""
     parts = []
-    for event in _run_agent_with_failover_stream(history):
+    for event in _run_agent_with_failover_stream(history, portfolio_context=portfolio_context):
         et = event.get("type")
         if et == "token":
             parts.append(event.get("text", ""))
@@ -13166,6 +13372,7 @@ def agent_stream_route():
     if not message:
         return jsonify({"error": "message is required"}), 400
     preferred_provider = (data.get("provider") or "").strip().lower() or None
+    portfolio_context = _agent_portfolio_context(data.get("portfolio"))
 
     client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")
     wait_secs = _agent_throttle_check(client_ip)
@@ -13177,7 +13384,7 @@ def agent_stream_route():
 
     def generate():
         try:
-            for event in _run_agent_with_failover_stream(history, preferred_provider=preferred_provider):
+            for event in _run_agent_with_failover_stream(history, preferred_provider=preferred_provider, portfolio_context=portfolio_context):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             import re as _re
@@ -13203,6 +13410,7 @@ def agent_query_route():
     history, message = _agent_parse_history(data)
     if not message:
         return jsonify({"error": "message is required"}), 400
+    portfolio_context = _agent_portfolio_context(data.get("portfolio"))
 
     client_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")
     wait_secs = _agent_throttle_check(client_ip)
@@ -13217,7 +13425,7 @@ def agent_query_route():
             "retryAfter": 10,
         }), 429
     try:
-        reply = _run_agent_groq(history)
+        reply = _run_agent_groq(history, portfolio_context=portfolio_context)
         return jsonify({"response": reply})
     except _GroqRateLimitError as e:
         retry_after = int(getattr(e, "retry_after", 30) or 30)
