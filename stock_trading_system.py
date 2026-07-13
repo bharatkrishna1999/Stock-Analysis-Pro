@@ -6382,7 +6382,7 @@ def dashboard():
                 <button class="nav-link" data-tab="dcf" onclick="switchTab('dcf', event)">DCF Valuation</button>
                 <button class="nav-link" data-tab="dividend" onclick="switchTab('dividend', event)">Dividend Analyzer</button>
                 <button class="nav-link" data-tab="regression" onclick="switchTab('regression', event)">Market Connection</button>
-                <button class="nav-link" data-tab="portfolio" onclick="switchTab('portfolio', event)">&#128200; Portfolio</button>
+                <button class="nav-link" data-tab="portfolio" onclick="switchTab('portfolio', event)">Portfolio</button>
                 <button class="nav-link" data-tab="scanner" onclick="switchTab('scanner', event)">&#128269; Scanner</button>
                 <button class="nav-link" data-tab="ai" onclick="switchTab('ai', event)">&#10024; Artha</button>
             </div>
@@ -6398,7 +6398,7 @@ def dashboard():
         <button class="mobile-menu-item" data-tab="dcf">DCF Valuation</button>
         <button class="mobile-menu-item" data-tab="dividend">Dividend Analyzer</button>
         <button class="mobile-menu-item" data-tab="regression">Market Connection</button>
-        <button class="mobile-menu-item" data-tab="portfolio">&#128200; Portfolio</button>
+        <button class="mobile-menu-item" data-tab="portfolio">Portfolio</button>
         <button class="mobile-menu-item" data-tab="scanner">&#128269; Scanner</button>
         <button class="mobile-menu-item" data-tab="ai">&#10024; Artha</button>
     </div>
@@ -6461,7 +6461,7 @@ def dashboard():
         </div>
         <div id="portfolio-tab" class="tab-content">
             <div class="card" style="margin-bottom: 20px;">
-                <h2>&#128200; Portfolio Performance</h2>
+                <h2>Portfolio Performance</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.92em; line-height: 1.7;">
                     Upload your <strong style="color: var(--text-primary);">Groww Stocks P&amp;L report</strong> (Profile &rarr; Reports &rarr; Stocks P&amp;L) or any Groww
                     statement with buy dates, prices and values, to see how your portfolio has performed against an index of your
