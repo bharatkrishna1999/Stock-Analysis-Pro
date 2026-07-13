@@ -4059,16 +4059,22 @@ PORTFOLIO_INDEX_OPTIONS = {
     'NASDAQ100': {'label': 'Nasdaq 100 (USD)', 'tickers': ['^NDX', 'QQQ']},
 }
 
-# Column-name synonyms seen across Groww statement exports (holdings,
-# order history, P&L). Matching is done on a normalized lowercase header.
-# Order matters: more specific fields must be matched before generic ones
-# (e.g. "current value" before "value" → amount).
+# Column-name synonyms seen across Groww exports (holdings statement, order
+# history, and the Stocks P&L report with its "Realised trades" /
+# "Unrealised trades" tables). Matching is done on a normalized lowercase
+# header. Order matters: more specific fields must be matched before generic
+# ones (e.g. "sell date" and "closing date" before plain "date").
 PORTFOLIO_COL_SYNONYMS = {
     'isin': ['isin', 'isin code'],
+    'sell_date': ['sell date', 'sale date', 'sold date'],
+    'sell_price': ['sell price', 'avg sell price', 'average sell price', 'sale price'],
+    'sell_value': ['sell value', 'sale value', 'sold value'],
     'current_value': ['current value', 'cur val', 'cur value', 'present value',
                       'market value', 'closing value', 'holding value'],
     'current_price': ['current price', 'ltp', 'last traded price', 'closing price',
                       'live price'],
+    'ignore': ['closing date', 'realised pl', 'unrealised pl', 'realised p l',
+               'unrealised p l', 'remark', 'remarks'],
     'date': ['date', 'trade date', 'buy date', 'purchase date', 'transaction date',
              'order date', 'execution date', 'execution date time',
              'order execution time', 'time of buying', 'buy time', 'executed at'],
@@ -4115,26 +4121,54 @@ def _portfolio_match_column(header):
     return None
 
 
-def _portfolio_find_header(df_raw):
-    """Locate the header row of the transactions table inside a raw sheet.
+def _portfolio_header_fields(row):
+    """Field→column map when a raw row is a table header, else None.
 
-    Groww exports carry preamble rows (account holder, disclaimers) before the
-    actual table, so every early row is scored by how many known columns it
-    contains. Returns (row_index, {field: column_index}) or None.
+    A header needs an identity column (name/symbol/ISIN), a numeric column and
+    at least 3 recognized columns overall — data rows never satisfy this.
     """
-    best = None
-    for i in range(min(len(df_raw), 60)):
-        fields = {}
-        for col_idx, cell in enumerate(df_raw.iloc[i]):
-            f = _portfolio_match_column(cell)
-            if f and f not in fields:
-                fields[f] = col_idx
-        has_identity = any(k in fields for k in ('name', 'symbol', 'isin'))
-        has_numbers = any(k in fields for k in ('qty', 'price', 'amount', 'current_value'))
-        if has_identity and has_numbers and len(fields) >= 3:
-            if best is None or len(fields) > len(best[1]):
-                best = (i, fields)
-    return best
+    fields = {}
+    for col_idx, cell in enumerate(row):
+        f = _portfolio_match_column(cell)
+        if f and f != 'ignore' and f not in fields:
+            fields[f] = col_idx
+    has_identity = any(k in fields for k in ('name', 'symbol', 'isin'))
+    has_numbers = any(k in fields for k in ('qty', 'price', 'amount', 'current_value'))
+    if has_identity and has_numbers and len(fields) >= 3:
+        return fields
+    return None
+
+
+def _portfolio_extract_tables(df_raw):
+    """All (fields, start_row, end_row) tables in a raw sheet.
+
+    Groww's P&L report puts several tables in one sheet ("Realised trades"
+    then "Unrealised trades"), separated by section-title and blank rows, so
+    scanning continues after each table ends instead of stopping at the first.
+    """
+    tables = []
+    i, n = 0, len(df_raw)
+    while i < n:
+        fields = _portfolio_header_fields(df_raw.iloc[i])
+        if not fields:
+            i += 1
+            continue
+        j = i + 1
+        blank_streak = 0
+        while j < n:
+            row = df_raw.iloc[j]
+            if _portfolio_header_fields(row):
+                break
+            if row.notna().sum() == 0:
+                blank_streak += 1
+                if blank_streak >= 8:
+                    break
+            else:
+                blank_streak = 0
+            j += 1
+        tables.append((fields, i + 1, j))
+        i = j
+    return tables
 
 
 def _portfolio_to_float(value):
@@ -4181,48 +4215,16 @@ def _portfolio_to_date(value):
     return ts.normalize()
 
 
-def parse_portfolio_file(file_bytes, filename):
-    """Parse an uploaded Groww Excel/CSV into normalized transactions.
+def _portfolio_parse_table(df_raw, fields, start, end, stats):
+    """Normalized transactions from one table's rows.
 
-    Returns (transactions, warnings). Each transaction is a dict:
-    {name, symbol, date (Timestamp), side ('BUY'|'SELL'), qty, price, amount,
-     stated_current_value (float|None)}.
-    Raises ValueError with a user-facing message when nothing usable is found.
+    Handles both layouts: transaction-style rows (one leg per row, optional
+    Buy/Sell type column) and P&L-report rows, where a single "Realised
+    trades" row carries the buy leg AND the sell leg (Sell date/price/value).
     """
-    fname = (filename or '').lower()
-    sheets = {}
-    if fname.endswith('.csv'):
-        try:
-            sheets = {'csv': pd.read_csv(io.BytesIO(file_bytes), header=None, dtype=object)}
-        except Exception:
-            raise ValueError('Could not read the CSV file. Please upload the statement exported from Groww.')
-    else:
-        try:
-            sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, header=None, dtype=object)
-        except Exception:
-            raise ValueError('Could not read the Excel file. Please upload the .xlsx statement exported from Groww.')
-
-    # Pick the sheet whose header row matches the most known columns
-    best_sheet = None
-    for sheet_name, df_raw in sheets.items():
-        if df_raw is None or df_raw.empty:
-            continue
-        found = _portfolio_find_header(df_raw)
-        if found and (best_sheet is None or len(found[1]) > len(best_sheet[2])):
-            best_sheet = (sheet_name, found[0], found[1], df_raw)
-    if best_sheet is None:
-        raise ValueError(
-            'Could not find a transactions table in the file. Expected columns like '
-            '"Stock name", "Buy date", "Quantity", "Buy price" / "Buy value" and "Current value".')
-
-    _sheet_name, header_row, fields, df_raw = best_sheet
-    warnings_list = []
-    transactions = []
-    skipped_no_date = 0
-    skipped_no_numbers = 0
-    blank_streak = 0
-
-    for i in range(header_row + 1, len(df_raw)):
+    txns = []
+    today = pd.Timestamp.today().normalize()
+    for i in range(start, end):
         row = df_raw.iloc[i]
 
         def cell(field):
@@ -4231,14 +4233,12 @@ def parse_portfolio_file(file_bytes, filename):
 
         name = cell('name')
         symbol = cell('symbol')
+        isin = cell('isin')
         name = str(name).strip() if name is not None and not pd.isna(name) else ''
         symbol = str(symbol).strip() if symbol is not None and not pd.isna(symbol) else ''
+        isin = str(isin).strip().upper() if isin is not None and not pd.isna(isin) else ''
         if not name and not symbol:
-            blank_streak += 1
-            if blank_streak >= 5:
-                break  # ran past the end of the table into footer/disclaimer rows
-            continue
-        blank_streak = 0
+            continue  # blank or spacer row
         if _portfolio_match_column(name or symbol):
             continue  # a repeated header row inside the table
 
@@ -4247,6 +4247,9 @@ def parse_portfolio_file(file_bytes, filename):
         amount = _portfolio_to_float(cell('amount'))
         cur_val = _portfolio_to_float(cell('current_value'))
         txn_date = _portfolio_to_date(cell('date'))
+        sell_date = _portfolio_to_date(cell('sell_date'))
+        sell_price = _portfolio_to_float(cell('sell_price'))
+        sell_value = _portfolio_to_float(cell('sell_value'))
 
         # Derive whichever of qty/price/amount is missing from the other two
         if amount is None and qty is not None and price is not None:
@@ -4267,36 +4270,97 @@ def parse_portfolio_file(file_bytes, filename):
             qty = abs(qty)
             amount = abs(amount) if amount is not None else None
 
-        if txn_date is None or txn_date > pd.Timestamp.today().normalize():
+        if txn_date is None or txn_date > today:
             # Only flag rows that actually look like transactions (footer
             # notes and disclaimers land here too, with no numbers at all)
             if qty is not None or amount is not None:
-                skipped_no_date += 1
+                stats['no_date'] += 1
             continue
-        if not qty or not amount or qty <= 0 or amount <= 0:
-            skipped_no_numbers += 1
+        # amount == 0 is legitimate: bonus/rights shares arrive with a zero
+        # buy value in the P&L report but still add quantity to the holding
+        if not qty or qty <= 0 or amount is None or amount < 0:
+            stats['no_numbers'] += 1
             continue
 
-        transactions.append({
-            'name': name, 'symbol': symbol, 'date': txn_date, 'side': side,
-            'qty': float(qty), 'price': float(price) if price else float(amount) / float(qty),
-            'amount': float(amount),
-            'stated_current_value': cur_val,
-        })
+        base = {'name': name, 'symbol': symbol, 'isin': isin}
+        txns.append(dict(base, date=txn_date, side=side, qty=float(qty),
+                         price=float(price) if price else float(amount) / float(qty),
+                         amount=float(amount), stated_current_value=cur_val))
 
-    if not transactions:
-        if skipped_no_date:
+        # P&L-report realised rows: emit the matching sell leg (a zero sell
+        # value still closes the position — e.g. shares that became worthless)
+        if side == 'BUY' and sell_date is not None and sell_date <= today:
+            s_amount = sell_value
+            if s_amount is None and sell_price is not None:
+                s_amount = qty * sell_price
+            if s_amount is not None and s_amount >= 0:
+                # matched_cost preserves Groww's exact lot pairing so realised
+                # P&L reproduces the report instead of average-cost pooling
+                txns.append(dict(base, date=max(sell_date, txn_date), side='SELL',
+                                 qty=float(qty), price=float(s_amount) / float(qty),
+                                 amount=float(s_amount), stated_current_value=None,
+                                 matched_cost=float(amount)))
+    return txns
+
+
+def parse_portfolio_file(file_bytes, filename):
+    """Parse an uploaded Groww Excel/CSV into normalized transactions.
+
+    Supports the holdings/order-history statements as well as the Stocks P&L
+    report (Trade Level sheet with "Realised trades" + "Unrealised trades"
+    tables). Returns (transactions, warnings); each transaction is a dict:
+    {name, symbol, isin, date (Timestamp), side ('BUY'|'SELL'), qty, price,
+     amount, stated_current_value (float|None)}.
+    Raises ValueError with a user-facing message when nothing usable is found.
+    """
+    fname = (filename or '').lower()
+    if fname.endswith('.csv'):
+        try:
+            sheets = {'csv': pd.read_csv(io.BytesIO(file_bytes), header=None, dtype=object)}
+        except Exception:
+            raise ValueError('Could not read the CSV file. Please upload the statement exported from Groww.')
+    else:
+        try:
+            sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, header=None, dtype=object)
+        except Exception:
+            raise ValueError('Could not read the Excel file. Please upload the .xlsx statement exported from Groww.')
+
+    # Parse every table in every sheet, then keep the sheet with the most
+    # dated transactions. This picks "Trade Level" over "Scrip Level" in the
+    # P&L report (the scrip sheet aggregates without dates) and avoids double
+    # counting the same trades from both sheets.
+    best_txns, best_stats, any_table = None, None, False
+    for _sheet_name, df_raw in sheets.items():
+        if df_raw is None or df_raw.empty:
+            continue
+        tables = _portfolio_extract_tables(df_raw)
+        if tables:
+            any_table = True
+        stats = {'no_date': 0, 'no_numbers': 0}
+        sheet_txns = []
+        for fields, start, end in tables:
+            sheet_txns.extend(_portfolio_parse_table(df_raw, fields, start, end, stats))
+        if best_txns is None or len(sheet_txns) > len(best_txns):
+            best_txns, best_stats = sheet_txns, stats
+
+    if not any_table:
+        raise ValueError(
+            'Could not find a transactions table in the file. Expected columns like '
+            '"Stock name", "Buy date", "Quantity", "Buy price" / "Buy value" and "Current value".')
+    if not best_txns:
+        if best_stats and best_stats['no_date']:
             raise ValueError(
                 'The file was read but no rows had a usable buy date. Time-based analysis '
                 '(XIRR, performance vs index) needs the date of each purchase — please export '
                 'the statement that includes transaction dates.')
         raise ValueError('The file was read but no usable transaction rows were found.')
 
-    if skipped_no_date:
-        warnings_list.append(f'{skipped_no_date} row(s) skipped — missing or invalid date.')
-    if skipped_no_numbers:
-        warnings_list.append(f'{skipped_no_numbers} row(s) skipped — missing quantity/price/amount.')
-    return transactions, warnings_list
+    warnings_list = []
+    if best_stats['no_date']:
+        warnings_list.append(f"{best_stats['no_date']} row(s) skipped — missing or invalid date.")
+    if best_stats['no_numbers']:
+        warnings_list.append(f"{best_stats['no_numbers']} row(s) skipped — missing quantity/price/amount.")
+    return best_txns, warnings_list
 
 
 _PORTFOLIO_NAME_TO_TICKER = None
@@ -4346,6 +4410,79 @@ def resolve_portfolio_ticker(name, symbol):
     return None
 
 
+_ISIN_YAHOO_CACHE = {}
+_ISIN_RE = re.compile(r'^[A-Z]{2}[A-Z0-9]{9}[0-9]$')
+
+
+def _resolve_isin_yahoo(isin):
+    """Yahoo ticker for an ISIN via the Yahoo search API, or None.
+
+    Groww's P&L report identifies scrips by (often abbreviated) name + ISIN;
+    the ISIN is the reliable identifier, so unresolved names fall back to
+    this lookup. Results are cached for the process lifetime.
+    """
+    isin = (isin or '').strip().upper()
+    if not _ISIN_RE.match(isin):
+        return None
+    if isin in _ISIN_YAHOO_CACHE:
+        return _ISIN_YAHOO_CACHE[isin]
+    result = None
+    try:
+        quotes = yf.Search(isin, max_results=5).quotes or []
+        symbols = [q.get('symbol', '') for q in quotes if q.get('symbol')]
+        result = (next((s for s in symbols if s.endswith('.NS')), None)
+                  or next((s for s in symbols if s.endswith('.BO')), None))
+    except Exception as e:
+        print(f"[portfolio] ISIN lookup failed for {isin}: {e}")
+    _ISIN_YAHOO_CACHE[isin] = result
+    return result
+
+
+def resolve_portfolio_instruments(transactions):
+    """Resolve every transaction to (display_symbol, yahoo_ticker, full_name).
+
+    Tries the free name/symbol resolution first, then parallel ISIN lookups
+    for the rest. Sets txn['ticker'] (display) on each transaction and returns
+    ({display: yahoo_ticker}, {display: full_name}, [unmatched labels]).
+    """
+    unique = {}
+    for txn in transactions:
+        key = (txn['symbol'] or txn['name']).upper()
+        txn['_key'] = key
+        unique.setdefault(key, {'name': txn['name'], 'symbol': txn['symbol'],
+                                'isin': txn.get('isin', '')})
+
+    resolved = {}
+    needs_isin = []
+    for key, info in unique.items():
+        tkr = resolve_portfolio_ticker(info['name'], info['symbol'])
+        if tkr:
+            resolved[key] = (tkr, primary_yahoo_ticker(tkr))
+        elif info['isin'] and _ISIN_RE.match(info['isin']):
+            needs_isin.append(key)
+        else:
+            resolved[key] = None
+    if needs_isin:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            lookups = ex.map(lambda k: _resolve_isin_yahoo(unique[k]['isin']), needs_isin)
+            for key, yahoo in zip(needs_isin, lookups):
+                base = yahoo.split('.')[0].upper() if yahoo else None
+                resolved[key] = (base or yahoo, yahoo) if yahoo else None
+
+    yahoo_map, name_map, unmatched = {}, {}, []
+    for txn in transactions:
+        pair = resolved.get(txn.pop('_key'))
+        if pair is None:
+            txn['ticker'] = None
+            unmatched.append(txn['name'] or txn['symbol'])
+            continue
+        display, yahoo = pair
+        txn['ticker'] = display
+        yahoo_map.setdefault(display, yahoo)
+        name_map.setdefault(display, TICKER_TO_NAME.get(display) or (txn['name'] or display).title())
+    return yahoo_map, name_map, unmatched
+
+
 def compute_xirr(cashflows):
     """Annualized money-weighted return (XIRR) via bisection.
 
@@ -4387,8 +4524,10 @@ def compute_xirr(cashflows):
 def _portfolio_fetch_closes(tickers, start_date):
     """Daily close prices for a list of Yahoo tickers from start_date to today."""
     start = (start_date - pd.Timedelta(days=10)).strftime('%Y-%m-%d')
+    # threads=True: P&L reports can hold 100+ scrips and this is a single
+    # user-triggered request, unlike the scanner's sustained polling
     data = yf.download(tickers, start=start, interval='1d', progress=False,
-                       threads=False, auto_adjust=False, timeout=20)
+                       threads=True, auto_adjust=False, timeout=20)
     if data is None or data.empty:
         return pd.DataFrame()
     closes = data['Close'] if 'Close' in data else data
@@ -4493,41 +4632,45 @@ def compute_portfolio_performance(transactions, index_key):
     """
     warnings_list = []
 
-    # ── Resolve each row to a Yahoo ticker ────────────────────────────────
-    resolved = {}
-    unmatched = []
-    for txn in transactions:
-        key = (txn['symbol'] or txn['name']).upper()
-        if key in resolved:
-            txn['ticker'] = resolved[key]
-            continue
-        ticker = resolve_portfolio_ticker(txn['name'], txn['symbol'])
-        resolved[key] = ticker
-        txn['ticker'] = ticker
-        if ticker is None:
-            unmatched.append(txn['name'] or txn['symbol'])
+    # ── Resolve each row to a Yahoo ticker (name/symbol, then ISIN) ───────
+    yahoo_map, display_names, unmatched = resolve_portfolio_instruments(transactions)
     usable = [t for t in transactions if t['ticker']]
     if unmatched:
         warnings_list.append(
-            'Not recognized as NSE stocks (excluded from analysis): ' + ', '.join(sorted(set(unmatched))))
+            'Not recognized as NSE/BSE stocks (excluded from analysis): ' + ', '.join(sorted(set(unmatched))))
     if not usable:
-        raise ValueError('None of the stocks in the file could be matched to NSE tickers.')
+        raise ValueError('None of the stocks in the file could be matched to NSE/BSE tickers.')
 
     # ── Fetch price history for every held stock ──────────────────────────
     first_date = min(t['date'] for t in usable)
     tickers = sorted({t['ticker'] for t in usable})
-    yahoo_map = {tkr: primary_yahoo_ticker(tkr) for tkr in tickers}
-    closes = _portfolio_fetch_closes(list(yahoo_map.values()), first_date)
+    closes = _portfolio_fetch_closes([yahoo_map[t] for t in tickers], first_date)
     if closes.empty:
         raise ValueError('Could not download price history for the portfolio stocks. Please try again.')
 
-    dead = [tkr for tkr, ytkr in yahoo_map.items()
-            if ytkr not in closes.columns or closes[ytkr].dropna().empty]
+    # Scrips with no price history on Yahoo (delisted/suspended). Fully
+    # exited positions keep their buy/sell cashflows (they still shape XIRR
+    # and the index comparison) but can't contribute to the daily value
+    # curve; still-open ones have to be excluded entirely.
+    dead = [tkr for tkr in tickers
+            if yahoo_map[tkr] not in closes.columns or closes[yahoo_map[tkr]].dropna().empty]
     if dead:
-        warnings_list.append('No price history available (excluded): ' + ', '.join(dead))
-        usable = [t for t in usable if t['ticker'] not in dead]
+        net_qty = {tkr: 0.0 for tkr in dead}
+        for t in usable:
+            if t['ticker'] in net_qty:
+                net_qty[t['ticker']] += t['qty'] if t['side'] == 'BUY' else -t['qty']
+        open_dead = sorted(tkr for tkr, q in net_qty.items() if abs(q) > 1e-6)
+        closed_dead = sorted(tkr for tkr in dead if tkr not in open_dead)
+        if open_dead:
+            warnings_list.append(
+                'No price history available — these open holdings were excluded: ' + ', '.join(open_dead))
+            usable = [t for t in usable if t['ticker'] not in open_dead]
+        if closed_dead:
+            warnings_list.append(
+                'No longer quoted (delisted/suspended) but fully sold — their buys/sells are '
+                'included in returns, though not in the chart while they were held: ' + ', '.join(closed_dead))
         tickers = [tkr for tkr in tickers if tkr not in dead]
-        if not usable:
+        if not usable or not tickers:
             raise ValueError('Price history could not be fetched for any stock in the file.')
         first_date = min(t['date'] for t in usable)
 
@@ -4544,10 +4687,14 @@ def compute_portfolio_performance(transactions, index_key):
     qty_events = pd.DataFrame(0.0, index=dates, columns=tickers)
     flow_events = pd.Series(0.0, index=dates)  # +ve = money into the portfolio
     for t in usable:
+        # Delisted-but-closed scrips have no price column: they stay in the
+        # XIRR cashflows below but can't enter the daily value/return series.
+        if t['ticker'] not in qty_events.columns:
+            continue
         pos = _asof_pos(t['date'])
+        flow_events.iloc[pos] += t['amount'] if t['side'] == 'BUY' else -t['amount']
         signed_qty = t['qty'] if t['side'] == 'BUY' else -t['qty']
         qty_events.iloc[pos, qty_events.columns.get_loc(t['ticker'])] += signed_qty
-        flow_events.iloc[pos] += t['amount'] if t['side'] == 'BUY' else -t['amount']
     qty_cum = qty_events.cumsum()
 
     value_matrix = pd.DataFrame(0.0, index=dates, columns=tickers)
@@ -4608,36 +4755,48 @@ def compute_portfolio_performance(transactions, index_key):
         if len(joined) >= 20 and float(joined.iloc[:, 1].var()) > 1e-12:
             beta = float(joined.iloc[:, 0].cov(joined.iloc[:, 1]) / joined.iloc[:, 1].var())
 
-    # ── Per-holding summary (average-cost accounting) ─────────────────────
+    # ── Per-scrip summary (average-cost accounting) ───────────────────────
+    # Runs over every resolved scrip (including delisted-but-closed ones, for
+    # realised P&L); only positions still held appear in the holdings table.
     holdings = []
-    for tkr in tickers:
+    realized_total = 0.0
+    for tkr in sorted({t['ticker'] for t in usable}):
         txns = sorted((t for t in usable if t['ticker'] == tkr), key=lambda t: t['date'])
         qty = cost = realized = 0.0
         for t in txns:
             if t['side'] == 'BUY':
                 qty += t['qty']
                 cost += t['amount']
+            elif t.get('matched_cost') is not None:
+                # P&L-report sell: Groww already matched this lot's buy cost
+                realized += t['amount'] - t['matched_cost']
+                cost -= min(t['matched_cost'], cost)
+                qty -= min(t['qty'], qty)
             else:
                 avg = cost / qty if qty > 0 else 0.0
                 sell_qty = min(t['qty'], qty)
                 realized += t['amount'] - avg * sell_qty
                 cost -= avg * sell_qty
                 qty -= sell_qty
-        last_px = float(px[yahoo_map[tkr]].dropna().iloc[-1]) if not px[yahoo_map[tkr]].dropna().empty else 0.0
+        realized_total += realized
+        if qty <= 1e-9:
+            continue
+        px_col = px[yahoo_map[tkr]].dropna() if tkr in tickers else pd.Series(dtype=float)
+        last_px = float(px_col.iloc[-1]) if not px_col.empty else 0.0
         cur_val = qty * last_px
-        pnl = cur_val - cost + realized
-        basis = cost if cost > 0 else sum(t['amount'] for t in txns if t['side'] == 'BUY')
+        pnl = cur_val - cost
         holdings.append({
             'symbol': tkr,
-            'name': TICKER_TO_NAME.get(tkr, tkr),
+            'name': display_names.get(tkr, tkr),
             'qty': round(qty, 4),
             'avg_cost': round(cost / qty, 2) if qty > 0 else None,
             'invested': round(cost, 2),
             'current_price': round(last_px, 2),
             'current_value': round(cur_val, 2),
             'pnl': round(pnl, 2),
-            'pnl_pct': round(pnl / basis * 100.0, 2) if basis > 0 else None,
+            'pnl_pct': round(pnl / cost * 100.0, 2) if cost > 0 else None,
         })
+    unrealized_total = sum(h['pnl'] for h in holdings)
     holdings.sort(key=lambda h: h['current_value'], reverse=True)
     total_cv = sum(h['current_value'] for h in holdings)
     for h in holdings:
@@ -4663,6 +4822,8 @@ def compute_portfolio_performance(transactions, index_key):
             'current_value': round(current_value, 2),
             'abs_gain': round(abs_gain, 2),
             'abs_return_pct': round(abs_return_pct, 2) if abs_return_pct is not None else None,
+            'realized_pnl': round(realized_total, 2),
+            'unrealized_pnl': round(unrealized_total, 2),
             'xirr_pct': round(xirr * 100.0, 2) if xirr is not None else None,
             'index_xirr_pct': round(idx_xirr * 100.0, 2) if idx_xirr is not None else None,
             'alpha_pct': round((xirr - idx_xirr) * 100.0, 2) if xirr is not None and idx_xirr is not None else None,
@@ -6291,8 +6452,9 @@ def dashboard():
             <div class="card" style="margin-bottom: 20px;">
                 <h2>&#128200; Portfolio Performance</h2>
                 <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.92em; line-height: 1.7;">
-                    Upload your <strong style="color: var(--text-primary);">Groww statement</strong> (Excel with buy dates, prices and current value)
-                    to see how your portfolio has performed against an index of your choice &mdash; with XIRR, alpha, drawdown and other key indicators.
+                    Upload your <strong style="color: var(--text-primary);">Groww Stocks P&amp;L report</strong> (Profile &rarr; Reports &rarr; Stocks P&amp;L) or any Groww
+                    statement with buy dates, prices and values, to see how your portfolio has performed against an index of your
+                    choice &mdash; with XIRR, alpha, drawdown and other key indicators.
                 </p>
                 <div style="display: grid; grid-template-columns: 1fr 260px; gap: 15px; align-items: end;">
                     <div>
@@ -7328,6 +7490,8 @@ def dashboard():
                 + portfolioMetricCard('Current Value', fmtINR(s.current_value), s.withdrawn > 0 ? '+ ' + fmtINR(s.withdrawn) + ' withdrawn' : '')
                 + portfolioMetricCard('Total Invested', fmtINR(s.invested), '')
                 + portfolioMetricCard('Net P&amp;L', fmtINR(s.abs_gain), fmtPct(s.abs_return_pct) + ' absolute', pnlColor(s.abs_gain))
+                + portfolioMetricCard('Realised P&amp;L', fmtINR(s.realized_pnl), 'booked on completed sells', pnlColor(s.realized_pnl))
+                + portfolioMetricCard('Unrealised P&amp;L', fmtINR(s.unrealized_pnl), 'on current holdings', pnlColor(s.unrealized_pnl))
                 + portfolioMetricCard('Your XIRR', fmtPct(s.xirr_pct), 'annualized, money-weighted', pnlColor(s.xirr_pct))
                 + portfolioMetricCard(data.index_label + ' XIRR', fmtPct(s.index_xirr_pct), 'same cashflows in the index', pnlColor(s.index_xirr_pct))
                 + portfolioMetricCard('Alpha vs ' + data.index_label, fmtPct(s.alpha_pct), 'your XIRR minus index XIRR', pnlColor(s.alpha_pct))
@@ -7369,7 +7533,7 @@ def dashboard():
             }
 
             if (data.holdings && data.holdings.length) {
-                html += '<div class="card"><h2>Holdings</h2><div style="overflow-x: auto; margin-top: 10px;">'
+                html += '<div class="card"><h2>Current Holdings <span style="color: var(--text-muted); font-weight: 400; font-size: 0.62em;">' + data.holdings.length + ' stocks</span></h2><div style="overflow-x: auto; margin-top: 10px;">'
                     + '<table style="width: 100%; border-collapse: collapse; font-size: 0.88em; white-space: nowrap;">'
                     + '<thead><tr style="color: var(--text-muted); text-transform: uppercase; font-size: 0.78em; letter-spacing: 0.5px;">'
                     + '<th style="text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-color);">Stock</th>'
@@ -7396,7 +7560,7 @@ def dashboard():
                         + '</tr>';
                 });
                 html += '</tbody></table></div>'
-                    + '<p style="color: var(--text-muted); font-size: 0.8em; margin-top: 12px; margin-bottom: 0; font-style: italic;">XIRR is the money-weighted annual return of your actual cashflows. The index comparison invests the same amounts on the same dates, so timing luck is accounted for. Past performance does not guarantee future returns.</p>'
+                    + '<p style="color: var(--text-muted); font-size: 0.8em; margin-top: 12px; margin-bottom: 0; font-style: italic;">XIRR is the money-weighted annual return of your actual cashflows. The index comparison invests the same amounts on the same dates, so timing luck is accounted for. P&amp;L figures are gross of brokerage, charges and taxes. Past performance does not guarantee future returns.</p>'
                     + '</div>';
             }
 
