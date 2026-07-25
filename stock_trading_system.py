@@ -380,8 +380,75 @@ _BROWSER_UA = (
 )
 
 
+# ISIN → NSE symbol for everything the exchange lists, filled from NSE's own
+# CSVs. Broker statements identify scrips by ISIN, which is the only
+# identifier that survives truncated names, demergers and renames, so
+# portfolio matching consults this table before it ever guesses from a name.
+NSE_ISIN_TO_SYMBOL = {}
+
+# EQUITY_L.csv covers equities only; ETF units (GOLDBEES, the AMC ETFs, index
+# ETFs) live in a separate list and carry INF-prefixed fund ISINs.
+_NSE_ISIN_CSV_URLS = (
+    ("equities", ("https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+                  "https://archives.nseindia.com/content/equities/EQUITY_L.csv")),
+    ("ETFs", ("https://nsearchives.nseindia.com/content/equities/eq_etfseclist.csv",
+              "https://archives.nseindia.com/content/equities/eq_etfseclist.csv")),
+)
+_NSE_ISIN_FETCHED = False
+
+
+def _record_isins_from_csv(df):
+    """Record an NSE listing CSV's ISIN → SYMBOL pairs into NSE_ISIN_TO_SYMBOL.
+
+    Works for both EQUITY_L.csv and the ETF list: column names differ in case
+    and leading whitespace across the two, so they're matched loosely.
+    """
+    sym_col = next((c for c in df.columns if str(c).strip().upper() == "SYMBOL"), None)
+    isin_col = next((c for c in df.columns if "ISIN" in str(c).upper()), None)
+    if sym_col is None or isin_col is None:
+        return 0
+    pairs = df[[sym_col, isin_col]].dropna()
+    added = {
+        str(isin).strip().upper(): str(sym).strip().upper()
+        for sym, isin in zip(pairs[sym_col], pairs[isin_col])
+        if str(isin).strip() and str(sym).strip()
+    }
+    NSE_ISIN_TO_SYMBOL.update(added)
+    return len(added)
+
+
+def ensure_nse_isin_table():
+    """Populate NSE_ISIN_TO_SYMBOL from NSE's listing CSVs, once per process.
+
+    Best effort: the universe loader already fills the equity half when it can
+    reach NSE, and this covers the case where it fell back to the static list,
+    plus the ETF list it never fetches. Every failure is survivable — portfolio
+    matching just falls through to its Yahoo and AI tiers.
+    """
+    global _NSE_ISIN_FETCHED
+    if _NSE_ISIN_FETCHED:
+        return NSE_ISIN_TO_SYMBOL
+    _NSE_ISIN_FETCHED = True
+    for label, urls in _NSE_ISIN_CSV_URLS:
+        if label == "equities" and NSE_ISIN_TO_SYMBOL:
+            continue  # the universe loader already filled this half
+        for url in urls:
+            try:
+                resp = requests.get(url, headers={"User-Agent": _BROWSER_UA}, timeout=15)
+                resp.raise_for_status()
+                added = _record_isins_from_csv(pd.read_csv(io.StringIO(resp.text)))
+                print(f"  [isin] {label}: {added} ISINs mapped from {url.rsplit('/', 1)[-1]}")
+                break  # this mirror worked; no need for the next
+            except Exception as e:
+                print(f"  [isin] {label} unavailable at {url.rsplit('/', 1)[-1]}: {e}")
+    return NSE_ISIN_TO_SYMBOL
+
+
 def _extract_symbols_from_csv(text):
-    """Parse EQUITY_L.csv text and return a sorted list of symbols."""
+    """Parse EQUITY_L.csv text and return a sorted list of symbols.
+
+    Also records the file's ISIN → SYMBOL pairs into NSE_ISIN_TO_SYMBOL.
+    """
     df = pd.read_csv(io.StringIO(text))
     symbols = (
         df.get("SYMBOL", pd.Series(dtype=str))
@@ -391,6 +458,7 @@ def _extract_symbols_from_csv(text):
         .unique()
         .tolist()
     )
+    _record_isins_from_csv(df)
     return sorted({s for s in symbols if s})
 
 
@@ -4377,6 +4445,36 @@ def _portfolio_name_map():
     return _PORTFOLIO_NAME_TO_TICKER
 
 
+# Legal/geographic words that never distinguish one listed entity from another.
+_PORTFOLIO_SUFFIX_NOISE = {
+    'IND', 'INDIA', 'INDIAN', 'LTD', 'LIMITED', 'COS', 'CORP', 'CORPN',
+    'CORPORATION', 'COMPANY', 'THE', 'AND',
+}
+
+
+def _portfolio_alias_expands(cleaned, alias, ticker):
+    """True when `cleaned` is `alias` plus words that don't change identity.
+
+    Groww truncates stock names, so a watchlist alias is often a strict prefix
+    of the file's name. The extra words are harmless when they are legal noise
+    ("GAIL (INDIA) LTD" → GAIL) or simply spell out the ticker's own full name
+    ("KOTAK MAHINDRA BANK", "TATA CONSULTANCY SERV LT"). When they name a
+    different business — RELIANCE *POWER*, VEDANTA *ALUMINIUM METAL*, TATA
+    MOTORS *PASS VEH*, SBI *ETF NIFTY 50* — the row is a separate listed
+    security, and resolving it to the parent would price the holding off the
+    wrong stock.
+    """
+    full = re.sub(r'[^A-Za-z0-9& ]+', ' ', TICKER_TO_NAME.get(ticker) or '')
+    full_tokens = [w for w in full.upper().split() if len(w) >= 3]
+    for tok in cleaned[len(alias) + 1:].split():
+        if len(tok) <= 2 or tok in _PORTFOLIO_SUFFIX_NOISE:
+            continue  # 'LT', 'L', "S" and the like carry no identity
+        # Either side may be the abbreviation ('SERV' ↔ 'SERVICES')
+        if not any(f.startswith(tok) or tok.startswith(f) for f in full_tokens):
+            return False
+    return True
+
+
 def resolve_portfolio_ticker(name, symbol):
     """Resolve a Groww stock name/symbol to an NSE watchlist ticker, or None."""
     # An explicit symbol column is short and unambiguous — the standard
@@ -4399,9 +4497,12 @@ def resolve_portfolio_ticker(name, symbol):
     name_map = _portfolio_name_map()
     if cleaned in name_map:
         return name_map[cleaned]
-    # Unambiguous whole-word prefix: 'RELIANCE INDUSTRIES' → key 'RELIANCE'
-    prefix_hits = {t for n, t in name_map.items()
-                   if cleaned.startswith(n + ' ') or n.startswith(cleaned + ' ')}
+    # Unambiguous whole-word prefix, in either direction: the file's name is a
+    # short form of one known company ('RELIANCE' → 'RELIANCE INDUSTRIES'), or
+    # it is one known company plus legal noise ('GAIL (INDIA) LTD' → GAIL).
+    prefix_hits = {t for n, t in name_map.items() if n.startswith(cleaned + ' ')}
+    prefix_hits |= {t for n, t in name_map.items()
+                    if cleaned.startswith(n + ' ') and _portfolio_alias_expands(cleaned, n, t)}
     if len(prefix_hits) == 1:
         return prefix_hits.pop()
     close = difflib.get_close_matches(cleaned, list(name_map.keys()), n=1, cutoff=0.85)
@@ -4438,24 +4539,111 @@ def _resolve_isin_yahoo(isin):
     return result
 
 
+_PORTFOLIO_LLM_CACHE = {}
+
+_PORTFOLIO_LLM_PROMPT = (
+    "You map scrip names from Indian broker statements to their listed trading symbol.\n"
+    "For each item below, give the Yahoo Finance ticker of the security with that ISIN "
+    "(NSE listings end in .NS, BSE-only listings in .BO). ETFs count too.\n"
+    "Rules:\n"
+    "- The ISIN identifies the security. Never answer with a similarly named but "
+    "different company (e.g. Reliance Power is NOT Reliance Industries, and a demerged "
+    "entity is not its parent).\n"
+    "- Use null for `yahoo` whenever you are not sure. A null is far better than a guess.\n"
+    "- Echo each item's `isin` back exactly as given.\n"
+    'Reply with JSON only: {"results":[{"isin":"INE...","yahoo":"XXXX.NS"}]}\n\nItems:\n'
+)
+
+
+def _portfolio_llm_parse(text, wanted):
+    """Accepted {isin: yahoo_ticker} pairs from a provider's JSON reply."""
+    match = re.search(r'\{.*\}', text or '', re.S)
+    if not match:
+        return {}
+    try:
+        results = json.loads(match.group(0)).get('results') or []
+    except (ValueError, AttributeError):
+        return {}
+    out = {}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        isin = str(item.get('isin') or '').strip().upper()
+        yahoo = str(item.get('yahoo') or '').strip().upper()
+        # The echoed ISIN has to be one we asked about: it ties the answer to
+        # the security instead of to a name the model may have drifted from.
+        if isin in wanted and re.match(r'^[A-Z0-9][A-Z0-9&\-]{0,19}\.(NS|BO)$', yahoo):
+            out[isin] = yahoo
+    return out
+
+
+def _portfolio_llm_resolve(items):
+    """AI fallback for scrips the watchlist and Yahoo's ISIN search both miss.
+
+    `items` is a list of {'isin', 'name'} dicts (ISIN required). Makes one
+    batched, temperature-0 call per upload against the configured providers
+    (Gemini → Groq → Cerebras) and returns {isin: yahoo_ticker} for the
+    suggestions that echoed their ISIN back. Results are cached for the
+    process lifetime; callers still verify the ticker has price history, so a
+    made-up symbol drops out instead of repricing a holding.
+    """
+    pending = [it for it in items if it['isin'] not in _PORTFOLIO_LLM_CACHE]
+    if pending:
+        wanted = {it['isin'] for it in pending}
+        listing = '\n'.join(f"- isin: {it['isin']}, name: {it['name']}" for it in pending)
+        found = {}
+        for provider in _enabled_providers():
+            api_key = (os.environ.get(provider['api_key_env']) or '').strip()
+            model = (os.environ.get(provider['model_env'], '') or '').strip() or provider['model_default']
+            try:
+                resp = _provider_attempt(
+                    provider['url'],
+                    {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+                    {'model': model,
+                     'messages': [{'role': 'user', 'content': _PORTFOLIO_LLM_PROMPT + listing}],
+                     'temperature': 0, 'max_tokens': 2048, 'stream': False},
+                )
+                content = resp.json()['choices'][0]['message']['content']
+                found = _portfolio_llm_parse(content, wanted)
+                if found:
+                    break
+            except Exception as e:
+                print(f"[portfolio] AI ticker lookup failed on {provider['name']}: {e}")
+                continue
+        for isin in wanted:
+            _PORTFOLIO_LLM_CACHE[isin] = found.get(isin)
+    return {it['isin']: _PORTFOLIO_LLM_CACHE[it['isin']]
+            for it in items if _PORTFOLIO_LLM_CACHE.get(it['isin'])}
+
+
 def resolve_portfolio_instruments(transactions):
     """Resolve every transaction to (display_symbol, yahoo_ticker, full_name).
 
-    Tries the free name/symbol resolution first, then parallel ISIN lookups
-    for the rest. Sets txn['ticker'] (display) on each transaction and returns
-    ({display: yahoo_ticker}, {display: full_name}, [unmatched labels]).
+    Instruments are keyed by ISIN whenever the file carries one — it is the
+    only field that tells "VEDANTA LIMITED" apart from "VEDANTA POWER LIMITED"
+    once names are truncated — and fall back to symbol/name otherwise.
+    Resolution ladder, most reliable first: NSE's ISIN table → watchlist
+    symbol/name match → Yahoo's ISIN search → the configured AI provider (for
+    ETF units and anything else the exchange table misses). Every tier keys off
+    the ISIN where it can, so a scrip is only ever matched by name when nothing
+    better is available. Sets txn['ticker'] (display) on each transaction and
+    returns ({display: yahoo_ticker}, {display: full_name}, [unmatched labels],
+    {display: isin}, [AI-matched labels]).
     """
+    ensure_nse_isin_table()
     unique = {}
     for txn in transactions:
-        key = (txn['symbol'] or txn['name']).upper()
+        isin = (txn.get('isin') or '').upper()
+        key = isin if _ISIN_RE.match(isin) else (txn['symbol'] or txn['name']).upper()
         txn['_key'] = key
-        unique.setdefault(key, {'name': txn['name'], 'symbol': txn['symbol'],
-                                'isin': txn.get('isin', '')})
+        unique.setdefault(key, {'name': txn['name'], 'symbol': txn['symbol'], 'isin': isin})
 
     resolved = {}
     needs_isin = []
     for key, info in unique.items():
-        tkr = resolve_portfolio_ticker(info['name'], info['symbol'])
+        # NSE's own ISIN table first: exact, and it knows about demergers and
+        # renames that a name match would quietly fold into the parent company.
+        tkr = NSE_ISIN_TO_SYMBOL.get(info['isin']) or resolve_portfolio_ticker(info['name'], info['symbol'])
         if tkr:
             resolved[key] = (tkr, primary_yahoo_ticker(tkr))
         elif info['isin'] and _ISIN_RE.match(info['isin']):
@@ -4469,18 +4657,30 @@ def resolve_portfolio_instruments(transactions):
                 base = yahoo.split('.')[0].upper() if yahoo else None
                 resolved[key] = (base or yahoo, yahoo) if yahoo else None
 
-    yahoo_map, name_map, unmatched = {}, {}, []
+    ai_keys = [k for k, v in resolved.items() if v is None and unique[k]['isin']]
+    if ai_keys:
+        by_isin = _portfolio_llm_resolve([unique[k] for k in ai_keys])
+        for key in ai_keys:
+            yahoo = by_isin.get(unique[key]['isin'])
+            if yahoo:
+                resolved[key] = (yahoo.split('.')[0].upper(), yahoo, True)
+
+    yahoo_map, name_map, unmatched, isin_by_ticker, ai_matched = {}, {}, [], {}, []
     for txn in transactions:
-        pair = resolved.get(txn.pop('_key'))
+        key = txn.pop('_key')
+        pair = resolved.get(key)
         if pair is None:
             txn['ticker'] = None
             unmatched.append(txn['name'] or txn['symbol'])
             continue
-        display, yahoo = pair
+        display, yahoo = pair[0], pair[1]
         txn['ticker'] = display
         yahoo_map.setdefault(display, yahoo)
+        isin_by_ticker.setdefault(display, unique[key]['isin'])
         name_map.setdefault(display, TICKER_TO_NAME.get(display) or (txn['name'] or display).title())
-    return yahoo_map, name_map, unmatched
+        if len(pair) > 2 and display not in ai_matched:
+            ai_matched.append(display)
+    return yahoo_map, name_map, unmatched, isin_by_ticker, ai_matched
 
 
 def compute_xirr(cashflows):
@@ -4632,12 +4832,18 @@ def compute_portfolio_performance(transactions, index_key):
     """
     warnings_list = []
 
-    # ── Resolve each row to a Yahoo ticker (name/symbol, then ISIN) ───────
-    yahoo_map, display_names, unmatched = resolve_portfolio_instruments(transactions)
+    # ── Resolve each row to a Yahoo ticker (ISIN first, then name/symbol) ─
+    yahoo_map, display_names, unmatched, isin_by_ticker, ai_matched = \
+        resolve_portfolio_instruments(transactions)
     usable = [t for t in transactions if t['ticker']]
     if unmatched:
         warnings_list.append(
-            'Not recognized as NSE/BSE stocks (excluded from analysis): ' + ', '.join(sorted(set(unmatched))))
+            'Could not be matched to a traded ticker (excluded from analysis): '
+            + ', '.join(sorted(set(unmatched))))
+    if ai_matched:
+        warnings_list.append(
+            'Matched by AI from the name and ISIN rather than an exact lookup — worth a '
+            'sanity check: ' + ', '.join(sorted(ai_matched)))
     if not usable:
         raise ValueError('None of the stocks in the file could be matched to NSE/BSE tickers.')
 
@@ -4654,6 +4860,29 @@ def compute_portfolio_performance(transactions, index_key):
     # curve; still-open ones have to be excluded entirely.
     dead = [tkr for tkr in tickers
             if yahoo_map[tkr] not in closes.columns or closes[yahoo_map[tkr]].dropna().empty]
+    if dead:
+        # A quote-less ticker is often a renamed or demerged scrip whose old
+        # symbol stopped trading (Tata Motors' 2025 split, for one). The ISIN
+        # in the file still points at the live listing, so re-resolve through
+        # it before writing the holding off.
+        retry = {tkr: isin_by_ticker.get(tkr, '') for tkr in dead}
+        retry = {tkr: isin for tkr, isin in retry.items() if _ISIN_RE.match(isin)}
+        recovered = {}
+        if retry:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                for tkr, yahoo in zip(retry, ex.map(_resolve_isin_yahoo, retry.values())):
+                    if yahoo and yahoo != yahoo_map[tkr]:
+                        recovered[tkr] = yahoo
+        if recovered:
+            extra = _portfolio_fetch_closes(sorted(set(recovered.values())), first_date)
+            live = {tkr: y for tkr, y in recovered.items()
+                    if y in extra.columns and not extra[y].dropna().empty}
+            if live:
+                new_cols = [c for c in sorted(set(live.values())) if c not in closes.columns]
+                if new_cols:
+                    closes = closes.join(extra[new_cols], how='outer')
+                yahoo_map.update(live)
+                dead = [tkr for tkr in dead if tkr not in live]
     if dead:
         net_qty = {tkr: 0.0 for tkr in dead}
         for t in usable:
