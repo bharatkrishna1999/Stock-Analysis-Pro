@@ -380,17 +380,74 @@ _BROWSER_UA = (
 )
 
 
-# ISIN → NSE symbol for every listed equity, filled from EQUITY_L.csv when the
-# universe is refreshed. Broker statements identify scrips by ISIN, which is
-# the only identifier that survives truncated names, demergers and renames, so
+# ISIN → NSE symbol for everything the exchange lists, filled from NSE's own
+# CSVs. Broker statements identify scrips by ISIN, which is the only
+# identifier that survives truncated names, demergers and renames, so
 # portfolio matching consults this table before it ever guesses from a name.
 NSE_ISIN_TO_SYMBOL = {}
+
+# EQUITY_L.csv covers equities only; ETF units (GOLDBEES, the AMC ETFs, index
+# ETFs) live in a separate list and carry INF-prefixed fund ISINs.
+_NSE_ISIN_CSV_URLS = (
+    ("equities", ("https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv",
+                  "https://archives.nseindia.com/content/equities/EQUITY_L.csv")),
+    ("ETFs", ("https://nsearchives.nseindia.com/content/equities/eq_etfseclist.csv",
+              "https://archives.nseindia.com/content/equities/eq_etfseclist.csv")),
+)
+_NSE_ISIN_FETCHED = False
+
+
+def _record_isins_from_csv(df):
+    """Record an NSE listing CSV's ISIN → SYMBOL pairs into NSE_ISIN_TO_SYMBOL.
+
+    Works for both EQUITY_L.csv and the ETF list: column names differ in case
+    and leading whitespace across the two, so they're matched loosely.
+    """
+    sym_col = next((c for c in df.columns if str(c).strip().upper() == "SYMBOL"), None)
+    isin_col = next((c for c in df.columns if "ISIN" in str(c).upper()), None)
+    if sym_col is None or isin_col is None:
+        return 0
+    pairs = df[[sym_col, isin_col]].dropna()
+    added = {
+        str(isin).strip().upper(): str(sym).strip().upper()
+        for sym, isin in zip(pairs[sym_col], pairs[isin_col])
+        if str(isin).strip() and str(sym).strip()
+    }
+    NSE_ISIN_TO_SYMBOL.update(added)
+    return len(added)
+
+
+def ensure_nse_isin_table():
+    """Populate NSE_ISIN_TO_SYMBOL from NSE's listing CSVs, once per process.
+
+    Best effort: the universe loader already fills the equity half when it can
+    reach NSE, and this covers the case where it fell back to the static list,
+    plus the ETF list it never fetches. Every failure is survivable — portfolio
+    matching just falls through to its Yahoo and AI tiers.
+    """
+    global _NSE_ISIN_FETCHED
+    if _NSE_ISIN_FETCHED:
+        return NSE_ISIN_TO_SYMBOL
+    _NSE_ISIN_FETCHED = True
+    for label, urls in _NSE_ISIN_CSV_URLS:
+        if label == "equities" and NSE_ISIN_TO_SYMBOL:
+            continue  # the universe loader already filled this half
+        for url in urls:
+            try:
+                resp = requests.get(url, headers={"User-Agent": _BROWSER_UA}, timeout=15)
+                resp.raise_for_status()
+                added = _record_isins_from_csv(pd.read_csv(io.StringIO(resp.text)))
+                print(f"  [isin] {label}: {added} ISINs mapped from {url.rsplit('/', 1)[-1]}")
+                break  # this mirror worked; no need for the next
+            except Exception as e:
+                print(f"  [isin] {label} unavailable at {url.rsplit('/', 1)[-1]}: {e}")
+    return NSE_ISIN_TO_SYMBOL
 
 
 def _extract_symbols_from_csv(text):
     """Parse EQUITY_L.csv text and return a sorted list of symbols.
 
-    Also records the file's ISIN → SYMBOL column pair into NSE_ISIN_TO_SYMBOL.
+    Also records the file's ISIN → SYMBOL pairs into NSE_ISIN_TO_SYMBOL.
     """
     df = pd.read_csv(io.StringIO(text))
     symbols = (
@@ -401,14 +458,7 @@ def _extract_symbols_from_csv(text):
         .unique()
         .tolist()
     )
-    isin_col = next((c for c in df.columns if "ISIN" in str(c).upper()), None)
-    if isin_col is not None and "SYMBOL" in df.columns:
-        pairs = df[["SYMBOL", isin_col]].dropna()
-        NSE_ISIN_TO_SYMBOL.update({
-            str(isin).strip().upper(): str(sym).strip().upper()
-            for sym, isin in zip(pairs["SYMBOL"], pairs[isin_col])
-            if str(isin).strip() and str(sym).strip()
-        })
+    _record_isins_from_csv(df)
     return sorted({s for s in symbols if s})
 
 
@@ -4580,6 +4630,7 @@ def resolve_portfolio_instruments(transactions):
     returns ({display: yahoo_ticker}, {display: full_name}, [unmatched labels],
     {display: isin}, [AI-matched labels]).
     """
+    ensure_nse_isin_table()
     unique = {}
     for txn in transactions:
         isin = (txn.get('isin') or '').upper()
