@@ -19,7 +19,10 @@ services:
         sync: false
       # Optional model overrides. Set one of these if a provider retires the
       # baked-in default; no redeploy of code is needed, just the env var.
-      # Current defaults: gemini-3.8-flash / openai/gpt-oss-120b / gpt-oss-120b
+      # Current defaults, all on their provider's free tier:
+      #   GROQ_MODEL      openai/gpt-oss-120b  (30 RPM, 1k RPD, 8k TPM, 200k TPD)
+      #   CEREBRAS_MODEL  gpt-oss-120b         (1M tokens/day, 8k context cap)
+      #   GEMINI_MODEL    gemini-3.8-flash     (~20 RPD free, hence last in chain)
       - key: GEMINI_MODEL
         sync: false
       - key: GROQ_MODEL

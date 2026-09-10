@@ -12962,19 +12962,14 @@ def _provider_attempt(url, headers, payload, stream=False):
 # All three expose an OpenAI-compatible /chat/completions endpoint with
 # streaming + function calling. The failover wrapper tries them in order.
 
+# Order matters: the wrapper tries these top to bottom, so the provider with
+# the most usable free tier goes first. Free-tier limits as of Sept 2026:
+#   Groq      30 RPM, 1,000 RPD, 8,000 TPM, 200,000 TPD  — best all-round
+#   Cerebras  5 RPM, 1M tokens/day, but an 8,192-token context cap
+#   Gemini    gemini-3.8-flash is capped near 20 RPD, too low to lead with
+# Every entry is overridable via its *_MODEL env var, so a retirement or a
+# better free tier can be picked up without a code change.
 _AGENT_PROVIDERS = [
-    {
-        "name": "gemini",
-        "label": "Gemini 3.8 Flash",
-        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        "api_key_env": "GEMINI_API_KEY",
-        "model_env": "GEMINI_MODEL",
-        "model_default": "gemini-3.8-flash",
-        # Google's OpenAI compatibility layer rejects stream_options, so the
-        # payload builder drops it for this provider. Token metrics are
-        # unavailable on Gemini as a result.
-        "supports_stream_options": False,
-    },
     {
         "name": "groq",
         "label": "GPT-OSS 120B (Groq)",
@@ -12990,6 +12985,18 @@ _AGENT_PROVIDERS = [
         "api_key_env": "CEREBRAS_API_KEY",
         "model_env": "CEREBRAS_MODEL",
         "model_default": "gpt-oss-120b",
+    },
+    {
+        "name": "gemini",
+        "label": "Gemini 3.8 Flash",
+        "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        "api_key_env": "GEMINI_API_KEY",
+        "model_env": "GEMINI_MODEL",
+        "model_default": "gemini-3.8-flash",
+        # Google's OpenAI compatibility layer rejects stream_options, so the
+        # payload builder drops it for this provider. Token metrics are
+        # unavailable on Gemini as a result.
+        "supports_stream_options": False,
     },
 ]
 
