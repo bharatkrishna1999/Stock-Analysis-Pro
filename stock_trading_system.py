@@ -12965,27 +12965,31 @@ def _provider_attempt(url, headers, payload, stream=False):
 _AGENT_PROVIDERS = [
     {
         "name": "gemini",
-        "label": "Gemini 2.0 Flash",
+        "label": "Gemini 3.8 Flash",
         "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         "api_key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
-        "model_default": "gemini-2.0-flash",
+        "model_default": "gemini-3.8-flash",
+        # Google's OpenAI compatibility layer rejects stream_options, so the
+        # payload builder drops it for this provider. Token metrics are
+        # unavailable on Gemini as a result.
+        "supports_stream_options": False,
     },
     {
         "name": "groq",
-        "label": "Llama 4 Scout (Groq)",
+        "label": "GPT-OSS 120B (Groq)",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "api_key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
-        "model_default": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "model_default": "openai/gpt-oss-120b",
     },
     {
         "name": "cerebras",
-        "label": "Llama 3.3 70B (Cerebras)",
+        "label": "GPT-OSS 120B (Cerebras)",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "api_key_env": "CEREBRAS_API_KEY",
         "model_env": "CEREBRAS_MODEL",
-        "model_default": "llama-3.3-70b",
+        "model_default": "gpt-oss-120b",
     },
 ]
 
@@ -13313,8 +13317,12 @@ def _run_agent_provider_stream(provider, history, portfolio_context=None):
             "tool_choice": "auto",
             "max_tokens": 1024,
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
+        # Most OpenAI-compatible providers return a final usage chunk when
+        # asked; Gemini's compatibility layer 400s on the parameter instead,
+        # so it opts out via supports_stream_options.
+        if provider.get("supports_stream_options", True):
+            payload["stream_options"] = {"include_usage": True}
         try:
             resp = _provider_attempt(url, headers, payload, stream=True)
         except _GroqRateLimitError as e:

@@ -17,7 +17,9 @@ services:
         sync: false
       - key: CEREBRAS_API_KEY
         sync: false
-      # Optional model overrides (defaults baked into stock_trading_system.py)
+      # Optional model overrides. Set one of these if a provider retires the
+      # baked-in default; no redeploy of code is needed, just the env var.
+      # Current defaults: gemini-3.8-flash / openai/gpt-oss-120b / gpt-oss-120b
       - key: GEMINI_MODEL
         sync: false
       - key: GROQ_MODEL
