@@ -4582,7 +4582,7 @@ def _portfolio_llm_resolve(items):
 
     `items` is a list of {'isin', 'name'} dicts (ISIN required). Makes one
     batched, temperature-0 call per upload against the configured providers
-    (Gemini → Groq → Cerebras) and returns {isin: yahoo_ticker} for the
+    (Groq → Cerebras → Gemini) and returns {isin: yahoo_ticker} for the
     suggestions that echoed their ISIN back. Results are cached for the
     process lifetime; callers still verify the ticker has price history, so a
     made-up symbol drops out instead of repricing a holding.
@@ -4592,9 +4592,9 @@ def _portfolio_llm_resolve(items):
         wanted = {it['isin'] for it in pending}
         listing = '\n'.join(f"- isin: {it['isin']}, name: {it['name']}" for it in pending)
         found = {}
-        for provider in _enabled_providers():
+        for provider in _order_providers(_enabled_providers()):
             api_key = (os.environ.get(provider['api_key_env']) or '').strip()
-            model = (os.environ.get(provider['model_env'], '') or '').strip() or provider['model_default']
+            model = _provider_model(provider)
             try:
                 resp = _provider_attempt(
                     provider['url'],
@@ -4606,8 +4606,16 @@ def _portfolio_llm_resolve(items):
                 content = resp.json()['choices'][0]['message']['content']
                 found = _portfolio_llm_parse(content, wanted)
                 if found:
+                    _provider_clear_cooldown(provider['name'])
                     break
+            except _GroqRateLimitError as e:
+                # Remember the 429 so the chat agent doesn't immediately walk
+                # into the same wall on this provider.
+                _provider_mark_cooldown(provider['name'], e.retry_after)
+                print(f"[portfolio] AI ticker lookup rate-limited on {provider['name']}")
+                continue
             except Exception as e:
+                _provider_mark_cooldown(provider['name'], _PROVIDER_ERROR_COOLDOWN_SEC)
                 print(f"[portfolio] AI ticker lookup failed on {provider['name']}: {e}")
                 continue
         for isin in wanted:
@@ -10309,7 +10317,10 @@ def dashboard():
                     if (thinkBlock && thinkBlock.parentNode) thinkBlock.parentNode.removeChild(thinkBlock);
                     const errEl = aiAppend(chat, 'error', errData.error || 'Request failed. Please try again.');
                     chat.history.pop();
-                    if (res.status === 429) aiStartCooldown(chat, errData.retryAfter || 30, errEl);
+                    if (res.status === 429) {
+                        aiStartCooldown(chat, errData.retryAfter || 30, errEl);
+                        aiLoadProviders();
+                    }
                     return;
                 }
                 const reader = res.body.getReader();
@@ -10351,7 +10362,10 @@ def dashboard():
                             if (agentEl && agentEl.parentNode) agentEl.parentNode.removeChild(agentEl);
                             const errEl = aiAppend(chat, 'error', evt.text || 'Request failed. Please try again.');
                             chat.history.pop();
-                            if (evt.retryAfter) aiStartCooldown(chat, evt.retryAfter, errEl);
+                            if (evt.retryAfter) {
+                                aiStartCooldown(chat, evt.retryAfter, errEl);
+                                aiLoadProviders();
+                            }
                         }
                     }
                 }
@@ -10383,6 +10397,12 @@ def dashboard():
             inp.value = text;
             aiChatSend(pfChat);
         }
+        // The picker is populated from /api/agent/providers, whose labels are
+        // derived server-side from the model that will actually be called
+        // (including any *_MODEL env override), so what the dropdown shows is
+        // always the model doing the work. `cooldown` flags a provider that is
+        // currently rate-limited so the user isn't invited to pick a dead one.
+        let aiProvidersLoaded = false;
         async function aiLoadProviders() {
             const sel = document.getElementById('ai-model-select');
             if (!sel) return;
@@ -10392,25 +10412,35 @@ def dashboard():
                 const data = await res.json();
                 const providers = Array.isArray(data.providers) ? data.providers : [];
                 if (!providers.length) return;
+                const previous = sel.value;
                 sel.innerHTML = '';
                 const auto = document.createElement('option');
                 auto.value = 'auto';
                 auto.textContent = 'Auto (fastest available)';
+                auto.title = 'Try each configured model in turn, skipping any that are rate-limited';
                 sel.appendChild(auto);
                 for (const p of providers) {
                     const opt = document.createElement('option');
                     opt.value = p.name;
-                    opt.textContent = p.label || p.name;
+                    const cooling = Number(p.cooldown) > 0;
+                    opt.textContent = (p.label || p.name) + (cooling ? ' — rate-limited' : '');
+                    // Exact model ID on hover, so the label can be read back
+                    // against the provider's own docs.
+                    opt.title = p.model ? p.model + (cooling ? ' (rate-limited for ' + p.cooldown + 's)' : '') : '';
                     sel.appendChild(opt);
                 }
-                const saved = localStorage.getItem('artha-model');
-                if (saved && Array.from(sel.options).some(o => o.value === saved)) {
-                    sel.value = saved;
+                let want = previous && previous !== 'auto' ? previous : null;
+                if (!aiProvidersLoaded) {
+                    try { want = localStorage.getItem('artha-model') || want; } catch (e) {}
                 }
+                if (want && Array.from(sel.options).some(o => o.value === want)) sel.value = want;
                 sel.disabled = false;
-                sel.addEventListener('change', function() {
-                    try { localStorage.setItem('artha-model', sel.value); } catch (e) {}
-                });
+                if (!aiProvidersLoaded) {
+                    sel.addEventListener('change', function() {
+                        try { localStorage.setItem('artha-model', sel.value); } catch (e) {}
+                    });
+                    aiProvidersLoaded = true;
+                }
             } catch (e) { /* leave dropdown disabled on failure */ }
         }
         document.addEventListener('DOMContentLoaded', function() {
@@ -12955,40 +12985,107 @@ def _provider_attempt(url, headers, payload, stream=False):
 # Order matters: the wrapper tries these top to bottom, so the provider with
 # the most usable free tier goes first. Free-tier limits as of Sept 2026:
 #   Groq      30 RPM, 1,000 RPD, 8,000 TPM, 200,000 TPD  — best all-round
-#   Cerebras  5 RPM, 1M tokens/day, but an 8,192-token context cap
-#   Gemini    gemini-3.8-flash is capped near 20 RPD, too low to lead with
+#   Cerebras  30 RPM, 1M tokens/day, but an 8,192-token context cap
+#   Gemini    gemini-3.8-flash is 10 RPM / ~250 RPD, too low to lead with
 # Every entry is overridable via its *_MODEL env var, so a retirement or a
-# better free tier can be picked up without a code change.
+# better free tier can be picked up without a code change. `model_labels`
+# only supplies nicer display text for the IDs we ship; an overridden model
+# still renders a readable name via _pretty_model_name(), so the picker can
+# never advertise a model the server is not actually calling.
 _AGENT_PROVIDERS = [
     {
         "name": "groq",
-        "label": "GPT-OSS 120B (Groq)",
+        "provider_label": "Groq",
         "url": "https://api.groq.com/openai/v1/chat/completions",
         "api_key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
         "model_default": "openai/gpt-oss-120b",
+        "model_labels": {
+            "openai/gpt-oss-120b": "GPT-OSS 120B",
+            "openai/gpt-oss-20b": "GPT-OSS 20B",
+            "qwen/qwen3.6-27b": "Qwen3.6 27B",
+        },
     },
     {
         "name": "cerebras",
-        "label": "GPT-OSS 120B (Cerebras)",
+        "provider_label": "Cerebras",
         "url": "https://api.cerebras.ai/v1/chat/completions",
         "api_key_env": "CEREBRAS_API_KEY",
         "model_env": "CEREBRAS_MODEL",
         "model_default": "gpt-oss-120b",
+        "model_labels": {
+            "gpt-oss-120b": "GPT-OSS 120B",
+            "zai-glm-4.7": "GLM 4.7",
+            "qwen-3-235b-a22b-instruct": "Qwen3 235B",
+        },
     },
     {
         "name": "gemini",
-        "label": "Gemini 3.8 Flash",
+        "provider_label": "Google",
         "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         "api_key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
         "model_default": "gemini-3.8-flash",
+        "model_labels": {
+            "gemini-3.8-flash": "Gemini 3.8 Flash",
+            "gemini-3.7-flash": "Gemini 3.7 Flash",
+            "gemini-2.5-flash": "Gemini 2.5 Flash",
+            "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite",
+        },
         # Google's OpenAI compatibility layer rejects stream_options, so the
         # payload builder drops it for this provider. Token metrics are
         # unavailable on Gemini as a result.
         "supports_stream_options": False,
     },
 ]
+
+
+def _provider_model(provider):
+    """The model ID this provider will actually be called with, honouring the
+    *_MODEL env override."""
+    override = (os.environ.get(provider["model_env"], "") or "").strip()
+    return override or provider["model_default"]
+
+
+def _pretty_model_name(model_id):
+    """Turn a raw model ID into something readable for the picker.
+
+    "openai/gpt-oss-120b" -> "GPT-OSS 120B", "gemini-3.8-flash" ->
+    "Gemini 3.8 Flash". Used for models we do not ship a label for, so an
+    operator who sets GROQ_MODEL to anything still gets a sane name instead
+    of a stale hard-coded one.
+    """
+    raw = (model_id or "").strip()
+    if not raw:
+        return "Unknown model"
+    # Drop any vendor/namespace prefix ("openai/gpt-oss-120b", "models/...").
+    name = raw.rsplit("/", 1)[-1]
+    words = []
+    for part in name.replace("_", "-").split("-"):
+        if not part:
+            continue
+        if re.fullmatch(r"\d+(\.\d+)?[bmk]", part, re.I):      # 120b, 8b, 22k
+            words.append(part[:-1] + part[-1].upper())
+        elif re.fullmatch(r"[\d.]+", part):                     # 3.8, 2.5
+            words.append(part)
+        elif len(part) <= 4 and part.isalpha() and part.lower() in _MODEL_ACRONYMS:
+            words.append(part.upper())
+        else:
+            words.append(part[:1].upper() + part[1:])
+    return " ".join(words) or raw
+
+
+_MODEL_ACRONYMS = {"oss", "gpt", "glm", "moe", "mit", "r1", "v3", "ai"}
+
+
+def _provider_label(provider, model=None):
+    """Picker label: the real model name plus who is serving it, e.g.
+    "GPT-OSS 120B · Groq". Always derived from the model that will actually
+    be used, so an env override is reflected in the UI."""
+    model = model or _provider_model(provider)
+    pretty = (provider.get("model_labels") or {}).get(model) or _pretty_model_name(model)
+    house = provider.get("provider_label") or provider["name"].title()
+    return "%s · %s" % (pretty, house)
 
 
 class _ProviderUnavailableError(Exception):
@@ -13004,6 +13101,63 @@ class _ProviderUnavailableError(Exception):
 def _enabled_providers():
     """Return the providers whose API key is set, in priority order."""
     return [p for p in _AGENT_PROVIDERS if (os.environ.get(p["api_key_env"]) or "").strip()]
+
+
+# ── Provider cooldowns (in-memory) ───────────────────────────────────────────
+# A 429 tells us exactly how long a provider will keep refusing us. Without
+# remembering that, every subsequent request re-tries the same dead provider
+# first, burns a round trip, and gets rate-limited again — which is what made
+# the assistant feel permanently rate-limited once one provider tripped its
+# quota. Cooling providers move to the back of the failover order (never out
+# of it, so a stale cooldown can't take the last provider offline).
+
+_PROVIDER_COOLDOWN = {}  # provider name -> epoch seconds until it is usable
+_PROVIDER_COOLDOWN_LOCK = Lock()
+# A provider-supplied Retry-After of "try again tomorrow" (daily quota) would
+# otherwise park a provider for hours; cap what we honour.
+_PROVIDER_COOLDOWN_MAX_SEC = float(os.environ.get("AGENT_PROVIDER_COOLDOWN_MAX_SEC", "300"))
+# Network errors and 5xx get a short breather rather than a full cooldown.
+_PROVIDER_ERROR_COOLDOWN_SEC = float(os.environ.get("AGENT_PROVIDER_ERROR_COOLDOWN_SEC", "15"))
+# How long the failover wrapper will sit out a global rate-limit before
+# giving up. Longer than this and the user is better served by an error.
+_AGENT_FAILOVER_WAIT_MAX_SEC = float(os.environ.get("AGENT_FAILOVER_WAIT_MAX_SEC", "8"))
+
+
+def _provider_cooldown_left(name):
+    """Seconds until `name` is worth trying again (0 when it is ready)."""
+    with _PROVIDER_COOLDOWN_LOCK:
+        until = _PROVIDER_COOLDOWN.get(name, 0.0)
+    return max(0.0, until - time.time())
+
+
+def _provider_mark_cooldown(name, seconds):
+    seconds = min(max(float(seconds or 0), 0.0), _PROVIDER_COOLDOWN_MAX_SEC)
+    if seconds <= 0:
+        return
+    with _PROVIDER_COOLDOWN_LOCK:
+        _PROVIDER_COOLDOWN[name] = max(_PROVIDER_COOLDOWN.get(name, 0.0), time.time() + seconds)
+
+
+def _provider_clear_cooldown(name):
+    with _PROVIDER_COOLDOWN_LOCK:
+        _PROVIDER_COOLDOWN.pop(name, None)
+
+
+def _order_providers(providers, preferred=None):
+    """Failover order: the user's pick first (when it is not cooling), then
+    ready providers in priority order, then cooling ones soonest-ready first
+    as a last resort."""
+    pref = (preferred or "").strip().lower()
+    ready = [p for p in providers if not _provider_cooldown_left(p["name"])]
+    cooling = sorted(
+        (p for p in providers if _provider_cooldown_left(p["name"])),
+        key=lambda p: _provider_cooldown_left(p["name"]),
+    )
+    ordered = ready + cooling
+    if pref and pref != "auto":
+        chosen = [p for p in ordered if p["name"] == pref and not _provider_cooldown_left(p["name"])]
+        ordered = chosen + [p for p in ordered if p not in chosen]
+    return ordered
 
 
 # ── Token usage metrics (in-memory, reset on process restart) ────────────────
@@ -13285,14 +13439,22 @@ PORTFOLIO MODE — for this conversation:
 
 def _run_agent_provider_stream(provider, history, portfolio_context=None):
     """Generator yielding SSE events for ONE provider. Raises
-    _ProviderUnavailableError on the first request if the provider is unusable
-    (rate-limited, auth failure, network error) so the failover wrapper can
-    try the next one."""
+    _ProviderUnavailableError whenever the provider becomes unusable
+    (rate-limited, auth failure, network error) *and* nothing has been shown
+    to the user yet, so the failover wrapper can restart cleanly on the next
+    provider.
+
+    The agent is a tool-calling loop, so answering one question costs two to
+    four upstream requests. Only the first of those used to be eligible for
+    failover, which meant the common case — sailing through the tool turns
+    and then tripping the provider's tokens-per-minute cap on the final
+    answer turn — surfaced as a hard "rate limited" error even when two other
+    providers were configured and idle. Every turn can now fail over."""
     api_key = (os.environ.get(provider["api_key_env"]) or "").strip()
     if not api_key:
         raise _ProviderUnavailableError(provider["name"], "no API key set")
 
-    model = (os.environ.get(provider["model_env"], "") or provider["model_default"]).strip() or provider["model_default"]
+    model = _provider_model(provider)
     url = provider["url"]
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -13303,7 +13465,10 @@ def _run_agent_provider_stream(provider, history, portfolio_context=None):
     for msg in history:
         messages.append({"role": msg["role"], "content": msg["content"]})
 
-    first_call = True
+    # `emitted_text` gates failover: once the user has seen part of an answer,
+    # restarting on another provider would splice two different answers
+    # together, so from that point a failure is reported instead.
+    emitted_text = False
     nudged = False
     max_turns = 6
     for _ in range(max_turns):
@@ -13323,16 +13488,22 @@ def _run_agent_provider_stream(provider, history, portfolio_context=None):
         try:
             resp = _provider_attempt(url, headers, payload, stream=True)
         except _GroqRateLimitError as e:
-            if first_call:
+            _provider_mark_cooldown(provider["name"], e.retry_after)
+            if not emitted_text:
                 raise _ProviderUnavailableError(provider["name"], "rate limited", e.retry_after)
-            yield {"type": "error", "text": f"Rate limited mid-conversation on {provider['name']}. Please retry."}
+            yield {
+                "type": "error",
+                "text": f"{_provider_label(provider, model)} hit its rate limit part-way "
+                        "through the answer. Please ask again.",
+                "retryAfter": int(e.retry_after or 30),
+            }
             return
         except Exception as e:
-            if first_call:
+            _provider_mark_cooldown(provider["name"], _PROVIDER_ERROR_COOLDOWN_SEC)
+            if not emitted_text:
                 raise _ProviderUnavailableError(provider["name"], str(e))
             yield {"type": "error", "text": f"Provider error mid-stream: {e}"}
             return
-        first_call = False
 
         accumulated_content = ""
         accumulated_tool_calls = {}  # index -> {id, name, arguments}
@@ -13375,6 +13546,7 @@ def _run_agent_provider_stream(provider, history, portfolio_context=None):
                 accumulated_content += content_chunk
                 cleaned = narration_filter.feed(content_chunk)
                 if cleaned:
+                    emitted_text = True
                     yield {"type": "token", "text": cleaned}
 
             # Accumulate tool call deltas
@@ -13391,9 +13563,12 @@ def _run_agent_provider_stream(provider, history, portfolio_context=None):
 
         tail = narration_filter.flush()
         if tail:
+            emitted_text = True
             yield {"type": "token", "text": tail}
 
         _metrics_record_usage(provider["name"], turn_usage)
+        # A completed turn proves the provider is serving us again.
+        _provider_clear_cooldown(provider["name"])
 
         if finish_reason == "stop" or (accumulated_content and not accumulated_tool_calls):
             yield {"type": "done"}
@@ -13483,10 +13658,18 @@ def _run_agent_provider_stream(provider, history, portfolio_context=None):
 
 def _run_agent_with_failover_stream(history, preferred_provider=None, portfolio_context=None):
     """Top-level streaming generator. Checks the response cache first; on miss,
-    walks through the provider list (Gemini → Groq → Cerebras), failing over
-    on rate-limit / auth / network errors. If `preferred_provider` is set and
-    enabled, it's tried first; the remaining providers still act as fallbacks
-    so a transient rate-limit on the user's pick doesn't kill the request."""
+    walks the provider list (Groq → Cerebras → Gemini), failing over on
+    rate-limit / auth / network errors.
+
+    Providers that recently returned a 429 are pushed to the back of the order
+    for as long as their Retry-After says, so a tripped quota costs one wasted
+    round trip instead of one per request. If `preferred_provider` is set and
+    ready, it is tried first; the rest still act as fallbacks so a transient
+    rate-limit on the user's pick doesn't kill the request.
+
+    When every provider is rate-limited but one of them says it will be free
+    again shortly, we wait it out once rather than handing the user an error
+    they would only retry by hand."""
     cache_key = _agent_cache_key(history, preferred_provider, portfolio_context)
     cached = _agent_cache_get(cache_key)
     if cached:
@@ -13495,43 +13678,63 @@ def _run_agent_with_failover_stream(history, preferred_provider=None, portfolio_
             yield event
         return
 
-    providers = _enabled_providers()
-    if not providers:
+    enabled = _enabled_providers()
+    if not enabled:
         yield {"type": "error", "text": "No AI provider configured. Set GEMINI_API_KEY, GROQ_API_KEY, or CEREBRAS_API_KEY."}
         return
 
-    pref = (preferred_provider or "").strip().lower()
-    if pref and pref != "auto":
-        chosen = [p for p in providers if p["name"] == pref]
-        rest = [p for p in providers if p["name"] != pref]
-        providers = chosen + rest
-
     last_failure = None
-    for provider in providers:
-        full_response_parts = []
-        try:
-            gen = _run_agent_provider_stream(provider, history, portfolio_context)
-            for event in gen:
-                if event.get("type") == "token":
-                    full_response_parts.append(event["text"])
-                yield event
-                if event.get("type") in ("done", "error"):
-                    break
-            full_text = "".join(full_response_parts).strip()
-            if full_text:
-                _agent_cache_set(cache_key, full_text)
-            return
-        except _ProviderUnavailableError as e:
-            last_failure = e
-            print(f"Provider failover: {provider['name']} unavailable ({e.reason}); trying next.")
-            continue
-        except Exception as e:
-            last_failure = e
-            print(f"Provider failover: {provider['name']} crashed ({e}); trying next.")
-            continue
+    attempted = set()
+
+    for attempt_round in range(2):
+        for provider in _order_providers(enabled, preferred_provider):
+            if attempt_round == 0 and provider["name"] in attempted:
+                continue
+            attempted.add(provider["name"])
+            full_response_parts = []
+            finished_cleanly = False
+            try:
+                for event in _run_agent_provider_stream(provider, history, portfolio_context):
+                    if event.get("type") == "token":
+                        full_response_parts.append(event["text"])
+                    yield event
+                    if event.get("type") == "done":
+                        finished_cleanly = True
+                        break
+                    if event.get("type") == "error":
+                        break
+                if finished_cleanly:
+                    full_text = "".join(full_response_parts).strip()
+                    if full_text:
+                        _agent_cache_set(cache_key, full_text)
+                return
+            except _ProviderUnavailableError as e:
+                last_failure = e
+                print(f"Provider failover: {provider['name']} unavailable ({e.reason}); trying next.")
+                continue
+            except Exception as e:
+                last_failure = e
+                _provider_mark_cooldown(provider["name"], _PROVIDER_ERROR_COOLDOWN_SEC)
+                print(f"Provider failover: {provider['name']} crashed ({e}); trying next.")
+                continue
+
+        # Every provider refused. If one of them frees up within a few seconds,
+        # sit out the wait and make a single second pass instead of bouncing
+        # the rate-limit error straight back to the user.
+        if attempt_round == 0:
+            soonest = min((_provider_cooldown_left(p["name"]) for p in enabled), default=0)
+            if 0 < soonest <= _AGENT_FAILOVER_WAIT_MAX_SEC:
+                yield {"type": "thinking", "text": f"All providers busy — retrying in {int(soonest) + 1}s"}
+                time.sleep(soonest + 0.5)
+                attempted.clear()
+                continue
+        break
 
     # All providers exhausted
     retry_after = getattr(last_failure, "retry_after", None)
+    if not retry_after:
+        soonest = min((_provider_cooldown_left(p["name"]) for p in enabled), default=0)
+        retry_after = int(soonest) + 1 if soonest else None
     msg = "All AI providers are temporarily unavailable. Please try again in a moment."
     err_event = {"type": "error", "text": msg}
     if retry_after:
@@ -13578,18 +13781,35 @@ def _agent_throttle_check(ip):
     return 0
 
 
+# Every prior turn is re-sent on every request, and each tool-calling round
+# re-sends the whole thing again. Ten turns of 1,500 characters is roughly
+# 4,000 tokens of history riding on top of the system prompt and tool schemas,
+# which alone can breach Groq's 8,000 tokens-per-minute free tier and blows
+# past Cerebras's 8,192-token context cap. Cap the total instead of only the
+# per-message length: the newest turns (the ones pronoun follow-ups actually
+# need) are kept and older ones are dropped.
+_AGENT_HISTORY_CHAR_BUDGET = int(os.environ.get("AGENT_HISTORY_CHAR_BUDGET", "6000"))
+
+
 def _agent_parse_history(data, max_turns=10, max_content=1500):
-    """Keep up to `max_turns` of prior user/assistant messages so pronoun
-    follow-ups ('what about their split?', 'is it cheap?') retain the
-    ticker/topic context. The previous value of 2 dropped the original
-    question after a single round-trip and broke multi-turn chat."""
+    """Keep recent user/assistant messages so pronoun follow-ups ('what about
+    their split?', 'is it cheap?') retain the ticker/topic context, bounded by
+    both `max_turns` and a total character budget."""
     raw_history = data.get("history") or []
-    history = []
-    for turn in raw_history[-max_turns:]:
+    kept = []
+    budget = _AGENT_HISTORY_CHAR_BUDGET
+    # Walk backwards so the most recent context survives the budget.
+    for turn in reversed(raw_history[-max_turns:]):
         role = turn.get("role")
         content = turn.get("content")
-        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
-            history.append({"role": role, "content": content[:max_content]})
+        if role not in ("user", "assistant") or not isinstance(content, str) or not content.strip():
+            continue
+        content = content[:max_content]
+        if budget - len(content) < 0 and kept:
+            break
+        budget -= len(content)
+        kept.append({"role": role, "content": content})
+    history = list(reversed(kept))
     message = (data.get("message") or "").strip()
     if message:
         history.append({"role": "user", "content": message[:2000]})
@@ -13681,7 +13901,8 @@ def agent_query_route():
             }), 429
         if status == 400:
             return jsonify({
-                "error": "AI model configuration error — the configured model may be unavailable. Please set the GROQ_MODEL environment variable to a valid Groq model ID.",
+                "error": "AI model configuration error — the configured model may have been retired. "
+                         "Point GROQ_MODEL / CEREBRAS_MODEL / GEMINI_MODEL at a model the provider currently serves.",
             }), 503
         if status == 401 or status == 403:
             return jsonify({
@@ -13695,14 +13916,24 @@ def agent_query_route():
 @app.route("/api/agent/providers", methods=["GET"])
 def agent_providers_route():
     """Expose the AI providers whose API key is set so the frontend can render
-    a model picker with only the options that will actually work."""
+    a model picker with only the options that will actually work.
+
+    `label` and `model` are both derived from the model the server will
+    genuinely call (env override included), so the picker can never advertise
+    a model that is not in use. `cooldown` lets the UI mark a provider that is
+    currently rate-limited instead of letting the user pick a dead option."""
     enabled = _enabled_providers()
-    return jsonify({
-        "providers": [
-            {"name": p["name"], "label": p.get("label", p["name"])}
-            for p in enabled
-        ],
-    })
+    providers = []
+    for p in enabled:
+        model = _provider_model(p)
+        providers.append({
+            "name": p["name"],
+            "label": _provider_label(p, model),
+            "model": model,
+            "provider": p.get("provider_label") or p["name"].title(),
+            "cooldown": int(_provider_cooldown_left(p["name"])),
+        })
+    return jsonify({"providers": providers})
 
 
 @app.route("/api/agent/metrics", methods=["GET"])
